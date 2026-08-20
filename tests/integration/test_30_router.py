@@ -151,19 +151,27 @@ def test_course_without_pattern_does_not_claim_a_term(
     assert "เคยเปิด" not in text
 
 
-def test_loan_menu_count_contradicts_loan_answer_count(
+def test_loan_menu_count_matches_loan_answer_count(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    **บันทึกบั๊กที่ผู้ใช้เห็นจริง** (ไม่ได้แก้ตามขอบเขตงาน)
+    เมนูบอกกี่ฉบับ กดเข้าไปต้องได้เท่านั้น — **เคยเป็นบั๊กที่แก้แล้ว**
 
-    เมนูบอก "กู้ยืม กยศ. (12 ฉบับ)" แต่กดเข้าไปหัวข้อความเขียน "(10 ฉบับ)"
-    เพราะ ``_documents_answer`` ไม่ส่ง ``limit`` → ใช้ค่า default 10
-    เอกสาร 2 ฉบับสุดท้ายของหมวดนี้เข้าถึงไม่ได้เลยจากบอท
+    เดิม ``_documents_answer`` ไม่ส่ง ``limit`` → ใช้ default 10 ของ
+    ``documents_in_category`` ทำให้เมนูเขียน "(12 ฉบับ)" แต่คำตอบเขียน
+    "(10 ฉบับ)" และเอกสาร 2 ฉบับท้ายหมวดเข้าถึงไม่ได้เลยจากบอท
+
+    หมายเหตุ: ค่า default ของ ``documents_in_category`` **ยังเป็น 10**
+    (ดู ``test_10_repository.py::test_default_limit_hides_two_loan_documents``)
+    ที่แก้คือ router ส่ง limit เอง
     """
     menu = run(rt.handle_postback("action=documents", live_db))
     answer = run(rt.handle_postback("action=documents&cat=loan", live_db))
+    text = answer.messages[0]["text"]
 
     assert "(12 ฉบับ)" in menu.messages[0]["text"]
-    assert "(10 ฉบับ)" in answer.messages[0]["text"]
-    assert "111 ตัวอย่างการทำสัญญา กรอ." not in answer.messages[0]["text"]
+    assert "(12 ฉบับ)" in text
+    # สองฉบับที่เคยหายไปต้องอยู่ในคำตอบแล้ว
+    assert "111 ตัวอย่างการทำสัญญา กรอ." in text
+    assert "หน้ารวมข้อมูลการกู้ยืมเงินเพื่อการศึกษา" in text
+    assert_line_limits(answer.messages)

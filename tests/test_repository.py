@@ -5,7 +5,7 @@ Postgres ยังรันบนเครื่อง dev ไม่ได้ (D
 ให้ครอบสิ่งที่ตรวจได้จริงโดยไม่มี DB:
 
 1. **SQL ถูกต้องและอ้างตารางที่มีจริง** — parse ด้วย ``sqlglot`` แล้วเทียบชื่อ
-   ตารางกับ ``001_init.sql`` (จับ typo เช่น ``document`` vs ``documents``
+   ตารางกับ migration ทุกไฟล์ (จับ typo เช่น ``document`` vs ``documents``
    ที่ปกติจะรู้ตัวตอนรัน query จริงเท่านั้น)
 2. **ส่ง parameter ถูกตำแหน่ง และรับผลลัพธ์ว่างได้** — เทสด้วย
    :class:`tests.helpers.FakeDatabase`
@@ -28,12 +28,16 @@ from app.config import REPO_ROOT
 
 from .helpers import FakeDatabase
 
-MIGRATION = Path(REPO_ROOT, "db", "migrations", "001_init.sql")
+MIGRATIONS_DIR = Path(REPO_ROOT, "db", "migrations")
 
 
 def schema_tables() -> set[str]:
-    sql = MIGRATION.read_text(encoding="utf-8")
-    return set(re.findall(r"CREATE TABLE (?:IF NOT EXISTS )?(\w+)", sql))
+    """ชื่อตารางจาก **ทุก migration** (001_init.sql, 002_ai_sessions.sql, ...)"""
+    tables: set[str] = set()
+    for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        sql = migration.read_text(encoding="utf-8")
+        tables.update(re.findall(r"CREATE TABLE (?:IF NOT EXISTS )?(\w+)", sql))
+    return tables
 
 
 def normalize(sql: str) -> str:

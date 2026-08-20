@@ -137,6 +137,55 @@ MAIN_MENU_ACTIONS = [
     postback_action("ทุน/กู้ยืม", "action=loan"),
 ]
 
+# ── โหมดปรึกษา AI ───────────────────────────────────────────────────────────
+# LLM ตอบเฉพาะเมื่อ user "เข้าโหมด" แล้ว (กันเสีย token ฟรีกับทุก search miss)
+# ทางเข้า: ปุ่มนี้ หรือนำหน้าข้อความด้วย "ปรึกษา" ทางออก: ปุ่มจบ/คำออก/
+# ว่างเกินกำหนด/ครบเพดานรอบ — กติกาทั้งหมดอยู่ที่ ``app.ai_chat.dispatch``
+
+CONSULT_AI_ACTION = postback_action("ปรึกษา AI", "action=ai_session")
+CONSULT_EXIT_ACTION = postback_action("จบการปรึกษา", "action=ai_end")
+
+
+def _consult_quick_reply() -> dict:
+    """ปุ่มจบการปรึกษา + เมนูหลัก — อยู่ระหว่างโหมดต้องมีทางออกเสมอ"""
+    return quick_reply([CONSULT_EXIT_ACTION, *MAIN_MENU_ACTIONS])
+
+
+def ai_session_message(text: str) -> dict:
+    """คำตอบจาก AI ระหว่างอยู่ในโหมดปรึกษา — ปุ่มจบการปรึกษาต้องตามมาด้วย"""
+    return text_message(text, _consult_quick_reply())
+
+
+def session_open_message() -> dict:
+    """ตอบเมื่อเพิ่งเข้าโหมดปรึกษา — บอกกติกาและวิธีออกให้ชัด"""
+    return text_message(
+        "ได้ครับ โหมดปรึกษาเปิดแล้ว\n\n"
+        "พิมพ์คำถามเรื่องการเรียน/ชีวิตมหาวิทยาลัยมาได้เลย\n"
+        "เช่น การปรับตัว การจัดการเวลา เทคนิคอ่านหนังสือ การเตรียมสอบ\n\n"
+        "พิมพ์ “ออก” หรือกดปุ่ม “จบการปรึกษา” เมื่อคุยเสร็จ\n"
+        "(โหมดจะปิดเองอัตโนมัติถ้าว่างเกิน 30 นาที)",
+        _consult_quick_reply(),
+    )
+
+
+def session_closed_message() -> dict:
+    """ตอบเมื่อจบโหมดปรึกษา (ปุ่ม/คำออก/หมดเวลา/ครบรอบ ใช้ร่วมกัน)"""
+    return text_message(
+        "รับทราบครับ จบโหมดปรึกษาแล้ว\n"
+        "ถ้าอยากคุยอีกครั้ง กดปุ่ม “ปรึกษา AI” หรือพิมพ์ข้อความที่\n"
+        "ขึ้นต้นด้วย “ปรึกษา” ได้เลยครับ",
+        quick_reply([CONSULT_AI_ACTION, *MAIN_MENU_ACTIONS]),
+    )
+
+
+def session_turn_limit_message() -> dict:
+    """ตอบเมื่อครบเพดานรอบต่อ session — เสนอให้เริ่มใหม่ ไม่ใช่เงียบ"""
+    return text_message(
+        "รอบนี้เราคุยกันครบตามที่ระบบกำหนดแล้วครับ\n"
+        "กดปุ่ม “ปรึกษา AI” เพื่อเริ่มปรึกษาหัวข้อใหม่ได้เลย",
+        quick_reply([CONSULT_AI_ACTION, *MAIN_MENU_ACTIONS]),
+    )
+
 
 def fallback_message() -> dict:
     """
@@ -166,13 +215,3 @@ def no_data_message(topic: str) -> dict:
         "แนะนำให้ติดต่อสำนักงานคณะโดยตรง",
         quick_reply(MAIN_MENU_ACTIONS),
     )
-
-
-def ai_chat_message(text: str) -> dict:
-    """
-    คำตอบจาก AI Chat (Requirement ข้อ 9) — ข้อความของ LLM ตรง ๆ + ปุ่มเมนู
-
-    ไม่ต่อ header/footer ว่า "เป็นคำตอบจาก AI" ในข้อความ เพราะ user กดเข้ามา
-    ถาม AI อยู่แล้ว แต่ถ้าต้องการเพิ่มภายหลังแก้ที่นี่ที่เดียว
-    """
-    return text_message(text, quick_reply(MAIN_MENU_ACTIONS))

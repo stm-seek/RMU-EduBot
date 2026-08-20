@@ -391,6 +391,104 @@ async def ensure_user(db: SupportsQuery, line_user_hash: str) -> int:
     return int(row["id"])
 
 
+# ── โหมดปรึกษา AI (ai_sessions) ─────────────────────────────────────────────
+#
+# user "เข้าโหมด" ก่อนถึงเสีย token กับ LLM — สถานะโหมดอยู่ในตารางนี้
+# (ไม่ใช่ใน process memory) เพราะ restart แล้วโหมดต้องไม่หาย และตารางคือ
+# ข้อมูลวัดผลธีสิสตรง ๆ: จำนวน session, รอบเฉลี่ย, ออกด้วยเหตุผลอะไร
+
+
+SQL_OPEN_AI_SESSION = """
+INSERT INTO ai_sessions (user_id)
+SELECT u.id
+FROM app_users u
+WHERE u.line_user_hash = %s
+  AND NOT EXISTS (
+      SELECT 1 FROM ai_sessions s
+      WHERE s.user_id = u.id AND s.ended_at IS NULL
+  )
+RETURNING id, started_at
+"""
+
+
+async def open_ai_session(db: SupportsExecute, line_user_hash: str) -> int:
+    """
+    เปิด session โหมดปรึกษา — **ไม่สร้างแถวซ้ำ** ถ้ามี session เปิดอยู่
+
+    ``INSERT ... SELECT ... WHERE NOT EXISTS`` + ``RETURNING`` ทำ atomically
+    ใน statement เดียว (ไม่ต้อง ensure_user แยก — join ``app_users`` จาก hash
+    ตรง ๆ และแถว user ต้องมีอยู่แล้วเพราะ webhook สร้างให้ตอนแรก)
+    ถ้ามี session เปิดอยู่แล้ว RETURNING ไม่คืนแถว → ผู้เรียกต้องไปหา
+    session เดิมเองด้วย :func:`active_ai_session_by_hash`
+    """
+    row = await db.fetch_one(SQL_OPEN_AI_SESSION, (line_user_hash,))
+    return int(row["id"])
+
+
+SQL_ACTIVE_AI_SESSION = """
+SELECT id, started_at, last_active_at, turn_count
+FROM ai_sessions
+WHERE user_id = %s
+  AND ended_at IS NULL
+ORDER BY id DESC
+LIMIT 1
+"""
+
+
+async def active_ai_session(db: SupportsQuery, user_id: int) -> dict | None:
+    """คืน session ที่ยังเปิดอยู่ของ user (แถวเดียวเสมอ — ดู ``open_ai_session``)"""
+    return await db.fetch_one(SQL_ACTIVE_AI_SESSION, (user_id,))
+
+
+SQL_ACTIVE_SESSION_BY_HASH = """
+SELECT s.id, s.last_active_at, s.turn_count
+FROM ai_sessions s
+JOIN app_users u ON u.id = s.user_id
+WHERE u.line_user_hash = %s
+  AND s.ended_at IS NULL
+ORDER BY s.id DESC
+LIMIT 1
+"""
+
+
+async def active_ai_session_by_hash(db: SupportsQuery, line_user_hash: str) -> dict | None:
+    """
+    ตรวจว่ามี session เปิดอยู่ไหม **จาก hash ตรง ๆ** — ทางอ่านล้วน
+
+    ใช้กับข้อความธรรมดาทุกตัวที่เข้ามา (ยังไม่รู้ว่าจะเข้าโหมดไหม) เพื่อไม่ให้
+    ทุกข้อความกลายเป็นการเขียน (``ensure_user`` upsert) — เขียนเฉพาะเมื่อ
+    จะเข้า/ออก/ตอบในโหมดจริง ๆ
+    """
+    return await db.fetch_one(SQL_ACTIVE_SESSION_BY_HASH, (line_user_hash,))
+
+
+SQL_TOUCH_AI_SESSION = """
+UPDATE ai_sessions
+SET last_active_at = now(), turn_count = turn_count + 1
+WHERE id = %s
+"""
+
+
+async def touch_ai_session(db: SupportsExecute, session_id: int) -> int:
+    """ขยับเวลา + นับรอบหลังตอบสำเร็จ — ใช้ตรวจ timeout/เพดานรอบในรอบถัดไป"""
+    return await db.execute(SQL_TOUCH_AI_SESSION, (session_id,))
+
+
+SQL_END_AI_SESSION = """
+UPDATE ai_sessions
+SET ended_at = now(), end_reason = %s
+WHERE id = %s
+"""
+
+
+async def end_ai_session(db: SupportsExecute, session_id: int, reason: str) -> int:
+    """
+    ปิด session — ``reason`` ต้องเป็นหนึ่งใน ``button`` / ``keyword`` /
+    ``timeout`` / ``turn_limit`` (ตารางมี CHECK constraint บังคับ)
+    """
+    return await db.execute(SQL_END_AI_SESSION, (reason, session_id))
+
+
 # ── ทะเบียนรวมของ SQL ทั้งไฟล์ (ใช้ในเทส) ───────────────────────────────────
 
 ALL_QUERIES: dict[str, str] = {
@@ -408,4 +506,9 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_RECENT_CHAT": SQL_RECENT_CHAT,
     "SQL_INSERT_CHAT_LOG": SQL_INSERT_CHAT_LOG,
     "SQL_TOUCH_APP_USER": SQL_TOUCH_APP_USER,
+    "SQL_OPEN_AI_SESSION": SQL_OPEN_AI_SESSION,
+    "SQL_ACTIVE_AI_SESSION": SQL_ACTIVE_AI_SESSION,
+    "SQL_ACTIVE_SESSION_BY_HASH": SQL_ACTIVE_SESSION_BY_HASH,
+    "SQL_TOUCH_AI_SESSION": SQL_TOUCH_AI_SESSION,
+    "SQL_END_AI_SESSION": SQL_END_AI_SESSION,
 }

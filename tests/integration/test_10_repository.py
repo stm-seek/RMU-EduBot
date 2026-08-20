@@ -1,10 +1,10 @@
 """
-เทส ``app.repository`` ทั้ง 11 ฟังก์ชันกับ Postgres จริง + ข้อมูล seed จริง
+เทส ``app.repository`` ทั้ง 19 ฟังก์ชันกับ Postgres จริง + ข้อมูล seed จริง
 
 ต่างจาก :mod:`tests.test_repository` (ที่ parse SQL ด้วย ``sqlglot`` + ยิง
 ``FakeDatabase``) ไฟล์นี้ยืนยัน **ค่าที่ออกมาจริง** ซึ่ง mock พิสูจน์ให้ไม่ได้:
-ผลของ ``similarity()`` กับภาษาไทย, การเรียงลำดับที่ Postgres ทำ, และ
-``LEFT JOIN`` ที่คืน ``NULL``
+ผลของ ``word_similarity()`` กับภาษาไทย, การเรียงลำดับที่ Postgres ทำ,
+``LEFT JOIN`` ที่คืน ``NULL`` และ CHECK constraint ของ ``ai_sessions``
 
 ค่าที่ hardcode ไว้ทั้งหมดมาจาก ``db/seed/002_seed_data.sql`` ถ้า seed เปลี่ยน
 ``test_00_smoke.py`` จะพังก่อนเป็นตัวบอก
@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from typing import Any, Callable
 
 import pytest
@@ -169,9 +170,11 @@ def test_search_documents_runs_at_all(
         "103 หนังสือรับรองรายได้ครอบครัว (กรอ.)",
     ]
     assert set(rows[0]) == {"title", "url", "category", "keywords", "score"}
-    # ``similarity()`` เป็น real (float4) → psycopg แปลงเป็น float ของ Python
+    # ``word_similarity()`` เป็น real (float4) → psycopg แปลงเป็น float ของ Python
     assert isinstance(rows[0]["score"], float)
-    assert rows[0]["score"] > rows[1]["score"] > 0.3
+    # ชื่อเอกสารตรงกับคำค้นทั้งคำ → เต็ม 1.0 ทั้งคู่ แล้วเรียงต่อด้วย title
+    # (ตอนใช้ ``similarity()`` ค่านี้เคยเป็น 0.4x และต่างกันเล็กน้อย)
+    assert [row["score"] for row in rows] == [pytest.approx(1.0), pytest.approx(1.0)]
 
 
 def test_search_documents_honours_limit(
@@ -183,49 +186,80 @@ def test_search_documents_honours_limit(
     assert rows[0]["title"] == "102 หนังสือรับรองรายได้ครอบครัว (กยศ.)"
 
 
-def test_search_documents_partial_query_works_only_near_full_title(
+def test_search_documents_partial_query_ranks_exact_keyword_first(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    คำค้นบางส่วน: ได้ผลเมื่อคำที่พิมพ์ยาวใกล้เคียงกับ ``keywords``/``title`` ทั้งก้อน
+    คำค้นบางส่วน: เอกสารที่มี keyword ตรงคำมาก่อนเอกสารที่แค่คล้าย
 
-    ``ลงทะเบียน`` (9 ตัวอักษร) เทียบกับ keywords 4 คำ ได้ 0.3333 → ผ่านเกณฑ์
-    0.3 มาแบบเฉียดฉิว นี่คือค่าจริง ไม่ใช่ค่าที่ตั้งใจออกแบบ
+    ``ลงทะเบียน`` ตรงกับ keyword ของเอกสารหมวด registration เต็ม ๆ (1.0)
+    ส่วน ``ปฏิทินการศึกษา`` ติดมาด้วยที่ 0.8 เพราะ keyword มีคำว่า
+    "ลงทะเบียนเรียน" อยู่ — เรียงคะแนนแล้วตัวที่ตรงจริงอยู่บนสุด
+    (ก่อนแก้บั๊ก ``similarity()`` ให้ 0.3333 เฉียดเกณฑ์ และได้แถวเดียว)
     """
     rows = run(repo.search_documents(live_db, "ลงทะเบียน"))
 
-    assert [row["title"] for row in rows] == ["เอกสารขอยืนยันลงทะเบียนเรียน (ล่าช้า)"]
+    assert [row["title"] for row in rows] == [
+        "เอกสารขอยืนยันลงทะเบียนเรียน (ล่าช้า)",
+        "ปฏิทินการศึกษา (ระบบบริการการศึกษา)",
+    ]
     assert rows[0]["category"] == "registration"
-    assert 0.30 < rows[0]["score"] < 0.34
+    assert rows[0]["score"] == pytest.approx(1.0)
+    assert rows[1]["score"] == pytest.approx(0.8)
 
 
-def test_search_documents_misses_short_queries_users_actually_type(
+def test_search_documents_finds_short_queries_users_actually_type(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    **บันทึกบั๊กที่เจอกับข้อมูลจริง** — คำค้นสั้น ๆ ที่คนพิมพ์จริงหาไม่เจอเลย
+    คำสั้น ๆ ที่คนพิมพ์จริงต้องเจอ — **เคยเป็นบั๊กที่แก้แล้ว**
 
-    ``กยศ`` / ``กู้ยืม`` / ``ดรอป`` คืน 0 แถว ทั้งที่ ``ดรอป`` เป็นตัวอย่าง
-    ที่เขียนไว้ใน docstring ของ :mod:`app.repository` เอง
-    สาเหตุอยู่ใน :func:`test_search_documents_root_cause_is_whole_string_similarity`
+    เดิม ``similarity()`` เทียบคำค้นสั้นกับ ``keywords`` ทั้งก้อน → 0 แถวทุกคำ
+    (ดู :func:`test_search_documents_root_cause_is_whole_string_similarity`)
+    ตอนนี้ ``word_similarity`` สองทิศทางให้ผลตามที่ผู้ใช้คาด
+
+    ``ดรอป``/``ใบรับรอง`` ยังได้ 0 แถว — นั่นคือ **ช่องว่างของข้อมูล**
+    (คลังไม่มีเอกสารเรื่องนั้นเลย) ไม่ใช่บั๊กของ query
     """
-    for keyword in ("กยศ", "กู้ยืม", "ดรอป", "ฝึกงาน", "ปฏิทิน", "ใบรับรอง"):
-        assert run(repo.search_documents(live_db, keyword)) == [], keyword
+    found = {
+        keyword: [row["title"] for row in run(repo.search_documents(live_db, keyword))]
+        for keyword in ("กยศ", "กู้ยืม", "ฝึกงาน", "ปฏิทิน", "ดรอป", "ใบรับรอง")
+    }
+
+    assert len(found["กยศ"]) == 5
+    assert len(found["กู้ยืม"]) == 4
+    assert len(found["ฝึกงาน"]) == 3
+    assert found["ปฏิทิน"] == ["ปฏิทินการศึกษา (ระบบบริการการศึกษา)"]
+    assert all(title.startswith(("1", "หน้ารวม")) for title in found["กยศ"]), found["กยศ"]
+    # ช่องว่างของข้อมูล ไม่ใช่ของ query — บันทึกไว้ให้รอบ re-scrape เก็บเพิ่ม
+    assert found["ดรอป"] == []
+    assert found["ใบรับรอง"] == []
 
 
-def test_search_documents_does_not_tolerate_thai_misspelling(
+def test_search_documents_tolerates_thai_misspelling(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    พิมพ์ผิดทีละตัวก็หาไม่เจอ (``ลงทะเบียง`` / ``ทุนการศึกส``)
+    พิมพ์ผิดทีละตัวยังเจอ — **เคยเป็นบั๊กที่แก้แล้ว** (เดิมได้ 0 แถว)
 
-    เทียบกับ :func:`test_search_instructors_tolerates_misspelling` ที่ทนได้
-    ต่างกันเพราะ ``name_normalized`` สั้น แต่ ``keywords`` เป็นสตริงยาว
+    ``ลงทะเบียง`` → 0.8, ``ทุนการศึกส`` → 0.818 ทั้งคู่ผ่านเกณฑ์
+    แต่คะแนนต่ำกว่าตอนสะกดถูก (1.0) → ลำดับยังบอกความมั่นใจได้
     """
-    assert run(repo.search_documents(live_db, "ลงทะเบียง")) == []
-    assert run(repo.search_documents(live_db, "ทุนการศึกส")) == []
-    # สะกดถูกเจอ — ยืนยันว่าไม่ใช่เพราะไม่มีเอกสารในหมวดนั้น
-    assert len(run(repo.search_documents(live_db, "ทุนการศึกษา"))) == 1
+    misspelled = run(repo.search_documents(live_db, "ลงทะเบียง"))
+    assert [row["title"] for row in misspelled] == [
+        "เอกสารขอยืนยันลงทะเบียนเรียน (ล่าช้า)",
+        "ปฏิทินการศึกษา (ระบบบริการการศึกษา)",
+    ]
+    assert misspelled[0]["score"] == pytest.approx(0.8)
+
+    scholarship = run(repo.search_documents(live_db, "ทุนการศึกส"))
+    assert [row["title"] for row in scholarship] == [
+        "ข่าวทุนการศึกษา คณะวิทยาศาสตร์และเทคโนโลยี"
+    ]
+    # สะกดถูกได้คะแนนสูงกว่าเสมอ
+    correct = run(repo.search_documents(live_db, "ทุนการศึกษา"))
+    assert correct[0]["title"] == scholarship[0]["title"]
+    assert correct[0]["score"] > scholarship[0]["score"]
 
 
 def test_search_documents_root_cause_is_whole_string_similarity(
@@ -382,7 +416,9 @@ def test_search_instructors_finds_by_partial_first_name(
     }
     assert rows[0]["full_name"] == "ผู้ช่วยศาสตราจารย์ ดร.ธรัช อารีราษฎร์"
     assert rows[0]["email"] == "dr.tharach@rmu.ac.th"
-    assert rows[0]["score"] == pytest.approx(1 / 3, abs=1e-6)
+    # ชื่อต้นตรงทั้งคำใน ``name_normalized`` → 1.0
+    # (ตอนใช้ ``similarity()`` ได้แค่ 1/3 เพราะเทียบกับชื่อ-นามสกุลทั้งก้อน)
+    assert rows[0]["score"] == pytest.approx(1.0)
 
 
 def test_search_instructors_finds_by_partial_surname(
@@ -393,7 +429,7 @@ def test_search_instructors_finds_by_partial_surname(
     assert [row["full_name"] for row in rows] == [
         "ผู้ช่วยศาสตราจารย์ ดร.ธรัช อารีราษฎร์"
     ]
-    assert rows[0]["score"] == pytest.approx(2 / 3, abs=1e-6)
+    assert rows[0]["score"] == pytest.approx(1.0)
 
 
 def test_search_instructors_tolerates_misspelling(
@@ -412,36 +448,46 @@ def test_search_instructors_tolerates_misspelling(
     assert rows[0]["score"] > 0.6
 
 
-def test_search_instructors_one_letter_typo_can_still_miss(
+def test_search_instructors_tolerates_one_letter_typo(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    ข้อจำกัดที่ต้องรู้ก่อนต่อชั้น FAQ: ``วีระพล`` (จริงคือ ``วีระพน``) หาไม่เจอ
+    ``วีระพล`` (จริงคือ ``วีระพน``) ต้องเจอ — **เคยเป็นบั๊กที่แก้แล้ว**
 
-    คะแนน 0.2778 ต่ำกว่าเกณฑ์ 0.3 อยู่นิดเดียว — ถ้าจะให้ทนกว่านี้ต้องลด
-    ``pg_trgm.similarity_threshold`` หรือเปลี่ยนไปใช้ ``word_similarity``
+    เก็บการวัดด้วย ``similarity()`` ไว้เป็นหลักฐานว่าทำไมต้องเปลี่ยนตัวดำเนินการ:
+    ค่าเดิม 0.2778 ต่ำกว่าเกณฑ์ 0.3 อยู่นิดเดียว → หาไม่เจอ
+    ``word_similarity`` ให้ 0.714 กับชื่อเดียวกัน → เจอ
     """
-    assert run(repo.search_instructors(live_db, "วีระพล")) == []
+    rows = run(repo.search_instructors(live_db, "วีระพล"))
 
-    row = run(
+    assert [row["full_name"] for row in rows] == ["อาจารย์ ดร.วีระพน ภานุรักษ์"]
+    assert rows[0]["score"] == pytest.approx(0.714286, abs=1e-6)
+
+    old_operator = run(
         live_db.fetch_one(
             "SELECT max(similarity(name_normalized, %s)) AS best FROM instructors",
             ("วีระพล",),
         )
     )
-    assert row is not None and 0.27 < row["best"] < 0.3
+    assert old_operator is not None and 0.27 < old_operator["best"] < 0.3
 
 
-def test_search_instructors_orders_by_score_desc(
+def test_search_instructors_orders_by_score_then_name(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
+    """
+    นามสกุลเดียวกันสองคน → คะแนนเท่ากัน (1.0) แล้วตัดสินด้วย ``full_name``
+
+    collation ``C.UTF-8`` เรียงตาม code point → ``ว`` (U+0E27) มาก่อน
+    ``เ`` (U+0E40) ดังนั้น "วีระพน" ขึ้นก่อน "เดือนเพ็ญ" ไม่ใช่ลำดับตามพยัญชนะไทย
+    """
     rows = run(repo.search_instructors(live_db, "ภานุรักษ์"))
 
     assert [row["full_name"] for row in rows] == [
         "อาจารย์ ดร.วีระพน ภานุรักษ์",
         "อาจารย์ ดร.เดือนเพ็ญ ภานุรักษ์",
     ]
-    assert rows[0]["score"] > rows[1]["score"]
+    assert [row["score"] for row in rows] == [pytest.approx(1.0), pytest.approx(1.0)]
 
     assert len(run(repo.search_instructors(live_db, "ภานุรักษ์", limit=1))) == 1
 
@@ -656,10 +702,217 @@ def test_latest_term_agrees_with_max_over_offerings(
     assert sum(row["offerings"] for row in grouped) == 337
 
 
+# ── บทสนทนา + โหมดปรึกษา AI (ทางเขียน — ใช้ fixture test_user) ─────────────
+#
+# กลุ่มนี้ต่างจากข้างบนตรงที่ต้อง INSERT/UPDATE จริง (ensure_user,
+# insert_chat_log, ai_sessions) — ``row_count_guard`` ใน conftest จะ
+# เทียบจำนวนแถวทั้ง 20 ตารางก่อน/หลัง session ให้ถ้ามีอะไรค้าง
+
+
+def test_ensure_user_inserts_once_then_upserts_same_id(
+    live_db: Database, run: Callable[..., Any], test_user: int
+) -> None:
+    """``ON CONFLICT DO UPDATE`` ต้องคืน id เดิม ไม่ใช่แถวที่สอง"""
+    from .conftest import TEST_HASH_PREFIX
+
+    first = run(repo.ensure_user(live_db, TEST_HASH_PREFIX + "user"))
+    second = run(repo.ensure_user(live_db, TEST_HASH_PREFIX + "user"))
+
+    assert first == second == test_user
+
+
+def test_chat_log_round_trips_with_null_user(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    ``user_id=NULL`` ได้ (event ใน group ไม่มี userId)
+
+    **บันทึกความเข้าใจผิดที่ง่ายจะเกิด**: ``insert_chat_log`` คืน
+    ``cursor.rowcount`` (= 1) **ไม่ใช่ id ของแถว** เพราะ SQL ไม่มี
+    ``RETURNING`` และ ``Database.execute`` คืน rowcount — ใครจะเอา id
+    ไปใช้ต่อต้องเติม ``RETURNING id`` แล้วใช้ ``fetch_one``
+    """
+    affected = run(
+        repo.insert_chat_log(
+            live_db,
+            user_id=None,
+            message_text="itest-ข้อความจาก group",
+            answered_by="fallback",
+            intent_key=None,
+            confidence=None,
+            response_text="ขออภัยครับ ระบบยังไม่พบข้อมูล...",
+            citations=None,
+            latency_ms=None,
+            llm_model=None,
+            prompt_tokens=None,
+            output_tokens=None,
+        )
+    )
+    assert affected == 1, "คืนจำนวนแถวที่กระทบ ไม่ใช่ id"
+
+    row = run(
+        live_db.fetch_one(
+            "SELECT user_id, message_text, answered_by, citations FROM chat_logs"
+            " WHERE message_text = %s",
+            ("itest-ข้อความจาก group",),
+        )
+    )
+    assert row == {
+        "user_id": None,
+        "message_text": "itest-ข้อความจาก group",
+        "answered_by": "fallback",
+        "citations": None,
+    }
+
+    # แถวนี้ไม่มี FK → cleanup ตาม hash กวาดไม่เจอ ต้องลบเองที่นี่
+    # (ถ้าลืม ``row_count_guard`` จะฟ้องตอน teardown ของ session)
+    deleted = run(
+        live_db.fetch_all(
+            "DELETE FROM chat_logs WHERE message_text = %s RETURNING id",
+            ("itest-ข้อความจาก group",),
+        )
+    )
+    assert len(deleted) == 1
+
+
+def test_chat_log_stores_citations_as_jsonb_and_token_counts(
+    live_db: Database, run: Callable[..., Any], test_user: int
+) -> None:
+    """
+    ``citations`` ต้องกลับมาเป็น object ของ Python และคอลัมน์ต้นทุน LLM
+    ต้องเก็บได้จริง (ใช้วัดผลธีสิส: ต้นทุน token ต่อคำตอบ)
+    """
+    payload = [{"title": "ระเบียบการลงทะเบียน", "url": "https://sci.rmu.ac.th/?p=1"}]
+    run(
+        repo.insert_chat_log(
+            live_db,
+            user_id=test_user,
+            message_text="ปรึกษา อ่านหนังสือยังไง",
+            answered_by="ai_chat",
+            intent_key="ai_chat",
+            confidence=None,
+            response_text="แนะนำให้อ่านเป็นรอบสั้น ๆ ครับ",
+            citations=payload,
+            latency_ms=1234,
+            llm_model="gemini-3.5-flash-lite",
+            prompt_tokens=120,
+            output_tokens=40,
+        )
+    )
+
+    row = run(
+        live_db.fetch_one(
+            "SELECT citations, latency_ms, llm_model, prompt_tokens, output_tokens"
+            " FROM chat_logs WHERE user_id = %s",
+            (test_user,),
+        )
+    )
+    assert row is not None
+    assert row["citations"] == payload  # jsonb → list[dict] ไม่ใช่สตริง
+    assert row["latency_ms"] == 1234
+    assert row["llm_model"] == "gemini-3.5-flash-lite"
+    assert (row["prompt_tokens"], row["output_tokens"]) == (120, 40)
+
+
+def test_recent_chat_returns_only_ai_rows_newest_last(
+    live_db: Database, run: Callable[..., Any], test_user: int
+) -> None:
+    """
+    กรองเฉพาะ ``answered_by='ai_chat'`` ที่มี ``response_text`` และเรียง
+    เก่า → ใหม่ (LLM ต้องได้บริบทตามลำดับจริง)
+    """
+    for index, answered_by in enumerate(
+        ["rich_menu", "ai_chat", "search", "ai_chat", "ai_chat"], start=1
+    ):
+        run(
+            repo.insert_chat_log(
+                live_db,
+                user_id=test_user,
+                message_text=f"คำถามที่ {index}",
+                answered_by=answered_by,
+                intent_key="ai_chat" if answered_by == "ai_chat" else None,
+                confidence=None,
+                response_text=f"คำตอบที่ {index}" if answered_by == "ai_chat" else None,
+                citations=None,
+                latency_ms=None,
+                llm_model="gemini-3.5-flash-lite" if answered_by == "ai_chat" else None,
+                prompt_tokens=None,
+                output_tokens=None,
+            )
+        )
+
+    rows = run(repo.recent_chat(live_db, test_user, turns=10))
+
+    assert [row["message_text"] for row in rows] == ["คำถามที่ 2", "คำถามที่ 4", "คำถามที่ 5"]
+    # LIMIT ทำงานจริง — ขอ 2 ได้ 2 ล่าสุด (เก่า → ใหม่)
+    assert [row["message_text"] for row in run(repo.recent_chat(live_db, test_user, 2))] == [
+        "คำถามที่ 4",
+        "คำถามที่ 5",
+    ]
+
+
+def test_ai_session_lifecycle_open_touch_end(
+    live_db: Database, run: Callable[..., Any], test_user: int
+) -> None:
+    """
+    วนครบ 4 ฟังก์ชัน ai_sessions บน DB จริง:
+
+    เปิด → ไม่ซ้ำ (NOT EXISTS atomically) → อ่านได้ทั้งทาง user_id/hash →
+    touch นับรอบ → ปิดด้วยเหตุผลที่ CHECK constraint รับ
+    """
+    from .conftest import TEST_HASH_PREFIX
+
+    hash_value = TEST_HASH_PREFIX + "user"
+    session_id = run(repo.open_ai_session(live_db, hash_value))
+    assert session_id > 0
+
+    # เปิดซ้ำระหว่างยังเปิดอยู่ = RETURNING ไม่คืนแถว → ``int(row["id"])``
+    # พัง — ผู้เรียกต้องเช็ค active_ai_session_by_hash ก่อนเสมอ (dispatch ทำ)
+    with pytest.raises(Exception):
+        run(repo.open_ai_session(live_db, hash_value))
+
+    by_user = run(repo.active_ai_session(live_db, test_user))
+    by_hash = run(repo.active_ai_session_by_hash(live_db, hash_value))
+    assert by_user is not None and by_user["id"] == session_id
+    assert by_user["turn_count"] == 0
+    assert by_hash is not None and by_hash["id"] == session_id
+
+    touched = run(repo.touch_ai_session(live_db, session_id))
+    assert touched == 1
+    by_hash = run(repo.active_ai_session_by_hash(live_db, hash_value))
+    assert by_hash is not None and by_hash["turn_count"] == 1
+
+    ended = run(repo.end_ai_session(live_db, session_id, "button"))
+    assert ended == 1
+    assert run(repo.active_ai_session(live_db, test_user)) is None
+    assert run(repo.active_ai_session_by_hash(live_db, hash_value)) is None
+
+    reason = run(
+        live_db.fetch_one("SELECT end_reason FROM ai_sessions WHERE id = %s", (session_id,))
+    )
+    assert reason == {"end_reason": "button"}
+
+
+def test_ai_session_end_rejects_unknown_reason(
+    live_db: Database, run: Callable[..., Any], test_user: int
+) -> None:
+    """CHECK constraint ของ migration 002 ต้องบังคับจริงกับ DB ไม่ใช่แค่ใน SQL"""
+    from .conftest import TEST_HASH_PREFIX
+
+    session_id = run(repo.open_ai_session(live_db, TEST_HASH_PREFIX + "user"))
+    with pytest.raises(Exception) as failure:
+        run(repo.end_ai_session(live_db, session_id, "เหตุผลมั่ว"))
+    assert "end_reason" in str(failure.value) or "check" in str(failure.value).lower()
+
+    # ปิดจริงให้เรียบร้อย — ไม่งั้น session ค้างจะพาเทสถัดไปงง
+    run(repo.end_ai_session(live_db, session_id, "button"))
+
+
 # ── ยามเฝ้าความครบถ้วน ───────────────────────────────────────────────────────
 
 COVERED_FUNCTIONS = frozenset(
     {
+        # ทางอ่าน (ข้อมูล seed)
         "document_categories",
         "documents_in_category",
         "search_documents",
@@ -671,6 +924,15 @@ COVERED_FUNCTIONS = frozenset(
         "course_by_code",
         "offerings_for_course",
         "latest_term",
+        # ทางเขียน (บทสนทนา + โหมดปรึกษา AI)
+        "ensure_user",
+        "insert_chat_log",
+        "recent_chat",
+        "open_ai_session",
+        "active_ai_session",
+        "active_ai_session_by_hash",
+        "touch_ai_session",
+        "end_ai_session",
     }
 )
 
@@ -691,5 +953,7 @@ def test_every_repository_function_is_covered_by_this_module() -> None:
 
     source = inspect.getsource(inspect.getmodule(test_every_repository_function_is_covered_by_this_module))
     for name in COVERED_FUNCTIONS:
-        assert f"repo.{name}(live_db" in source, f"ยังไม่มีเทสที่เรียก repo.{name}()"
+        # ยอมให้ขึ้นบรรทัดใหม่หลังวงเล็บได้ (ฟังก์ชันทางเขียนมี argument เยอะ)
+        called = re.search(rf"repo\.{name}\(\s*live_db", source)
+        assert called, f"ยังไม่มีเทสที่เรียก repo.{name}()"
 

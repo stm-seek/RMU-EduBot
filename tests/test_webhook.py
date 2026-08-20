@@ -518,18 +518,15 @@ def llm_response(text: str = "แนะนำให้อ่านเป็น�
 
 async def test_ai_chat_answers_and_logs_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    พิมพ์คำถามทั่วไป → ตอบด้วย LLM → บันทึก ``chat_logs`` พร้อม
+    พิมพ์ "ปรึกษา ..." → เข้าโหมด + ตอบด้วย LLM → บันทึก ``chat_logs`` พร้อม
     ``answered_by='ai_chat'`` + ต้นทุน token (ใช้วัดผลธีสิสได้จริง)
     """
     from app.llm import LlmClient
 
     from .helpers import FakeWriteDatabase
 
-    class HistoryDb(FakeWriteDatabase):
-        """INSERT/RETURNING คืนแถว ส่วน SELECT ประวัติคืนว่าง"""
-
     line_recorder = Recorder((200, {}))
-    db = HistoryDb({"RETURNING id": {"id": 9}, "FROM chat_logs": []})
+    db = FakeWriteDatabase({"RETURNING id": {"id": 9}, "FROM chat_logs": []})
     monkeypatch.setattr(main, "_http", line_recorder.client())
     monkeypatch.setattr(main, "_db", db)
 
@@ -539,7 +536,7 @@ async def test_ai_chat_answers_and_logs_tokens(monkeypatch: pytest.MonkeyPatch) 
     )
 
     settings = sending_settings(llm_api_key="k")
-    await main.process_event(message_event("อ่านหนังสือก่อนสอบยังไงดี"), settings)
+    await main.process_event(message_event("ปรึกษา อ่านหนังสือก่อนสอบยังไงดี"), settings)
 
     # ข้อความจาก LLM ถูกส่งกลับผ่าน reply
     assert line_recorder.paths() == [REPLY_PATH]
@@ -557,13 +554,50 @@ async def test_ai_chat_answers_and_logs_tokens(monkeypatch: pytest.MonkeyPatch) 
     assert params[0] == 9  # user_id จาก ensure_user
 
 
+async def test_search_miss_without_mode_does_not_call_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    กัน token: search ไม่เจอต้อง **ไม่ยิง LLM** — ตอบ fallback พร้อมปุ่ม
+    "ปรึกษา AI" ให้ user เลือกเข้าโหมดเอง
+    """
+    from app.llm import LlmClient
+
+    from .helpers import FakeWriteDatabase
+
+    line_recorder = Recorder((200, {}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 9}})
+    monkeypatch.setattr(main, "_http", line_recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    llm_recorder = Recorder((200, llm_response()))
+    monkeypatch.setattr(
+        main, "_llm", LlmClient(sending_settings(llm_api_key="k"), llm_recorder.client())
+    )
+
+    await main.process_event(
+        message_event("อ่านหนังสือก่อนสอบยังไงดี"), sending_settings(llm_api_key="k")
+    )
+
+    assert llm_recorder.count == 0, "ยังไม่เข้าโหมด ห้ามเสีย token"
+    params = db.executed_for("INSERT INTO chat_logs")
+    assert params[2] == "fallback"
+    labels = [
+        item["action"]["label"]
+        for item in line_recorder.json_body()["messages"][0]["quickReply"]["items"]
+    ]
+    assert "ปรึกษา AI" in labels
+
+
 async def test_ai_chat_remembers_context_per_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    รอบที่สองต้องดึงประวัติรอบแรกจาก ``chat_logs`` มาใส่ใน messages
-    ที่ส่งให้ LLM — และดึงด้วย ``user_id`` ของคนนี้เท่านั้น
+    รอบที่สอง (ระหว่างอยู่ในโหมด) ต้องดึงประวัติรอบแรกจาก ``chat_logs``
+    มาใส่ใน messages ที่ส่งให้ LLM — และดึงด้วย ``user_id`` ของคนนี้เท่านั้น
     """
+    from datetime import datetime, timezone
+
     from app.llm import LlmClient
 
     from .helpers import FakeWriteDatabase
@@ -572,7 +606,18 @@ async def test_ai_chat_remembers_context_per_user(
     history_rows = [
         {"message_text": "เพิ่งเข้ามหาลัยควรปรับตัวยังไง", "response_text": "ตอบรอบแรก"},
     ]
-    db = FakeWriteDatabase({"RETURNING id": {"id": 5}, "FROM chat_logs": history_rows})
+    db = FakeWriteDatabase(
+        {
+            "RETURNING id": {"id": 5},
+            "FROM chat_logs": history_rows,
+            # มี session เปิดอยู่ — ข้อความนี้ถึงเข้าทาง LLM
+            "JOIN app_users": {
+                "id": 4,
+                "last_active_at": datetime.now(timezone.utc),
+                "turn_count": 1,
+            },
+        }
+    )
     monkeypatch.setattr(main, "_http", line_recorder.client())
     monkeypatch.setattr(main, "_db", db)
 
@@ -593,3 +638,27 @@ async def test_ai_chat_remembers_context_per_user(
     assert "ตอบรอบแรก" in contents
     assert "แล้วต้องทำยังไงอีก" in contents
     assert request_body["messages"][0]["role"] == "system"
+
+
+async def test_ai_session_postback_opens_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """กดปุ่ม "ปรึกษา AI" → ได้ข้อความเปิดโหมด + เขียน ai_sessions"""
+    from app.llm import LlmClient
+
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((200, {}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 11}})
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+    monkeypatch.setattr(
+        main, "_llm",
+        LlmClient(sending_settings(llm_api_key="k"), Recorder((200, llm_response())).client()),
+    )
+
+    await main.process_event(
+        postback_event("action=ai_session"), sending_settings(llm_api_key="k")
+    )
+
+    assert "โหมดปรึกษาเปิดแล้ว" in recorder.json_body()["messages"][0]["text"]
+    inserts = [sql for sql, _ in db.calls if "INSERT INTO ai_sessions" in sql]
+    assert inserts, "ต้องเปิดแถว ai_sessions"

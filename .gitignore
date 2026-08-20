@@ -32,6 +32,9 @@ desktop.ini
 .webhook-endpoint.bak
 .server.*.log
 .cf.*.log
+# log ของ uvicorn/cloudflared ที่ Start-Process เขียนไว้ (ชื่อไม่มีจุดนำหน้า)
+server.out.log
+server.err.log
 .claude/
 .funnel.log
 .tslog.txt

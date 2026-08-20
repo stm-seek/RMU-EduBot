@@ -227,6 +227,10 @@ POSTBACK_HANDLERS: dict[str, str] = {
     "instructors": "ติดต่ออาจารย์",
     "loan": "ทุน/กู้ยืม",
     "menu": "เมนูหลัก",
+    # โหมดปรึกษา AI — เข้า/ออกชัด ๆ เพื่อกันเสีย token ฟรีกับทุก search miss
+    # (เงื่อนไข+กติกาทั้งหมดอยู่ที่ app/ai_chat.py::dispatch)
+    "ai_session": "ปรึกษา AI",
+    "ai_end": "จบการปรึกษา",
 }
 
 # ชื่อหมวดเอกสารเป็นภาษาไทย — ต้องไม่เกิน 20 ตัวอักษรเพราะใช้เป็น label ของปุ่ม
@@ -263,29 +267,62 @@ def category_label(category: str) -> str:
     return DOCUMENT_CATEGORY_LABELS.get(category, category)
 
 
-async def handle_postback(data: str, db: SupportsQuery | None = None) -> RouteResult:
+async def handle_postback(
+    data: str,
+    db: SupportsQuery | None = None,
+    *,
+    settings: Any | None = None,
+    llm: Any | None = None,
+    user_hash: str | None = None,
+) -> RouteResult:
     """
     จัดการ postback event — ชั้นที่ 1
 
     handler ที่ต้องใช้ DB จะเช็ค ``db is None`` ก่อนเสมอ แล้วตอบว่าไม่มีข้อมูล
     ส่วนกรณี DB ล่ม *ระหว่าง* ใช้งาน :func:`_guard` จะดักให้
+
+    ``settings``/``llm``/``user_hash`` ใช้เฉพาะปุ่มโหมดปรึกษา (``ai_session``
+    / ``ai_end``) — ปุ่มอื่นไม่แตะ LLM เลย (keyword-only + ``None`` ได้
+    เหมือน :func:`handle_text` เทสเดิมเรียกแบบเก่าได้เหมือนเดิม)
     """
     params = parse_postback_data(data)
     action = params.get("action", "")
     return await _guard(
-        _dispatch_postback(data, action, params, db),
+        _dispatch_postback(
+            data, action, params, db,
+            settings=settings, llm=llm, user_hash=user_hash,
+        ),
         topic="ที่ขอ",
         intent_key=action or None,
     )
 
 
 async def _dispatch_postback(
-    data: str, action: str, params: dict[str, str], db: SupportsQuery | None
+    data: str,
+    action: str,
+    params: dict[str, str],
+    db: SupportsQuery | None,
+    *,
+    settings: Any | None = None,
+    llm: Any | None = None,
+    user_hash: str | None = None,
 ) -> RouteResult:
     """``data`` ดิบส่งมาด้วยเพื่อให้ log บอกได้ว่า postback ที่ไม่รู้จักหน้าตาแบบไหน"""
     if action not in POSTBACK_HANDLERS:
         log.warning("postback ที่ไม่รู้จัก: %r", data)
         return _fallback()
+
+    if action in ("ai_session", "ai_end"):
+        from . import ai_chat
+
+        result = await ai_chat.dispatch(
+            settings, llm, db, user_hash, "",
+            is_session_postback=(action == "ai_session"),
+            is_end_postback=(action == "ai_end"),
+        )
+        # เงื่อนไขไม่ครบ (ปิดสวิตช์/ไม่มี key/ไม่มี DB) → ตอบ fallback
+        # ดีกว่าเงียบหาย (user กดปุ่มของเราแล้วต้องได้คำตอบเสมอ)
+        return result or _fallback(action)
 
     if action == "menu":
         return await handle_follow(intent_key="menu")
@@ -576,11 +613,12 @@ async def handle_text(
     """
     จัดการข้อความที่ user พิมพ์เอง
 
-    ทำแล้ว: **รหัสวิชา 7 หลัก** → ตอบจาก DB ตรง ๆ, และ **ค้นด้วยคำที่พิมพ์มา**
+    ทำแล้ว: **รหัสวิชา 7 หลัก** → ตอบจาก DB ตรง ๆ, **โหมดปรึกษา AI**
+    (ดักก่อน search — ดู :mod:`app.ai_chat`), และ **ค้นด้วยคำที่พิมพ์มา**
     (``pg_trgm`` word_similarity) → เอกสาร/อาจารย์ ทั้งสองทางยังเป็นชั้นที่ 1
     คือตอบจากฐานข้อมูลตรง ๆ
-    ชั้นที่ 3: ค้นไม่เจอและเงื่อนไขครบ → **AI Chat** (``app/ai_chat.py``)
-    ตอบคำถามทั่วไปด้านการเรียนด้วย LLM พร้อมจำบริบทแยกตามผู้ใช้
+    search ไม่เจอ → ตอบ fallback พร้อม **ปุ่ม "ปรึกษา AI"** (ไม่ยิง LLM
+    ทันทีทุกข้อความ กันเสีย token ฟรีกับพิมพ์ผิด/คำทักทาย)
     ยังไม่ทำ: FAQ ที่คนเขียนคำตอบไว้ (ชั้น 2) และ RAG (ตาราง ``rag_chunks`` ว่าง)
 
     ``settings``/``llm``/``user_hash`` เป็น keyword-only และ ``None`` ได้ —
@@ -610,38 +648,49 @@ async def _dispatch_text(
     if match:
         return await _course_answer(db, match.group(1))
 
+    # ── ชั้นที่ 3: โหมดปรึกษา AI — ตรวจก่อน search ─────────────────────────
+    # ข้อความระหว่างอยู่ในโหมดต้องตอบด้วย LLM (คนในโหมดต้องการคำตอบ
+    # ไม่ใช่ลิงก์เอกสาร) และคำออก/คำเข้าโหมดต้องถูกดักก่อน search เช่นกัน
+    # ถ้าไม่มี session เปิดอยู่และไม่ได้เข้าโหมด dispatch คืน ``None``
+    # แล้วไหลไป search ตามปกติ
+    # import ตรงนี้ไม่ใช่บนไฟล์ เพราะ ``ai_chat`` import RouteResult จากไฟล์นี้
+    # กลับไป (circular import)
+    from . import ai_chat
+    from .llm import LlmError
+
+    try:
+        result = await ai_chat.dispatch(settings, llm, db, user_hash, cleaned)
+    except LlmError:
+        # LLM timeout/429/ตอบว่าง — บอกตรง ๆ ว่าระบบ AI ขัดข้อง
+        # แย่กว่าตอบว่าไม่มีข้อมูลนิดเดียว แต่ดีกว่าเงียบหายแน่นอน
+        log.warning("AI Chat ไม่สำเร็จ — ตอบขัดข้องแทน", exc_info=True)
+        return RouteResult(
+            messages=[
+                msg.text_message(
+                    "ขออภัยครับ ตอนนี้ระบบตอบด้วย AI ขัดข้องชั่วคราว\n"
+                    "รบกวนลองอีกครั้งในอีกสักครู่ หรือเลือกหัวข้อจากปุ่มด้านล่างครับ",
+                    _menu_quick_reply(),
+                )
+            ],
+            answered_by="fallback",
+            intent_key="ai_chat_error",
+        )
+    if result is not None:
+        return result
+
     if db is not None:
         found = await _search_answer(db, cleaned)
         if found is not None:
             return found
 
-    # ── ชั้นที่ 3: AI Chat ────────────────────────────────────────────────
-    # import ตรงนี้ไม่ใช่บนไฟล์ เพราะ ``ai_chat`` import RouteResult จากไฟล์นี้
-    # กลับไป (circular import) — และ router ตอนไม่มี LLM ก็ไม่จำเป็นต้องโหลด
-    if settings is not None and llm is not None:
-        from . import ai_chat
-        from .llm import LlmError
-
-        try:
-            result = await ai_chat.answer(settings, llm, db, user_hash, cleaned)
-            if result is not None:
-                return result
-        except LlmError:
-            # LLM timeout/429/ตอบว่าง — บอกตรง ๆ ว่าระบบ AI ขัดข้อง
-            # แย่กว่าตอบว่าไม่มีข้อมูลนิดเดียว แต่ดีกว่าเงียบหายแน่นอน
-            log.warning("AI Chat ไม่สำเร็จ — ตอบขัดข้องแทน", exc_info=True)
-            return RouteResult(
-                messages=[
-                    msg.text_message(
-                        "ขออภัยครับ ตอนนี้ระบบตอบด้วย AI ขัดข้องชั่วคราว\n"
-                        "รบกวนลองอีกครั้งในอีกสักครู่ หรือเลือกหัวข้อจากปุ่มด้านล่างครับ",
-                        _menu_quick_reply(),
-                    )
-                ],
-                answered_by="fallback",
-                intent_key="ai_chat_error",
-            )
-
+    # search ไม่เจอ — เสนอทางเข้าโหมดปรึกษา AI (ถ้าชั้นนั้นพร้อม) แทนการยิง
+    # LLM ทันทีทุกข้อความ: กันเสีย token ฟรีกับพิมพ์ผิด/คำทักทาย/คำถามที่
+    # LLM ก็ต้องตอบว่าไม่มีข้อมูลอยู่ดี
+    extra = (
+        [msg.CONSULT_AI_ACTION]
+        if settings is not None and llm is not None and settings.ai_chat_enabled
+        else []
+    )
     return RouteResult(
         messages=[
             msg.text_message(
@@ -650,7 +699,7 @@ async def _dispatch_text(
                 "ตอนนี้ค้นได้: ชื่อเอกสาร/แบบฟอร์มคำร้อง, ชื่ออาจารย์,\n"
                 "และรหัสวิชา 7 หลัก\n"
                 "หรือเลือกหัวข้อจากปุ่มด้านล่างครับ",
-                _menu_quick_reply(),
+                _menu_quick_reply(*extra),
             )
         ],
         answered_by="fallback",

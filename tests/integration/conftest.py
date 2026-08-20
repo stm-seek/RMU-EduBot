@@ -26,8 +26,9 @@ fixture ของเทสที่ยิง Postgres จริง
 
 3. **read-only กับข้อมูล seed** — ห้าม INSERT/UPDATE/DELETE 10 ตารางที่ seed มา
    เขียนได้แค่ตารางปฏิบัติการที่ยังว่าง (``app_users``, ``chat_logs``,
-   ``liff_sessions``, ``user_completed_courses``) และต้องลบทิ้งใน teardown
-   :func:`row_count_guard` เทียบจำนวนแถวทั้ง 19 ตารางก่อน/หลัง session ให้
+   ``liff_sessions``, ``user_completed_courses``, ``ai_sessions``)
+   และต้องลบทิ้งใน teardown
+   :func:`row_count_guard` เทียบจำนวนแถวทั้ง 20 ตารางก่อน/หลัง session ให้
    ถ้าไม่เท่ากันจะ error ตอน teardown
 """
 
@@ -51,7 +52,8 @@ T = TypeVar("T")
 
 OPT_IN_ENV = "RMU_DB_TESTS"
 
-# ตารางทั้งหมดใน 001_init.sql — ใช้เทียบจำนวนแถวก่อน/หลัง session
+# ตารางทั้งหมดใน migration ทุกไฟล์ (001 + 002) — ใช้เทียบจำนวนแถว
+# ก่อน/หลัง session
 ALL_TABLES = (
     "programs",
     "categories",
@@ -72,6 +74,7 @@ ALL_TABLES = (
     "chat_logs",
     "liff_sessions",
     "user_completed_courses",
+    "ai_sessions",
 )
 
 # prefix ของแถวทดสอบ — teardown ลบตาม prefix นี้เท่านั้น
@@ -210,6 +213,11 @@ async def cleanup_test_rows(db: Database) -> None:
     if not ids:
         return
     keys = [row["id"] for row in ids]
+    # ai_sessions cascade จาก app_users อยู่แล้ว แต่ลบตรง ๆ ก่อนเพื่อไม่ให้
+    # row_count_guard เห็นแถวค้างระหว่างทางถ้า cascade ล้มเหลว
+    await db.fetch_all(
+        "DELETE FROM ai_sessions WHERE user_id = ANY(%s) RETURNING id", (keys,)
+    )
     await db.fetch_all(
         "DELETE FROM chat_logs WHERE user_id = ANY(%s) RETURNING id", (keys,)
     )

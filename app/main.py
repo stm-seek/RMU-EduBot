@@ -239,7 +239,13 @@ async def build_result(
 
     if event_type == "postback":
         data = (event.get("postback") or {}).get("data", "")
-        return await bot_router.handle_postback(data, db)
+        return await bot_router.handle_postback(
+            data,
+            db,
+            settings=settings,
+            llm=llm,
+            user_hash=user_hash,
+        )
 
     if event_type == "message":
         message = event.get("message") or {}

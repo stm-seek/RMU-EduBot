@@ -34,7 +34,7 @@ EXPECTED_SEED_ROWS = {
     "instructor_affiliations": 33,
 }
 
-# ตารางที่ตั้งใจให้ว่าง — ถ้ามีข้อมูลโผล่มา แปลว่ามีคนรัน seed อื่นทับ
+# ตารางที่ seed ตั้งใจปล่อยให้ว่าง — ถ้ามีข้อมูลโผล่มา แปลว่ามีคนรัน seed อื่นทับ
 # และค่าที่เทสอื่นคาดไว้ (เช่น prerequisites = 0) จะไม่จริงอีกต่อไป
 EXPECTED_EMPTY = (
     "prerequisites",
@@ -42,11 +42,19 @@ EXPECTED_EMPTY = (
     "faqs",
     "rag_chunks",
     "scrape_runs",
-    "app_users",
-    "chat_logs",
     "liff_sessions",
     "user_completed_courses",
 )
+
+# ตารางปฏิบัติการที่รับ traffic จริงได้ทันทีที่บอททำงาน (มี user เทสต์จริง
+# ใน LINE) → ห้าม assert ว่าว่าง แต่ต้องไม่มีแถวทดสอบ (prefix ``itest-``)
+# ค้างจากรอบที่พังกลางทาง — ถ้ามี แปลว่า cleanup ใน conftest ทำงานไม่ครบ
+OPERATIONAL_LEFTOVER_CHECKS = {
+    "app_users": "line_user_hash LIKE 'itest-%'",
+    "chat_logs": (
+        "user_id IN (SELECT id FROM app_users WHERE line_user_hash LIKE 'itest-%')"
+    ),
+}
 
 
 def test_loop_is_selector(selector_loop: Any) -> None:
@@ -121,6 +129,22 @@ def test_operational_table_is_empty(
 ) -> None:
     row = run(live_db.fetch_one(f"SELECT count(*) AS n FROM {table}"))
     assert row is not None and row["n"] == 0, f"{table} ต้องว่าง (ได้ {row})"
+
+
+@pytest.mark.parametrize("table,condition", sorted(OPERATIONAL_LEFTOVER_CHECKS.items()))
+def test_no_test_rows_left_in_operational_tables(
+    live_db: Database, run: Callable[..., Any], table: str, condition: str
+) -> None:
+    """
+    ตารางปฏิบัติการมีแถวจาก user จริงได้เสมอ — แค่ห้ามมี **แถวทดสอบค้าง**
+
+    ``conftest.cleanup_test_rows`` กวาดตาม prefix ``itest-`` อยู่แล้ว ถ้า
+    เทสนี้แดงแปลว่า teardown ของ session ก่อนหน้าไม่ทำงาน
+    """
+    row = run(
+        live_db.fetch_one(f"SELECT count(*) AS n FROM {table} WHERE {condition}")
+    )
+    assert row is not None and row["n"] == 0, f"{table} มีแถวทดสอบค้าง (ได้ {row})"
 
 
 def test_thai_text_round_trips_from_seed(

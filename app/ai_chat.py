@@ -4,6 +4,18 @@
 **ช่องว่างที่ไฟล์นี้ปิด**: ก่อนหน้านี้ ``app/llm.py`` ไม่มีใครเรียกนอกจากเทส
 (ยืนยันด้วย grep ทั้งทรี) ทั้งที่ชื่อโครงงานคือ "**AI** Academic Assistant"
 
+**โหมดปรึกษา (กันเสีย token ฟรี)**: LLM ตอบเฉพาะเมื่อ user "เข้าโหมด" แล้ว
+ไม่ใช่ทุกข้อความที่ search ไม่เจอ — เดิมพิมพ์ผิด/ทักเล่นก็ยิง LLM ทุกครั้ง
+เสียทั้งเงินและเวลาโดยไม่ได้คำตอบที่ดีกว่า fallback ทางเข้าโหมดมี 2 ทาง:
+
+* ปุ่ม "ปรึกษา AI" (postback ``action=ai_session``) — รู้ intent แน่นอน
+* พิมพ์ข้อความที่ขึ้นต้นด้วย "ปรึกษา" — กันคนไม่กดปุ่ม
+
+ทางออกมี 4 ทาง: กดปุ่มจบ / พิมพ์คำออก / ว่างเกิน
+``ai_chat_session_timeout_minutes`` / ครบ ``ai_chat_session_max_turns``
+สถานะโหมดอยู่ในตาราง ``ai_sessions`` — restart ไม่หาย และวัดผลธีสิสได้
+(จำนวน session, รอบเฉลี่ย, ออกด้วยเหตุผลอะไร)
+
 **ขอบเขตของชั้นนี้** (ซื่อสัตย์กับข้อมูลที่มี):
 
 * ตอบคำถามทั่วไปด้านการเรียน/ชีวิตมหาวิทยาลัย เช่น "เพิ่งเข้ามหาลัยควร
@@ -29,6 +41,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from . import repository as repo
 from .config import Settings
@@ -42,6 +55,15 @@ log = logging.getLogger("app.ai_chat")
 # ข้อความถาม/ตอบหนึ่งข้างยาวเกินนี้ในประวัติ = ตัดก่อนส่งเข้า LLM
 # กันข้อความพิเศษ (เช่น copy ยาว ๆ มาวาง) กินงบบริบททั้งก้อน
 HISTORY_ENTRY_LIMIT = 1_000
+
+# ── ทางเข้าโหมด ──────────────────────────────────────────────────────────────
+
+CONSULT_PREFIX = "ปรึกษา"
+
+# ── ทางออกโหมด ───────────────────────────────────────────────────────────────
+# ต้อง **match ทั้งข้อความ** (หลัง strip แล้วตรงตัวเท่านั้น) — ถ้าตรวจแบบ
+# contains คนพิมพ์ "อยากออกกลางคันต้องทำไง" จะหลุดออกจากโหมดโดยไม่ตั้งใจ
+EXIT_KEYWORDS = {"ออก", "จบ", "พอ", "พอแค่นี้", "หยุด"}
 
 # system prompt — เขียนเป็นกฎที่ "ห้าม" ชัด เพราะผลของการเดาข้อมูลราชการ
 # คือนักศึกษาเสียหายจริง (Requirement ข้อ 11 และ 14)
@@ -108,43 +130,218 @@ def build_messages(history: list[dict], question: str) -> list[dict]:
     ]
 
 
-async def answer(
-    settings: Settings,
-    llm: LlmClient,
+def _llm_capable(
+    settings: Settings | None,
+    llm: LlmClient | None,
+    db: SupportsQuery | None,
+    user_hash: str | None,
+) -> bool:
+    """
+    เงื่อนไขที่ต้องครบ **ทั้งหมด** ก่อนแตะเรื่อง session/LLM — ไม่ครบคืน
+    ``False`` เพื่อให้ผู้เรียกถอยเป็น fallback (ไม่ใช่ 500 ไม่ใช่เงียบ)
+
+    * ``settings``/``llm`` พร้อม (router ส่งมาทั้งคู่จึงจะใช้ชั้นนี้ได้)
+    * ``ai_chat_enabled`` ใน settings (สวิตช์ปิดทั้งชั้นได้)
+    * ตั้ง ``LLM_API_KEY`` แล้ว
+    * มี DB + ``user_hash`` — เพราะโหมด/บริบทสนทนาแยกตามผู้ใช้
+      ถ้าแยกไม่ได้ (เช่นคุยในกลุ่มที่ไม่มี userId) ยอมไม่ตอบ LLM
+      ดีกว่าจำบริบทปนกัน
+    """
+    if settings is None or llm is None:
+        return False
+    if not settings.ai_chat_enabled:
+        return False
+    if not settings.llm_api_key:
+        log.debug("ข้าม AI Chat — ยังไม่ได้ตั้ง LLM_API_KEY")
+        return False
+    if db is None or not user_hash:
+        log.debug("ข้าม AI Chat — ไม่มี DB หรือ user_hash (แยกบริบทไม่ได้)")
+        return False
+    return True
+
+
+def _strip_prefix(text: str) -> str:
+    """ดึงคำนำหน้า "ปรึกษา" + ตัวคั่นออก — เหลือแต่คำถามจริง"""
+    return text.removeprefix(CONSULT_PREFIX).lstrip(" \t:：.-—")
+
+
+def _session_expired(settings: Settings, session: dict, now: datetime | None) -> bool:
+    """ว่างเกิน ``ai_chat_session_timeout_minutes`` หรือยัง"""
+    last_active = session.get("last_active_at")
+    if last_active is None:
+        return False
+    reference = now or datetime.now(last_active.tzinfo)
+    return (reference - last_active).total_seconds() > (
+        settings.ai_chat_session_timeout_minutes * 60
+    )
+
+
+async def dispatch(
+    settings: Settings | None,
+    llm: LlmClient | None,
     db: SupportsQuery | None,
     user_hash: str | None,
     text: str,
+    *,
+    is_session_postback: bool = False,
+    is_end_postback: bool = False,
+    now: datetime | None = None,
 ) -> RouteResult | None:
     """
-    ตอบคำถามทั่วไปด้วย LLM — คืน ``None`` เมื่อเงื่อนไขไม่ครบ ผู้เรียก
-    (router) จะถอยกลับไปตอบ fallback แบบเดิม
+    จุดเข้าโหมดปรึกษา — router ส่ง postback/ข้อความมาให้ แล้วคืน ``RouteResult``
+    หรือ ``None`` เพื่อให้ router ตอบ fallback/ข้อความค้นหาตามเดิม
 
-    เงื่อนไขที่ต้องครบ **ทั้งหมด**:
+    ลำดับการตัดสินใจ:
 
-    * ``ai_chat_enabled`` ใน settings (สวิตช์ปิดทั้งชั้นได้)
-    * ตั้ง ``LLM_API_KEY`` แล้ว
-    * มี DB + ``user_hash`` — เพราะบริบทสนทนาแยกตามผู้ใช้ ถ้าแยกไม่ได้
-      (เช่นคุยในกลุ่มที่ไม่มี userId) ยอมไม่ตอบ LLM ดีกว่าจำบริบทปนกัน
+    1. เงื่อนไขพื้นฐานไม่ครบ (สวิตช์ปิด / ไม่มี key / ไม่มี DB / แยก user ไม่ได้)
+       → ``None`` ทุกกรณี — ไม่สร้าง session ไม่ตอบอะไรเกี่ยวกับ AI
+    2. ปุ่ม "จบการปรึกษา" → ปิด session (ถ้ามี) แล้วตอบจบ
+    3. คำออก (``EXIT_KEYWORDS``, exact match) → ปิด session ถ้าเปิดอยู่
+    4. ปุ่ม "ปรึกษา AI" หรือข้อความนำหน้า "ปรึกษา" → เข้าโหมด (session เก่าที่
+       timeout ค้างอยู่ถูกปิดก่อน แล้วเปิดใหม่) พร้อมตอบคำถามที่มาด้วยกันเลย
+    5. อยู่ระหว่างโหมด (ไม่มีคำนำหน้า) → ตอบด้วย LLM โดยไม่ผ่าน search
+    6. ไม่ใช่ทุกอย่างข้างบน → ``None``
 
-    โยน :class:`LlmError` ออกมาเมื่อ LLM พังจริง ๆ — ผู้เรียกต้อง catch
-    แล้ว fallback (ไม่ให้ ``_guard`` กลืน เพราะนั่นจะตอบว่า "ฐานข้อมูล
-    ขัดข้อง" ซึ่งไม่ตรงสาเหตุ)
-
-    ``db`` ใช้แค่ทางอ่าน/``RETURNING`` (``ensure_user`` ใช้ ``fetch_one``,
-    ``recent_chat`` ใช้ ``fetch_all``) ไม่ต้องการ ``execute``
+    **DB error โยนทะลุออกไป** ให้ ``_guard`` ของ router ดักเป็น ``db_error`` —
+    ถูกต้องแล้วเพราะอ่าน/เขียนตาราง session คือ "ถามฐานข้อมูล" จริง ๆ
     """
-    if not settings.ai_chat_enabled:
+    if is_end_postback:
+        if not _llm_capable(settings, llm, db, user_hash):
+            return None
+        assert db is not None and user_hash is not None
+        session = await repo.active_ai_session_by_hash(db, user_hash)
+        if session:
+            await repo.end_ai_session(db, session["id"], "button")
+        return RouteResult(
+            messages=[msg.session_closed_message()],
+            answered_by="ai_chat",
+            intent_key="ai_session_close",
+        )
+
+    if not _llm_capable(settings, llm, db, user_hash):
         return None
-    if not settings.llm_api_key:
-        log.debug("ข้าม AI Chat — ยังไม่ได้ตั้ง LLM_API_KEY")
-        return None
-    if db is None or not user_hash:
-        log.debug("ข้าม AI Chat — ไม่มี DB หรือ user_hash (แยกบริบทไม่ได้)")
+    assert db is not None and user_hash is not None and settings is not None and llm is not None
+
+    # อ่านสถานะโหมดก่อนแตะอย่างอื่น — ทางอ่านล้วน ไม่เขียน app_users
+    # ถ้าไม่มีโหมดเปิด (ข้อความส่วนใหญ่เข้ามาทางนี้)
+    session = await repo.active_ai_session_by_hash(db, user_hash)
+
+    # คำออก — เฉพาะตอนมี session เปิดอยู่ ไม่งั้นปล่อยให้ไป search/fallback
+    # (ตรวจจาก hash ตรง ๆ ทางอ่านล้วน ไม่แตะตารางอื่นถ้าไม่มีโหมด)
+    if text in EXIT_KEYWORDS:
+        session = await repo.active_ai_session_by_hash(db, user_hash)
+        if session:
+            user_id = await repo.ensure_user(db, user_hash)
+            await repo.end_ai_session(db, session["id"], "keyword")
+            return RouteResult(
+                messages=[msg.session_closed_message()],
+                answered_by="ai_chat",
+                intent_key="ai_session_close",
+                user_id=user_id,
+            )
         return None
 
-    # DB error ตรงนี้ให้ _guard ของ router ดักเป็น db_error — ถูกต้องแล้ว
-    # เพราะการดึงประวัติ/หาตัวผู้ใช้คือ "ถามฐานข้อมูล" จริง ๆ
-    user_id = await repo.ensure_user(db, user_hash)
+    enter = is_session_postback or text.startswith(CONSULT_PREFIX)
+    question = "" if is_session_postback else _strip_prefix(text)
+
+    if enter:
+        # ต้องมีแถว app_users ก่อนเสมอ — open_ai_session join จาก hash
+        # และข้อความนี้อาจเป็นข้อความแรกของ user คนนี้เลย
+        user_id = await repo.ensure_user(db, user_hash)
+
+        if session and _session_expired(settings, session, now):
+            # session เก่าที่ค้าง (ไม่มีทางออกอื่นเพราะไม่มีการ "ปิด" อัตโนมัติ
+            # ตอนหมดเวลา) — ปิดตรงนี้ก่อนเปิดใหม่
+            await repo.end_ai_session(db, session["id"], "timeout")
+            session = None
+
+        if session:
+            # เข้าโหมดซ้ำระหว่างที่ยังเปิดอยู่ = คุยต่อ ไม่ใช่สร้าง session ซ้ำ
+            return await _in_session_answer(
+                settings, llm, db, user_id, session,
+                question or "ปรึกษาเรื่องต่อครับ", now,
+            )
+
+        session_id = await repo.open_ai_session(db, user_hash)
+        log.info("เปิดโหมดปรึกษา AI: user=%s... session=%s", user_hash[:12], session_id)
+
+        if not question:
+            return RouteResult(
+                messages=[msg.session_open_message()],
+                answered_by="ai_chat",
+                intent_key="ai_session_open",
+                user_id=user_id,
+            )
+
+        # เข้าโหมดพร้อมคำถามจริง ("ปรึกษา อ่านหนังสือยังไง") — ตอบเลยในรอบเดียว
+        result = await _llm_answer(settings, llm, db, user_id, question)
+        await repo.touch_ai_session(db, session_id)
+        return result
+
+    # ไม่ได้เข้าโหมด — ถ้า session เปิดอยู่ ข้อความนี้คือบทสนทนาในโหมด
+    # (ข้าม search: คนอยู่ในโหมดต้องการคำตอบ ไม่ใช่ลิงก์เอกสาร)
+    session = await repo.active_ai_session_by_hash(db, user_hash)
+    if session:
+        user_id = await repo.ensure_user(db, user_hash)
+        return await _in_session_answer(settings, llm, db, user_id, session, text, now)
+
+    return None
+
+
+async def _in_session_answer(
+    settings: Settings,
+    llm: LlmClient,
+    db: SupportsQuery,
+    user_id: int,
+    session: dict,
+    question: str,
+    now: datetime | None,
+) -> RouteResult:
+    """
+    ตอบด้วย LLM ระหว่างอยู่ในโหมด — ตรวจ timeout/เพดานรอบก่อนเสมอ
+
+    เข้ามาที่นี่แปลว่า session เปิดอยู่ จึงคืน ``None`` ไม่ได้: ถ้า LLM พัง
+    โยน :class:`LlmError` ให้ router fallback แต่ session ยังเปิดต่อ
+    (user ลองพิมพ์ใหม่ได้ ไม่ต้องเข้าโหมดซ้ำ)
+    """
+    if _session_expired(settings, session, now):
+        await repo.end_ai_session(db, session["id"], "timeout")
+        return RouteResult(
+            messages=[msg.session_closed_message()],
+            answered_by="ai_chat",
+            intent_key="ai_session_timeout",
+            user_id=user_id,
+        )
+
+    if int(session.get("turn_count") or 0) >= settings.ai_chat_session_max_turns:
+        await repo.end_ai_session(db, session["id"], "turn_limit")
+        return RouteResult(
+            messages=[msg.session_turn_limit_message()],
+            answered_by="ai_chat",
+            intent_key="ai_session_turn_limit",
+            user_id=user_id,
+        )
+
+    result = await _llm_answer(settings, llm, db, user_id, question)
+    await repo.touch_ai_session(db, session["id"])
+    return result
+
+
+async def _llm_answer(
+    settings: Settings,
+    llm: LlmClient,
+    db: SupportsQuery,
+    user_id: int,
+    text: str,
+) -> RouteResult:
+    """
+    เรียก LLM 1 ครั้งพร้อมประวัติสนทนาของ user นี้ — โยน :class:`LlmError`
+    เมื่อ LLM พังจริง ๆ (ผู้เรียกต้อง catch แล้ว fallback ไม่ให้ ``_guard``
+    กลืน เพราะนั่นจะตอบว่า "ฐานข้อมูลขัดข้อง" ซึ่งไม่ตรงสาเหตุ)
+
+    ``db`` ใช้แค่ทางอ่าน (``recent_chat`` ใช้ ``fetch_all``) ส่วนทางเขียน
+    ของ session ผู้เรียกจัดการเอง
+    """
     history_rows = await repo.recent_chat(
         db, user_id, settings.ai_chat_history_turns
     )
@@ -160,15 +357,15 @@ async def answer(
         raise LlmError(None, "LLM ตอบกลับมาว่างเปล่า")
 
     log.info(
-        "AI Chat ตอบแล้ว: user=%s... model=%s prompt=%s output=%s tokens",
-        user_hash[:12],
+        "AI Chat ตอบแล้ว: user_id=%s model=%s prompt=%s output=%s tokens",
+        user_id,
         result.model,
         result.prompt_tokens,
         result.output_tokens,
     )
 
     return RouteResult(
-        messages=[msg.ai_chat_message(result.text)],
+        messages=[msg.ai_session_message(result.text)],
         answered_by="ai_chat",
         intent_key="ai_chat",
         llm_model=result.model,

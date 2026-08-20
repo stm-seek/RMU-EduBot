@@ -63,20 +63,35 @@ def test_pool_does_not_exceed_max_size(
     ``max_size`` ต้องเป็นเพดานจริงฝั่ง Postgres ไม่ใช่แค่ตัวเลขใน Python
 
     สำคัญกับ free tier ของ Neon/Supabase ที่ ``max_connections`` น้อย
+
+    **ห้ามนับ ``pg_stat_activity`` ทั้งฐาน** — ฐานเดียวกันมี client อื่นต่ออยู่จริง
+    (uvicorn ที่รันอยู่มี pool ของตัวเอง + psql ที่เปิดดูข้อมูล) เทสเดิมนับรวม
+    แล้วแดงทั้งที่ pool ของเทสไม่ได้ทำอะไรผิด → นับเฉพาะ backend ของ pool นี้
+    โดยเก็บ ``pg_backend_pid()`` ที่ query ของเราวิ่งอยู่จริง
     """
 
-    async def body() -> dict | None:
-        await asyncio.gather(
-            *(live_db.fetch_one("SELECT pg_sleep(0.05)") for _ in range(CONCURRENT))
+    async def body() -> tuple[set[int], list[dict]]:
+        rows = await asyncio.gather(
+            *(
+                live_db.fetch_one("SELECT pg_backend_pid() AS pid, pg_sleep(0.05)")
+                for _ in range(CONCURRENT)
+            )
         )
-        return await live_db.fetch_one(
-            "SELECT count(*) AS n FROM pg_stat_activity"
-            " WHERE datname = current_database() AND backend_type = 'client backend'"
+        ours = {row["pid"] for row in rows}
+        alive = await live_db.fetch_all(
+            "SELECT pid FROM pg_stat_activity"
+            " WHERE pid = ANY(%s) AND datname = current_database()"
+            "   AND backend_type = 'client backend'",
+            (sorted(ours),),
         )
+        return ours, alive
 
-    row = run(body())
+    ours, alive = run(body())
 
-    assert row is not None and row["n"] <= DEFAULT_MAX_SIZE, row
+    # 24 query พร้อมกันแต่ใช้ connection ไม่เกินเพดาน
+    assert 1 < len(ours) <= DEFAULT_MAX_SIZE, ours
+    # และ pid เหล่านั้นเป็น connection ฝั่งเซิร์ฟเวอร์จริง (ไม่ใช่ตัวเลขลอย ๆ)
+    assert {row["pid"] for row in alive} == ours
 
 
 def test_pool_serves_all_repository_functions_concurrently(

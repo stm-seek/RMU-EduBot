@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     # เพดานตัวอักษรรวมของประวัติ — กันข้อความยาวพิเศษทำ prompt บวม
     # นับจากรอบล่าสุดย้อนหลัง เกินเมื่อไหร่หยุดดึงเพิ่ม
     ai_chat_max_history_chars: int = Field(default=2_000, ge=0)
+    # ── โหมดปรึกษา (เข้า/ออกชัด ๆ เพื่อกันเสีย token ฟรีกับทุก search miss) ──
+    # LLM ตอบเฉพาะเมื่อ user "เข้าโหมด" แล้ว (ปุ่ม หรือนำหน้าด้วย "ปรึกษา")
+    # ว่างเกินนี้ = session จบเองอัตโนมัติ กลับมาคุยใหม่เริ่ม session ใหม่
+    # (30 นาที ≈ ช่วงที่ยังคุยเรื่องเดิม ถ้าเกินนี้บริบทก็ไม่ค่อยเกี่ยวกันแล้ว)
+    ai_chat_session_timeout_minutes: int = Field(default=30, ge=1, le=1_440)
+    # เพดานรอบต่อ session — กัน runaway (script ยิงคำถามวน) และกัน prompt
+    # ลากบริบทยาวเกินไป เมื่อครบจะจบ session และเสนอให้เริ่มใหม่
+    ai_chat_session_max_turns: int = Field(default=20, ge=1, le=200)
 
     # ── Scope ───────────────────────────────────────────────────────────────
     default_program_id: int = 59721
