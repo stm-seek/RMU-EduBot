@@ -39,7 +39,7 @@ def test_document_menu_buttons_all_lead_to_real_answers(
     """
     menu = run(rt.handle_postback("action=documents", live_db))
     assert_line_limits(menu.messages)
-    assert menu.answered_by == "rich_menu"
+    assert menu.answered_by == "quick_reply"
 
     targets = [
         data for data in _quick_reply_data(menu) if "cat=" in data
@@ -48,7 +48,7 @@ def test_document_menu_buttons_all_lead_to_real_answers(
 
     for data in targets:
         answer = run(rt.handle_postback(data, live_db))
-        assert answer.answered_by == "rich_menu", data
+        assert answer.answered_by == "quick_reply", data
         assert_line_limits(answer.messages)
         assert "https://" in answer.messages[0]["text"], data
 
@@ -73,7 +73,7 @@ def test_instructor_group_buttons_survive_postback_round_trip(
     for data, group in zip(targets, groups):
         assert rt.parse_postback_data(data)["g"] == group, data
         answer = run(rt.handle_postback(data, live_db))
-        assert answer.answered_by == "rich_menu", group
+        assert answer.answered_by == "quick_reply", group
         assert answer.intent_key == f"instructors:{group}"
         assert_line_limits(answer.messages)
         assert group in answer.messages[0]["text"]
@@ -101,7 +101,7 @@ def test_plan_answer_reports_the_real_gap(
     answer = run(rt.handle_postback("action=plan", live_db))
     text = answer.messages[0]["text"]
 
-    assert answer.answered_by == "rich_menu"
+    assert answer.answered_by == "quick_reply"
     assert_line_limits(answer.messages)
     assert "68 วิชา" in text
     assert "45 วิชา" in text
@@ -116,7 +116,7 @@ def test_course_code_typed_as_text_answers_from_real_data(
     text = answer.messages[0]["text"]
 
     assert answer.intent_key == "course:1109902"
-    assert answer.answered_by == "rich_menu"
+    assert answer.answered_by == "course", "พิมพ์รหัสมาเอง ไม่ได้กดปุ่ม"
     assert_line_limits(answer.messages)
     assert "ภาษาไทยเพื่อการสื่อสาร" in text
     assert "3 (2-2-5)" in text
@@ -134,6 +134,38 @@ def test_unknown_course_code_says_no_data(
     assert_line_limits(answer.messages)
 
 
+def test_course_button_examples_are_all_tappable(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    ปุ่ม "ค้นรายวิชา" บน Rich Menu → ปุ่มวิชาตัวอย่าง → คำตอบจริง
+
+    เทสทั้งวงจรกับข้อมูลจริง เพราะรหัสตัวอย่างมาจาก DB ไม่ได้ hardcode
+    ถ้า re-scrape แล้วรหัสเปลี่ยน เทสนี้ยังต้องเขียว (ไม่ผูกกับรหัสตัวใด)
+    """
+    help_answer = run(rt.handle_postback("action=course&src=rich", live_db))
+
+    assert help_answer.answered_by == "rich_menu"
+    assert help_answer.intent_key == "course"
+    assert_line_limits(help_answer.messages)
+    assert "68 วิชา" in help_answer.messages[0]["text"]
+
+    targets = [data for data in _quick_reply_data(help_answer) if "code=" in data]
+    assert len(targets) == rt.SAMPLE_COURSE_COUNT
+
+    for data in targets:
+        code = rt.parse_postback_data(data)["code"]
+        answer = run(rt.handle_postback(data, live_db))
+
+        # ปุ่มตัวอย่างอยู่ใน Quick Reply ของคำตอบ ไม่ใช่บน Rich Menu
+        # → ต้องนับเป็น quick_reply แม้ต้นทางจะกดมาจากเมนู
+        assert answer.answered_by == "quick_reply", data
+        assert answer.intent_key == f"course:{code}", data
+        assert_line_limits(answer.messages)
+        assert "เทอม" in answer.messages[0]["text"], code
+        assert "ยังไม่พบว่าเปิดสอน" not in answer.messages[0]["text"], code
+
+
 def test_course_without_pattern_does_not_claim_a_term(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
@@ -145,7 +177,7 @@ def test_course_without_pattern_does_not_claim_a_term(
     answer = run(rt.handle_text("1109905", live_db))
     text = answer.messages[0]["text"]
 
-    assert answer.answered_by == "rich_menu"
+    assert answer.answered_by == "course"
     assert "ภาษาจีนเพื่อการสื่อสาร" in text
     assert "ยังไม่พบว่าเปิดสอนในเทอมที่เก็บข้อมูลไว้" in text
     assert "เคยเปิด" not in text

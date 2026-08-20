@@ -14,10 +14,17 @@ postback จากปุ่ม, รหัสวิชา 7 หลัก, แล�
 (คำแนะนำการเรียนทั่วไป ตอบจาก ``app/ai_chat.py``) ส่วน RAG/FAQ ยังไม่มี
 เพราะตาราง ``rag_chunks``/``faqs`` ยังว่าง (บล็อกที่เนื้อหาทางการ)
 
-**ค่า ``answered_by`` ที่ไฟล์นี้ผลิตได้จริงตอนนี้มี 6 ค่า**: ``rich_menu``
-(กดปุ่ม), ``search`` (พิมพ์คำแล้วค้นจาก DB), ``no_data`` (เข้าใจคำถามแต่ไม่มี
-ข้อมูล), ``db_error`` (ถามฐานข้อมูลไม่สำเร็จ), ``fallback`` (ไม่เข้าใจคำถาม),
+**ค่า ``answered_by`` ที่ไฟล์นี้ผลิตได้จริงตอนนี้มี 9 ค่า**: ``rich_menu``
+(กดปุ่มบน Rich Menu — postback มี ``src=rich``), ``quick_reply`` (กดปุ่มใน
+บทสนทนา), ``course`` (พิมพ์รหัสวิชา 7 หลัก), ``follow`` (ทักครั้งแรก),
+``search`` (พิมพ์คำแล้วค้นจาก DB), ``no_data`` (เข้าใจคำถามแต่ไม่มีข้อมูล),
+``db_error`` (ถามฐานข้อมูลไม่สำเร็จ), ``fallback`` (ไม่เข้าใจคำถาม),
 ``ai_chat`` (LLM ตอบคำถามทั่วไป) — ยังไม่มี ``faq`` / ``planner`` / ``rag``
+
+**เดิมทุกทางข้างบนถูกป้ายว่า ``rich_menu`` หมด** รวมทั้งการพิมพ์รหัสวิชาและ
+ข้อความต้อนรับ ซึ่งทำให้วัดในธีสิสไม่ได้ว่า Rich Menu รับภาระเท่าไหร่จริง
+(ดู :func:`_answer_surface`) — ระวังว่า ``no_data``/``db_error``/``fallback``
+ทับป้ายพื้นผิวโดยเจตนา จึงนับ ``rich_menu`` ได้เป็น **ขั้นต่ำ** ไม่ใช่ยอดกด
 
 ``db`` ที่ทุก handler รับเป็น ``None`` ได้ (ยังไม่ตั้ง ``DATABASE_URL`` หรือ
 ต่อไม่ได้ตอนสตาร์ท) → ตอบว่า "ยังไม่มีข้อมูล" ไม่ใช่ 500 และไม่ใช่เงียบหาย
@@ -50,6 +57,9 @@ TERM_LABELS = {1: "เทอม 1", 2: "เทอม 2", 3: "ภาคฤดู�
 # จำนวนผลค้นหาต่อครั้ง — 5 พออ่านจบในหน้าจอมือถือโดยไม่ต้องเลื่อนยาว
 SEARCH_RESULT_LIMIT = 5
 
+# วิชาตัวอย่างบนปุ่ม "ค้นรายวิชา" — 3 พอให้เห็นว่าใช้งานยังไง ไม่บังปุ่มเมนูหลัก
+SAMPLE_COURSE_COUNT = 3
+
 # เพดานเอกสารต่อหมวด **ต้องมากกว่าหมวดที่ใหญ่สุด** (ตอนนี้ loan = 12 ฉบับ)
 #
 # ``repo.documents_in_category`` ตั้ง default ไว้ 10 เป็นกันชนของชั้นข้อมูล
@@ -69,8 +79,9 @@ class RouteResult:
     """
 
     messages: list[dict]
-    # ค่าที่ผลิตได้จริงตอนนี้: rich_menu / search / no_data / db_error / fallback
-    # / ai_chat (faq / planner / rag ยังไม่มีชั้นที่ผลิตค่าเหล่านี้ — อย่าเคลมในเอกสาร)
+    # ค่าที่ผลิตได้จริงตอนนี้: rich_menu / quick_reply / course / follow / search
+    # / no_data / db_error / fallback / ai_chat
+    # (faq / planner / rag ยังไม่มีชั้นที่ผลิตค่าเหล่านี้ — อย่าเคลมในเอกสาร)
     answered_by: str
     intent_key: str | None = None
     confidence: float | None = None
@@ -197,6 +208,35 @@ async def _guard(
         return _db_error(topic, intent_key)
 
 
+# ป้ายชั่วคราวที่ handler ของปุ่มใช้ก่อน :func:`handle_postback` จะแทนด้วย
+# พื้นผิวจริง — ไม่ควรหลุดออกไปถึง ``chat_logs`` (ถ้าหลุด = มี handler ที่
+# ถูกเรียกโดยไม่ผ่าน handle_postback)
+BUTTON_ANSWER = "button"
+
+# postback ที่ยิงจาก Rich Menu ต้องมี ``src=rich`` ติดมา — ปุ่มใน Quick Reply
+# ไม่มี ทำให้แยกสองพื้นผิวออกจากกันได้ใน ``chat_logs``
+RICH_MENU_SOURCE = "rich"
+
+
+def _answer_surface(params: dict[str, str]) -> str:
+    """
+    postback นี้มาจากพื้นผิวไหน
+
+    ปุ่มบน Rich Menu กับปุ่มใน Quick Reply ยิง postback event **หน้าตาเหมือนกัน
+    ทุกอย่าง** LINE ไม่บอกว่ามาจากไหน → ต้องฝังที่มาไว้ใน data เอง
+    ปุ่มเก่าในเครื่องผู้ใช้ที่ยังไม่มี ``src`` จะถูกนับเป็น ``quick_reply``
+    (ยอมพลาดฝั่งนี้ดีกว่าเคลมเกินว่าเป็นยอดกด Rich Menu)
+
+    >>> _answer_surface({'action': 'documents', 'src': 'rich'})
+    'rich_menu'
+    >>> _answer_surface({'action': 'documents'})
+    'quick_reply'
+    """
+    if params.get("src") == RICH_MENU_SOURCE:
+        return "rich_menu"
+    return "quick_reply"
+
+
 def _menu_quick_reply(*extra: dict) -> dict:
     """ปุ่มพิเศษ + เมนูหลัก (รวมกันไม่เกิน 13 อยู่แล้ว)"""
     return msg.quick_reply([*extra, *msg.MAIN_MENU_ACTIONS])
@@ -227,6 +267,10 @@ POSTBACK_HANDLERS: dict[str, str] = {
     "instructors": "ติดต่ออาจารย์",
     "loan": "ทุน/กู้ยืม",
     "menu": "เมนูหลัก",
+    # ค้นรายวิชา — ``action=course`` เปล่า ๆ = อธิบายวิธีใช้ + ปุ่มวิชาตัวอย่าง,
+    # ``action=course&code=1109901`` = ตอบรายวิชานั้นตรง ๆ (เส้นทางเดียวกับ
+    # ที่ผู้ใช้พิมพ์รหัส 7 หลักมาเอง)
+    "course": "ค้นรายวิชา",
     # โหมดปรึกษา AI — เข้า/ออกชัด ๆ เพื่อกันเสีย token ฟรีกับทุก search miss
     # (เงื่อนไข+กติกาทั้งหมดอยู่ที่ app/ai_chat.py::dispatch)
     "ai_session": "ปรึกษา AI",
@@ -287,7 +331,7 @@ async def handle_postback(
     """
     params = parse_postback_data(data)
     action = params.get("action", "")
-    return await _guard(
+    result = await _guard(
         _dispatch_postback(
             data, action, params, db,
             settings=settings, llm=llm, user_hash=user_hash,
@@ -295,6 +339,13 @@ async def handle_postback(
         topic="ที่ขอ",
         intent_key=action or None,
     )
+    # ตอบสำเร็จด้วยปุ่ม → เปลี่ยนป้ายกลาง ๆ เป็นพื้นผิวจริงที่กดมา
+    # ทำที่นี่ที่เดียวเพราะ "มาจากพื้นผิวไหน" เป็นคุณสมบัติของ *event*
+    # ไม่ใช่ของ handler — handler แต่ละตัวไม่ต้องรู้เรื่องนี้เลย
+    # ส่วน no_data / db_error / fallback ทับป้ายพื้นผิวไว้แล้วโดยเจตนา
+    if result.answered_by == BUTTON_ANSWER:
+        result.answered_by = _answer_surface(params)
+    return result
 
 
 async def _dispatch_postback(
@@ -345,6 +396,12 @@ async def _dispatch_postback(
     if action == "plan":
         return await _plan_answer(db)
 
+    if action == "course":
+        code = params.get("code", "")
+        if code:
+            return await _course_answer(db, code)
+        return await _course_help_answer(db)
+
     # มาถึงนี่ = เพิ่ม action ใน POSTBACK_HANDLERS แล้วลืมเขียน handler
     log.error("action %r อยู่ใน POSTBACK_HANDLERS แต่ยังไม่มี handler", action)
     return _fallback(action)
@@ -382,7 +439,7 @@ async def _document_categories_answer(db: SupportsQuery | None) -> RouteResult:
                 _list_quick_reply(buttons),
             )
         ],
-        answered_by="rich_menu",
+        answered_by=BUTTON_ANSWER,
         intent_key="documents",
         confidence=1.0,
     )
@@ -421,7 +478,7 @@ async def _documents_answer(
                 _menu_quick_reply(msg.postback_action("หมวดอื่น", "action=documents")),
             )
         ],
-        answered_by="rich_menu",
+        answered_by=BUTTON_ANSWER,
         intent_key=intent,
         confidence=1.0,
         citations=[{"title": row["title"], "url": row["url"]} for row in rows],
@@ -481,7 +538,7 @@ async def _instructor_groups_answer(db: SupportsQuery | None) -> RouteResult:
                 _list_quick_reply(buttons),
             )
         ],
-        answered_by="rich_menu",
+        answered_by=BUTTON_ANSWER,
         intent_key="instructors",
         confidence=1.0,
     )
@@ -529,7 +586,7 @@ async def _instructors_answer(db: SupportsQuery | None, group: str) -> RouteResu
                 _menu_quick_reply(msg.postback_action("กลุ่มอื่น", "action=instructors")),
             )
         ],
-        answered_by="rich_menu",
+        answered_by=BUTTON_ANSWER,
         intent_key=intent,
         confidence=1.0,
     )
@@ -582,7 +639,7 @@ async def _plan_answer(db: SupportsQuery | None) -> RouteResult:
                 _menu_quick_reply(),
             )
         ],
-        answered_by="rich_menu",
+        answered_by=BUTTON_ANSWER,
         intent_key="plan",
         confidence=1.0,
     )
@@ -646,7 +703,7 @@ async def _dispatch_text(
 ) -> RouteResult:
     match = COURSE_CODE_PATTERN.search(cleaned)
     if match:
-        return await _course_answer(db, match.group(1))
+        return await _course_answer(db, match.group(1), answered_by="course")
 
     # ── ชั้นที่ 3: โหมดปรึกษา AI — ตรวจก่อน search ─────────────────────────
     # ข้อความระหว่างอยู่ในโหมดต้องตอบด้วย LLM (คนในโหมดต้องการคำตอบ
@@ -811,7 +868,17 @@ def _instructor_search_result(keyword: str, rows: list[dict]) -> RouteResult:
     )
 
 
-async def _course_answer(db: SupportsQuery | None, course_code: str) -> RouteResult:
+async def _course_answer(
+    db: SupportsQuery | None, course_code: str, answered_by: str = BUTTON_ANSWER
+) -> RouteResult:
+    """
+    ตอบรายละเอียดรายวิชา — เข้าได้ 2 ทาง
+
+    ผู้ใช้ **พิมพ์รหัส 7 หลัก** มาเอง → ``answered_by='course'``
+    (เดิมป้ายว่า ``rich_menu`` ซึ่งผิด: ไม่ได้กดปุ่มอะไรเลย)
+    กด **ปุ่มวิชาตัวอย่าง** → ป้ายกลาง ๆ แล้วให้ :func:`handle_postback`
+    แทนด้วยพื้นผิวจริง
+    """
     intent = f"course:{course_code}"
     if db is None:
         return _no_data(f"รายวิชา {course_code}", intent)
@@ -854,7 +921,7 @@ async def _course_answer(db: SupportsQuery | None, course_code: str) -> RouteRes
                 join_lines(f"รายวิชา {course_code}", lines, footer), _menu_quick_reply()
             )
         ],
-        answered_by="rich_menu",
+        answered_by=answered_by,
         intent_key=intent,
         confidence=1.0,
         citations=(
@@ -870,25 +937,92 @@ async def _course_answer(db: SupportsQuery | None, course_code: str) -> RouteRes
     )
 
 
+async def _course_help_answer(db: SupportsQuery | None) -> RouteResult:
+    """
+    ปุ่ม *ค้นรายวิชา* บน Rich Menu — บอกวิธีใช้ **พร้อมของให้กดต่อทันที**
+
+    Rich Menu ไม่มี action ที่สั่งให้ผู้ใช้พิมพ์ต่อได้ ถ้าตอบแค่ "พิมพ์รหัสวิชา
+    7 หลักมา" ผู้ใช้ที่ไม่รู้รหัสวิชาจะตันอยู่ตรงนั้น จึงแนบวิชาตัวอย่างจริง
+    จากฐานข้อมูลมาเป็นปุ่ม (``action=course&code=...``) ให้กดเห็นผลลัพธ์ก่อน
+    แล้วค่อยพิมพ์รหัสของตัวเอง
+
+    **ห้าม hardcode รหัสตัวอย่าง** — ถ้า re-scrape แล้วรหัสนั้นหายไป
+    บอทจะแนะนำวิชาที่ตัวเองตอบไม่ได้
+    """
+    intent = "course"
+    if db is None:
+        return _no_data("รายวิชา", intent)
+
+    program = _program_code()
+    coverage = await repo.planning_coverage(db, program)
+    samples = await repo.sample_courses(db, program, limit=SAMPLE_COURSE_COUNT)
+
+    total = coverage.get("program_courses") or 0
+    patterns = coverage.get("patterns") or 0
+    if not total and not samples:
+        return _no_data("รายวิชา", intent)
+
+    lines = [f"  • รายวิชาในหลักสูตร {total} วิชา"]
+    if patterns:
+        lines.append(f"  • รู้ว่าเคยเปิดเทอมไหน {patterns} วิชา")
+
+    example = samples[0]["course_code"] if samples else None
+    footer = (
+        f"พิมพ์รหัสวิชา 7 หลักมาได้เลยครับ เช่น {example}"
+        if example
+        else "พิมพ์รหัสวิชา 7 หลักมาได้เลยครับ"
+    )
+    if samples:
+        footer += "\nหรือกดวิชาตัวอย่างจากปุ่มด้านล่างก็ได้ครับ"
+
+    # label ปุ่มยาวได้ 20 ตัวอักษร: รหัส 7 + เว้นวรรค 1 = 8 → เหลือชื่อ 12
+    buttons = [
+        msg.postback_action(
+            f"{row['course_code']} {msg.truncate(row.get('name_th') or '', 12)}".strip(),
+            f"action=course&code={row['course_code']}",
+        )
+        for row in samples
+    ]
+
+    return RouteResult(
+        messages=[
+            msg.text_message(
+                join_lines("ค้นรายละเอียดรายวิชา", lines, footer),
+                _list_quick_reply(buttons),
+            )
+        ],
+        answered_by=BUTTON_ANSWER,
+        intent_key=intent,
+        confidence=1.0,
+    )
+
+
 async def handle_follow(intent_key: str = "follow") -> RouteResult:
     """
     ข้อความต้อนรับ — ใช้ทั้งตอน follow และตอนกดปุ่ม "เมนูหลัก"
 
     ``intent_key`` แยกสองกรณีเพื่อให้สถิติใน ``chat_logs`` ไม่ปนกัน
+    และ ``answered_by`` ก็ต้องแยกด้วย: การ **เพิ่มเพื่อน** ไม่ใช่การกดปุ่ม
+    (เดิมนับเป็น ``rich_menu`` ทั้งคู่ ทำให้ยอดกดเมนูเกินความจริงทุกครั้ง
+    ที่มีคนเพิ่มเพื่อนใหม่)
     """
     return RouteResult(
         messages=[
             msg.text_message(
                 "สวัสดีครับ ผมเป็นผู้ช่วยให้คำปรึกษาด้านการเรียน\n\n"
                 "ตอนนี้ทำได้\n"
-                "  • หาเอกสาร/แบบฟอร์มคำร้อง\n"
-                "  • ดูข้อมูลติดต่ออาจารย์\n"
-                "  • พิมพ์รหัสวิชา 7 หลัก เพื่อดูรายละเอียดรายวิชา\n\n"
+                "  • หาเอกสาร/แบบฟอร์มคำร้อง 31 ฉบับ 10 หมวด\n"
+                "  • ดูข้อมูลติดต่ออาจารย์ (อีเมล — ยังไม่มีเบอร์โทรในระบบ)\n"
+                "  • พิมพ์รหัสวิชา 7 หลัก เพื่อดูรายละเอียดรายวิชา\n"
+                "  • พิมพ์คำที่อยากค้นมาได้เลย เช่น ชื่อเอกสารหรือชื่ออาจารย์\n"
+                "  • กด “ปรึกษา AI” บนเมนู หรือพิมพ์ “ปรึกษา” ตามด้วยคำถาม\n\n"
+                "ยังทำไม่ได้: จัดแผนรายเทอมและตรวจวิชาบังคับก่อน\n"
+                "(ระบบทะเบียนไม่ได้เผยแพร่ข้อมูลส่วนนี้)\n\n"
                 "เลือกจากปุ่มด้านล่างได้เลยครับ",
                 _menu_quick_reply(),
             )
         ],
-        answered_by="rich_menu",
+        answered_by=BUTTON_ANSWER if intent_key == "menu" else "follow",
         intent_key=intent_key,
         confidence=1.0,
     )

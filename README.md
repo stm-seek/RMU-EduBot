@@ -45,12 +45,28 @@ GET  /api/liff/config    LIFF ID + program_code สำหรับหน้า L
 ชั้นที่ 1 ตอบจากฐานข้อมูลแล้ว: เอกสาร/คำร้อง (11 หมวด), ติดต่ออาจารย์
 (แยกตามสาขา), รายละเอียดรายวิชาจากรหัส 7 หลัก, สรุปว่าวิชาไหนเปิดเทอมไหน
 
-เทส: **244 tests + 17 doctests** — ไม่แตะเน็ตเวิร์กจริงและไม่ต้องมี Postgres
+**Rich Menu 6 ช่อง** ลงกับ LINE แล้ว (ปรึกษา AI · กู้ยืม กยศ. · ติดต่ออาจารย์ ·
+ค้นรายวิชา · เอกสาร/คำร้อง · ทำอะไรได้บ้าง) ภาพต้นฉบับอยู่ที่
+`assets/rich_menu.png` (1200x810) และ**พิกัดปุ่มใน `app/line/rich_menu.py`
+วัดมาจากไฟล์ภาพนั้น** ไม่ใช่หาร 3 หาร 2 เอา — เปลี่ยนภาพต้องวัดใหม่
+
+```powershell
+make rich-menu-dry        # ตรวจภาพ + ดู JSON ไม่ยิง API
+make rich-menu-apply      # create -> upload -> set default
+make rich-menu-list       # ดูเมนูที่มีบน LINE (แล้ว rich-menu-delete เก็บกวาด)
+```
+
+**Rich Menu ไม่แสดงบน LINE for PC** ต้องทดสอบบนมือถือ และ**แก้ภาพของเมนูที่
+อัปโหลดไปแล้วไม่ได้** ต้องสร้างใบใหม่แล้วลบใบเก่าทิ้ง
+
+เทส: **360 unit + 22 doctests** — ไม่แตะเน็ตเวิร์กจริงและไม่ต้องมี Postgres
 (mock ด้วย `httpx.MockTransport` + fake connection, ตรวจ SQL ด้วย `sqlglot`)
+อีก **94 integration** ต้องมี Postgres จริงจึงเป็น opt-in ด้วย `RMU_DB_TESTS=1`
 
 ```powershell
 $env:PYTHONUTF8="1"; python -m pytest -q
 $env:PYTHONUTF8="1"; python -m pytest --doctest-modules app/ run.py -q
+$env:PYTHONUTF8="1"; $env:RMU_DB_TESTS="1"; python -m pytest tests/integration -q
 ```
 
 ---
@@ -207,8 +223,6 @@ to the server from the LIFF app"*) ไม่ทำ = ใครก็ยิง AP
 | FAQ matching (ชั้น 2) | ยังไม่เขียน — ตาราง `faqs` ยังว่าง |
 | RAG (ชั้น 3) | ยังไม่เขียน — ตาราง `rag_chunks` ยังว่าง, ยังไม่ได้ index |
 | หน้า LIFF (ติ๊กวิชาที่ผ่าน) | ยังไม่เขียน — มีแต่ API ฝั่ง server |
-| บันทึก `chat_logs` / `app_users` | ยังไม่เขียน (รอ Postgres จริง) |
-| Rich Menu | ยังไม่ได้สร้างใน LINE Console (ตอนนี้ใช้ Quick Reply) |
 | Flex Message | ยังใช้ text + Quick Reply ก่อน |
 
 ---

@@ -242,6 +242,20 @@ LEFT JOIN offering_patterns p ON p.course_code = c.course_code
 WHERE c.course_code = %s
 """
 
+# วิชาตัวอย่างที่ "กดแล้วได้คำตอบสวย" — INNER JOIN offering_patterns โดยเจตนา
+# เพราะวิชาที่ไม่มี pattern จะตอบว่า "ยังไม่พบว่าเปิดสอน" ซึ่งเป็นตัวอย่างที่แย่
+# เรียงด้วย terms_found = เปิดบ่อยสุดก่อน (วิชาที่นักศึกษาทุกคนต้องเจอ)
+SQL_SAMPLE_COURSES = """
+SELECT c.course_code, c.name_th
+FROM program_courses pc
+JOIN programs p ON p.program_id = pc.program_id
+JOIN courses c ON c.course_id = pc.course_id
+JOIN offering_patterns op ON op.course_code = c.course_code
+WHERE p.program_code = %s
+ORDER BY op.terms_found DESC, c.course_code
+LIMIT %s
+"""
+
 SQL_OFFERINGS_FOR_COURSE = """
 SELECT o.acad_year, o.semester, o.section, o.schedule_raw, o.instructors,
        o.seats_total, o.seats_left, o.status
@@ -276,6 +290,19 @@ async def planning_coverage(db: SupportsQuery, program_code: str) -> dict:
 
 async def course_by_code(db: SupportsQuery, course_code: str) -> dict | None:
     return await db.fetch_one(SQL_COURSE_BY_CODE, (course_code,))
+
+
+async def sample_courses(
+    db: SupportsQuery, program_code: str, limit: int = 3
+) -> list[dict]:
+    """
+    รายวิชาตัวอย่างสำหรับโชว์เป็นปุ่ม "กดดูได้เลย"
+
+    ใช้กับปุ่ม *ค้นรายวิชา* บน Rich Menu ซึ่งกดแล้วต้องมีอะไรให้กดต่อทันที
+    (Rich Menu ไม่มี action แบบ "ให้ผู้ใช้พิมพ์ต่อ" — ถ้าตอบแค่ข้อความว่า
+    "พิมพ์รหัสมา" ผู้ใช้จำนวนมากจะเลิกกลางทาง)
+    """
+    return await db.fetch_all(SQL_SAMPLE_COURSES, (program_code, limit))
 
 
 async def offerings_for_course(
@@ -325,9 +352,19 @@ async def recent_chat(db: SupportsQuery, user_id: int, turns: int) -> list[dict]
 SQL_INSERT_CHAT_LOG = """
 INSERT INTO chat_logs (
     user_id, message_text, answered_by, intent_key, confidence,
-    response_text, citations, latency_ms, llm_model, prompt_tokens, output_tokens
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    response_text, citations, latency_ms, llm_model, prompt_tokens, output_tokens,
+    status
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
+
+# ค่าที่ ``chat_logs.status`` รับได้ — **ต้องตรงกับ CHECK ใน
+# db/migrations/004_chat_log_status.sql** (ถ้าเพิ่มค่าใหม่ต้องแก้ทั้งสองที่)
+#
+# แยกจาก ``answered_by`` โดยเจตนา: answered_by บอกว่าชั้น/พื้นผิวไหนคิดคำตอบ
+# ส่วนคอลัมน์นี้บอกว่าคำตอบนั้น **ถึงผู้ใช้จริงไหม** ถ้ายุบรวมกันจะเสียข้อมูล
+# ไปหนึ่งด้าน (รอบที่ ai_chat ตอบแล้วส่งไม่ถึง จะนับภาระของชั้น AI ไม่ได้อีก)
+CHAT_STATUS_DELIVERED = "delivered"
+CHAT_STATUS_SEND_FAILED = "send_failed"
 
 
 async def insert_chat_log(
@@ -344,12 +381,18 @@ async def insert_chat_log(
     llm_model: str | None,
     prompt_tokens: int | None,
     output_tokens: int | None,
+    status: str = CHAT_STATUS_DELIVERED,
 ) -> int:
     """
     บันทึก 1 รอบสนทนาลง ``chat_logs``
 
     ``user_id`` เป็น ``None`` ได้ — webhook บาง event ไม่มี userId
     (เช่นใน group) ก็ยังเก็บข้อความ+ชั้นที่ตอบไว้ใช้วัดผลได้
+
+    ``status`` default เป็น :data:`CHAT_STATUS_DELIVERED` เพราะเส้นทางปกติคือ
+    ส่งสำเร็จแล้วค่อยบันทึก — ผู้เรียกที่รู้ว่า **ส่งไม่ถึง** ต้องส่ง
+    :data:`CHAT_STATUS_SEND_FAILED` มาเอง ไม่งั้นข้อมูลวัดผลจะบอกว่าตอบสำเร็จ
+    ทั้งที่นักศึกษาไม่ได้เห็นคำตอบ (ดู :func:`app.main.process_event`)
     """
     return await db.execute(
         SQL_INSERT_CHAT_LOG,
@@ -365,6 +408,7 @@ async def insert_chat_log(
             llm_model,
             prompt_tokens,
             output_tokens,
+            status,
         ),
     )
 
@@ -501,6 +545,7 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_INSTRUCTOR_CONTACT_COVERAGE": SQL_INSTRUCTOR_CONTACT_COVERAGE,
     "SQL_PLANNING_COVERAGE": SQL_PLANNING_COVERAGE,
     "SQL_COURSE_BY_CODE": SQL_COURSE_BY_CODE,
+    "SQL_SAMPLE_COURSES": SQL_SAMPLE_COURSES,
     "SQL_OFFERINGS_FOR_COURSE": SQL_OFFERINGS_FOR_COURSE,
     "SQL_LATEST_TERM": SQL_LATEST_TERM,
     "SQL_RECENT_CHAT": SQL_RECENT_CHAT,

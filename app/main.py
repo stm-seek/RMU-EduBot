@@ -47,6 +47,7 @@ from .line.auth import LiffAuthError, VerifiedUser, hash_user_id, verify_id_toke
 from .line.client import LineApiError, LineClient
 from .line.signature import verify_signature
 from .llm import LlmClient
+from .repository import CHAT_STATUS_DELIVERED, CHAT_STATUS_SEND_FAILED
 
 log = logging.getLogger("app.main")
 
@@ -325,14 +326,37 @@ async def process_event(event: dict, settings: Settings) -> None:
             )
             return
 
-        if reply_token and user_id:
-            channel = await client.reply_or_push(reply_token, user_id, messages)
-        elif reply_token:
-            await client.reply(reply_token, messages)
-            channel = "reply"
-        else:
-            await client.push(user_id, messages)
-            channel = "push"
+        # ส่งกับบันทึกอยู่ใน try เดียวกัน เพราะ **ทุกทางออกต้องเขียน chat_logs
+        # หนึ่งแถวเสมอ** ไม่ว่าจะส่งถึงหรือไม่ (ดู ``except LineApiError``)
+        try:
+            if reply_token and user_id:
+                channel = await client.reply_or_push(reply_token, user_id, messages)
+            elif reply_token:
+                await client.reply(reply_token, messages)
+                channel = "reply"
+            else:
+                await client.push(user_id, messages)
+                channel = "push"
+        except LineApiError as exc:
+            # เดิมตรงนี้ log ทิ้งแล้วจบ → รอบที่ส่งไม่ถึง **ไม่มีแถวใน chat_logs
+            # เลย** ทั้งที่ router คิดคำตอบเสร็จแล้ว ธีสิสนับจำนวนรอบที่ตอบได้
+            # จากตารางนี้ตรง ๆ ความล้มเหลวจึงหายไปจากข้อมูลและอัตราการตอบสำเร็จ
+            # สูงเกินจริงแบบเงียบ ๆ — บันทึกเป็น send_failed แล้วจบ
+            #
+            # ``reply_or_push`` ลอง push ให้แล้วก่อนจะโยนออกมา (ดู
+            # :meth:`app.line.client.LineClient.reply_or_push`) มาถึงนี่คือ
+            # ทุกทางพังหมด และเป็น except ตัวเดียวของทั้งการส่ง → เขียนแถวเดียว
+            log.error(
+                "LINE API ล้มเหลว ส่งคำตอบไม่ถึงผู้ใช้: %s (type=%s by=%s intent=%s)",
+                exc,
+                event_type,
+                result.answered_by,
+                result.intent_key,
+            )
+            await _log_conversation(
+                event, result, user_hash, status=CHAT_STATUS_SEND_FAILED
+            )
+            return
 
         log.info(
             "ตอบแล้ว: type=%s by=%s intent=%s ผ่าน=%s",
@@ -344,10 +368,8 @@ async def process_event(event: dict, settings: Settings) -> None:
 
         # บันทึกลง chat_logs — วัดผลธีสิส (fallback rate, intent, ต้นทุน LLM)
         # และเก็บบริบทสนทนาให้ AI Chat ในรอบถัดไป (Requirement ข้อ 9)
-        await _log_conversation(event, result, user_hash)
+        await _log_conversation(event, result, user_hash, status=CHAT_STATUS_DELIVERED)
 
-    except LineApiError as exc:
-        log.error("LINE API ล้มเหลว: %s", exc)
     except Exception:
         log.exception("ประมวลผล event ล้มเหลว (type=%s)", event_type)
 
@@ -356,12 +378,18 @@ async def _log_conversation(
     event: dict,
     result: bot_router.RouteResult,
     user_hash: str | None,
+    *,
+    status: str = CHAT_STATUS_DELIVERED,
 ) -> None:
     """
     เขียน 1 รอบสนทนาลง ``chat_logs`` — **ล้มเหลวได้แต่ห้ามพังบทสนทนา**
 
     ส่งข้อความไปแล้วค่อยบันทึก: ถ้า DB เขียนไม่ได้ นักศึกษาก็ยังได้คำตอบ
     (แค่เสียข้อมูลวัดผล) ซึ่งดีกว่าตอบเงียบเพราะ log ล้ม
+
+    ``status`` แยกรอบที่ส่งถึงผู้ใช้ออกจากรอบที่ส่งไม่ถึง — ห้ามให้ความล้มเหลว
+    ของการเขียนตรงนี้บังความล้มเหลวของการส่ง จึงกลืน exception ทุกตัวแล้ว
+    log เป็น warning เท่านั้น (ฝ่ายเรียกได้ log error ของการส่งไปก่อนแล้ว)
     """
     from . import repository as repo
 
@@ -397,6 +425,7 @@ async def _log_conversation(
             llm_model=result.llm_model,
             prompt_tokens=result.prompt_tokens,
             output_tokens=result.output_tokens,
+            status=status,
         )
     except Exception:
         log.warning("บันทึก chat_logs ไม่สำเร็จ", exc_info=True)

@@ -610,6 +610,40 @@ def test_course_without_pattern_returns_nulls_from_left_join(
     assert course["terms_found"] is None
 
 
+def test_sample_courses_only_returns_courses_with_a_known_term(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    วิชาตัวอย่างบนปุ่ม "ค้นรายวิชา" ต้องกดแล้วได้คำตอบที่ดู **สมบูรณ์**
+
+    SQL ใช้ INNER JOIN ``offering_patterns`` โดยเจตนา — ถ้าหลุดวิชาที่ไม่มี
+    pattern เข้ามา ผู้ใช้จะกดปุ่มตัวอย่างของเราเองแล้วเจอ
+    "ยังไม่พบว่าเปิดสอน" ซึ่งเป็นการแนะนำตัวที่แย่ที่สุด
+    """
+    rows = run(
+        repo.sample_courses(live_db, get_settings().default_program_code, limit=3)
+    )
+
+    assert len(rows) == 3
+    assert set(rows[0]) == {"course_code", "name_th"}
+    for row in rows:
+        assert re.fullmatch(r"\d{7}", row["course_code"]), row
+        assert row["name_th"]
+        course = run(repo.course_by_code(live_db, row["course_code"]))
+        assert course is not None
+        assert any(
+            course[key] for key in ("opens_sem1", "opens_sem2", "opens_sem3")
+        ), row["course_code"]
+
+
+def test_sample_courses_respects_limit_and_program(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """หลักสูตรที่ไม่มีในระบบต้องได้ลิสต์ว่าง ไม่ใช่วิชาของหลักสูตรอื่น"""
+    assert len(run(repo.sample_courses(live_db, "643170151", limit=1))) == 1
+    assert run(repo.sample_courses(live_db, "ไม่มีหลักสูตรนี้", limit=3)) == []
+
+
 def test_offerings_for_course_returns_newest_term_first(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
@@ -814,6 +848,62 @@ def test_chat_log_stores_citations_as_jsonb_and_token_counts(
     assert (row["prompt_tokens"], row["output_tokens"]) == (120, 40)
 
 
+def test_chat_log_records_delivery_status_and_rejects_unknown_values(
+    live_db: Database, run: Callable[..., Any], test_user: int
+) -> None:
+    """
+    ``status`` แยกรอบที่ส่งถึงผู้ใช้ออกจากรอบที่ **คิดคำตอบได้แต่ส่งไม่ถึง**
+
+    เดิมรอบที่ส่งไม่ถึงไม่ถูกบันทึกเลย ทำให้ธีสิสนับอัตราการตอบสำเร็จเกินจริง
+    เทสนี้ยืนยันสามอย่างที่ mock พิสูจน์ให้ไม่ได้: ค่า default ของคอลัมน์,
+    ค่า send_failed เขียนลงได้จริง และ CHECK ปฏิเสธค่าที่พิมพ์ผิด
+    (ต้องใช้ migration 004 — ถ้าเทสนี้ฟ้องว่าไม่มีคอลัมน์ ให้รัน ``make migrate``)
+    """
+    for status, message in (
+        (repo.CHAT_STATUS_DELIVERED, "itest-ส่งถึงแล้ว"),
+        (repo.CHAT_STATUS_SEND_FAILED, "itest-ส่งไม่ถึง"),
+    ):
+        run(
+            repo.insert_chat_log(
+                live_db,
+                user_id=test_user,
+                message_text=message,
+                answered_by="ai_chat",
+                intent_key="ai_chat",
+                confidence=None,
+                response_text="คำตอบที่ router คิดไว้",
+                citations=None,
+                latency_ms=None,
+                llm_model=None,
+                prompt_tokens=None,
+                output_tokens=None,
+                status=status,
+            )
+        )
+
+    rows = run(
+        live_db.fetch_all(
+            "SELECT message_text, status FROM chat_logs WHERE user_id = %s"
+            " ORDER BY message_text",
+            (test_user,),
+        )
+    )
+    assert rows == [
+        {"message_text": "itest-ส่งถึงแล้ว", "status": repo.CHAT_STATUS_DELIVERED},
+        {"message_text": "itest-ส่งไม่ถึง", "status": repo.CHAT_STATUS_SEND_FAILED},
+    ]
+
+    # ค่าที่ไม่อยู่ใน CHECK ต้องถูกปฏิเสธ ไม่ใช่เข้าไปเงียบ ๆ แล้วเจอตอนสรุปผล
+    with pytest.raises(Exception, match="chat_logs_status_check"):
+        run(
+            live_db.fetch_all(
+                "INSERT INTO chat_logs (user_id, answered_by, status)"
+                " VALUES (%s, %s, %s) RETURNING id",
+                (test_user, "search", "ส่งไม่ได้"),
+            )
+        )
+
+
 def test_recent_chat_returns_only_ai_rows_newest_last(
     live_db: Database, run: Callable[..., Any], test_user: int
 ) -> None:
@@ -922,6 +1012,7 @@ COVERED_FUNCTIONS = frozenset(
         "instructor_contact_coverage",
         "planning_coverage",
         "course_by_code",
+        "sample_courses",
         "offerings_for_course",
         "latest_term",
         # ทางเขียน (บทสนทนา + โหมดปรึกษา AI)

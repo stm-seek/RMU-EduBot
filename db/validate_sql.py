@@ -22,6 +22,9 @@ from sqlglot.errors import ParseError
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FILES = [
     REPO_ROOT / "db" / "migrations" / "001_init.sql",
+    REPO_ROOT / "db" / "migrations" / "002_ai_sessions.sql",
+    REPO_ROOT / "db" / "migrations" / "003_answered_by_values.sql",
+    REPO_ROOT / "db" / "migrations" / "004_chat_log_status.sql",
     REPO_ROOT / "db" / "seed" / "002_seed_data.sql",
 ]
 

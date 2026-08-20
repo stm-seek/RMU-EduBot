@@ -194,9 +194,36 @@ async def test_menu_works_without_db() -> None:
     """เมนูหลักไม่ต้องใช้ DB — ต้องใช้งานได้เสมอ"""
     result = await bot_router.handle_postback("action=menu", None)
 
-    assert result.answered_by == "rich_menu"
+    assert result.answered_by == "quick_reply"
     assert result.intent_key == "menu"
     assert_line_limits(result.messages)
+
+
+async def test_rich_menu_taps_are_distinguishable_from_quick_reply_taps() -> None:
+    """
+    LINE ส่ง postback event หน้าตาเหมือนกันทุกอย่างไม่ว่ากดจาก Rich Menu หรือ
+    Quick Reply → ต้องฝัง ``src=rich`` ไว้ในปุ่มของ Rich Menu เอง
+
+    ถ้าเทสนี้แดง แปลว่า ``chat_logs`` กลับไปนับสองพื้นผิวรวมกันอีกครั้ง
+    แล้วเคลมในธีสิสว่า "Rich Menu รับภาระเท่านี้" ไม่ได้
+    """
+    from_rich = await bot_router.handle_postback("action=menu&src=rich", None)
+    from_chat = await bot_router.handle_postback("action=menu", None)
+
+    assert from_rich.answered_by == "rich_menu"
+    assert from_chat.answered_by == "quick_reply"
+    # ข้อความที่ผู้ใช้เห็นต้องเหมือนกันเป๊ะ — ต่างกันแค่ป้ายสำหรับวัดผล
+    assert from_rich.messages == from_chat.messages
+
+
+async def test_button_answer_marker_never_reaches_chat_logs() -> None:
+    """
+    ``BUTTON_ANSWER`` เป็นป้ายชั่วคราวระหว่างทาง ถ้าหลุดออกไปถึง ``chat_logs``
+    แปลว่ามี handler ที่ถูกเรียกโดยไม่ผ่าน :func:`handle_postback`
+    """
+    for data in ["action=menu", "action=documents&src=rich", "action=plan"]:
+        result = await bot_router.handle_postback(data, documents_db())
+        assert result.answered_by != bot_router.BUTTON_ANSWER, data
 
 
 async def test_unknown_action_falls_back() -> None:
@@ -232,7 +259,9 @@ async def test_document_categories_lists_thai_labels_and_counts() -> None:
     result = await bot_router._document_categories_answer(documents_db())
 
     assert_line_limits(result.messages)
-    assert result.answered_by == "rich_menu"
+    # เรียก handler ตรง ๆ → ยังเป็นป้ายกลาง ๆ (handle_postback เท่านั้นที่แทน
+    # ด้วยพื้นผิวจริง — ดู test_rich_menu_taps_are_distinguishable...)
+    assert result.answered_by == bot_router.BUTTON_ANSWER
     assert result.intent_key == "documents"
 
     text = result.messages[0]["text"]
@@ -354,7 +383,7 @@ async def test_plan_reports_only_what_it_knows() -> None:
     result = await bot_router._plan_answer(plan_db())
 
     assert_line_limits(result.messages)
-    assert result.answered_by == "rich_menu"
+    assert result.answered_by == bot_router.BUTTON_ANSWER
     text = result.messages[0]["text"]
     assert "45 วิชา" in text
     assert "มคอ.2" in text
@@ -401,7 +430,7 @@ async def test_course_code_is_answered_from_database() -> None:
     result = await bot_router.handle_text("อยากรู้เรื่องวิชา 7010102 ครับ", db)
 
     assert_line_limits(result.messages)
-    assert result.answered_by == "rich_menu"
+    assert result.answered_by == "course", "พิมพ์รหัสมาเอง ไม่ได้กดปุ่มอะไร"
     assert result.intent_key == "course:7010102"
 
     text = result.messages[0]["text"]
@@ -410,6 +439,94 @@ async def test_course_code_is_answered_from_database() -> None:
     assert "เทอม 1" in text
     assert "เทอม 2" not in text, "ห้ามบอกว่าเปิดเทอมที่ไม่ได้เปิด"
     assert result.citations[0]["url"].startswith("https://regis.rmu.ac.th")
+
+
+SAMPLE_COURSE_ROWS = [
+    {"course_code": "1109901", "name_th": "ภาษาอังกฤษสำหรับชีวิตประจำวัน"},
+    {"course_code": "1109902", "name_th": "ภาษาไทยเพื่อการสื่อสาร"},
+    {"course_code": "7071203", "name_th": "การออกแบบและพัฒนาระบบงานสารสนเทศ"},
+]
+
+
+def course_help_db() -> FakeDatabase:
+    """ลำดับสำคัญ: SQL ของทั้งสอง query มีคำว่า ``program_courses`` เหมือนกัน"""
+    return FakeDatabase(
+        {
+            "ORDER BY op.terms_found": SAMPLE_COURSE_ROWS,
+            "curriculum_rules": COVERAGE_NO_PLAN,
+        }
+    )
+
+
+async def test_course_button_explains_how_to_use_and_offers_real_examples() -> None:
+    """
+    ปุ่ม "ค้นรายวิชา" บน Rich Menu กดแล้วต้องมีของให้กดต่อ
+
+    Rich Menu สั่งให้ผู้ใช้พิมพ์ต่อไม่ได้ → ถ้าตอบแค่ "พิมพ์รหัสมา"
+    คนที่ไม่รู้รหัสวิชาจะตันอยู่ตรงนั้น
+    """
+    result = await bot_router.handle_postback("action=course", course_help_db())
+
+    assert_line_limits(result.messages)
+    assert result.intent_key == "course"
+
+    text = result.messages[0]["text"]
+    assert "125 วิชา" in text, "ต้องบอกจำนวนวิชาที่มีจริง"
+    assert "45 วิชา" in text
+    assert "1109901" in text, "ตัวอย่างรหัสวิชาต้องเป็นของจริงจาก DB"
+
+    items = result.messages[0]["quickReply"]["items"]
+    codes = [
+        bot_router.parse_postback_data(item["action"]["data"]).get("code")
+        for item in items
+    ]
+    assert codes[:3] == ["1109901", "1109902", "7071203"]
+    assert codes[-1] is None, "ปุ่มสุดท้ายต้องเป็นเมนูหลัก"
+
+
+async def test_course_button_never_hardcodes_an_example_code() -> None:
+    """
+    ถ้า re-scrape แล้วรหัสตัวอย่างหายไป บอทต้องไม่แนะนำวิชาที่ตอบไม่ได้
+
+    → ตัวอย่างในข้อความต้องมาจากแถวที่ query ได้จริงเท่านั้น
+    """
+    db = FakeDatabase({"curriculum_rules": COVERAGE_NO_PLAN})
+    result = await bot_router.handle_postback("action=course", db)
+
+    text = result.messages[0]["text"]
+    assert "เช่น" not in text, "ไม่มีข้อมูลตัวอย่างแล้วห้ามยกตัวอย่าง"
+    assert "พิมพ์รหัสวิชา 7 หลัก" in text
+    assert result.messages[0]["quickReply"]["items"], "ยังต้องมีปุ่มเมนูหลัก"
+
+
+async def test_course_button_with_code_answers_that_course_directly() -> None:
+    """
+    ปุ่มวิชาตัวอย่างต้องวิ่งเข้าเส้นทางเดียวกับที่ผู้ใช้พิมพ์รหัสมาเอง
+    ไม่ใช่ code path แยกที่ต้องดูแลสองที่
+    """
+    db = FakeDatabase(
+        {
+            "FROM courses": {
+                "course_code": "1109901",
+                "name_th": "ภาษาอังกฤษสำหรับชีวิตประจำวัน",
+                "credits_text": "3(2-2-5)",
+                "opens_sem1": True,
+                "terms_observed": 4,
+            }
+        }
+    )
+    result = await bot_router.handle_postback("action=course&code=1109901", db)
+
+    assert_line_limits(result.messages)
+    assert result.intent_key == "course:1109901"
+    assert "ภาษาอังกฤษสำหรับชีวิตประจำวัน" in result.messages[0]["text"]
+
+
+async def test_course_button_without_database_says_no_data() -> None:
+    result = await bot_router.handle_postback("action=course", None)
+
+    assert result.answered_by == "no_data"
+    assert result.intent_key == "course"
 
 
 async def test_course_without_offering_pattern_says_so() -> None:
@@ -496,10 +613,21 @@ async def test_follow_welcomes_with_capabilities() -> None:
     result = await bot_router.handle_follow()
 
     assert_line_limits(result.messages)
-    assert result.answered_by == "rich_menu"
+    assert result.answered_by == "follow", "การเพิ่มเพื่อนไม่ใช่การกดปุ่ม"
     assert result.intent_key == "follow"
     assert result.messages[0]["quickReply"]["items"]
     assert "รหัสวิชา 7 หลัก" in result.messages[0]["text"]
+
+
+async def test_menu_button_reuses_the_welcome_message_but_not_its_label() -> None:
+    """
+    ปุ่ม "เมนูหลัก" ใช้ข้อความเดียวกับตอนต้อนรับ แต่ต้องนับแยกกัน
+    ไม่งั้นยอดกดเมนูจะบวกทุกครั้งที่มีคนเพิ่มเพื่อนใหม่
+    """
+    tapped = await bot_router.handle_follow(intent_key="menu")
+
+    assert tapped.answered_by == bot_router.BUTTON_ANSWER
+    assert tapped.messages == (await bot_router.handle_follow()).messages
 
 
 # ── RouteResult ─────────────────────────────────────────────────────────────

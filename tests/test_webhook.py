@@ -375,7 +375,9 @@ async def test_process_event_logs_which_channel_was_used(
     monkeypatch.setattr(main, "_http", recorder.client())
 
     with caplog.at_level(logging.INFO, logger="app.main"):
-        await main.process_event(postback_event("action=menu"), sending_settings())
+        await main.process_event(
+            postback_event("action=menu&src=rich"), sending_settings()
+        )
 
     assert "by=rich_menu" in caplog.text
     assert "ผ่าน=reply" in caplog.text
@@ -410,7 +412,7 @@ async def test_build_result_passes_db_to_router() -> None:
 
     result = await main.build_result(postback_event("action=documents"), db)
 
-    assert result is not None and result.answered_by == "rich_menu"
+    assert result is not None and result.answered_by == "quick_reply"
     assert db.count == 1
 
 
@@ -458,7 +460,8 @@ async def test_process_event_writes_chat_log(monkeypatch: pytest.MonkeyPatch) ->
     assert params is not None
     # (user_id, message_text, answered_by, intent_key, ...)
     assert params[1] == "action=documents"
-    assert params[2] == "rich_menu"
+    # ไม่มี ``src=rich`` → ปุ่มนี้มาจาก Quick Reply ในบทสนทนา ไม่ใช่ Rich Menu
+    assert params[2] == "quick_reply"
     assert params[3] == "documents"
 
 
@@ -503,6 +506,129 @@ async def test_chat_log_failure_never_breaks_conversation(
     assert recorder.paths() == [REPLY_PATH]
     assert "chat_logs" in caplog.text
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+# ── ส่งไม่ถึงผู้ใช้ ก็ต้องนับได้ (ช่องว่างการวัดผลที่เพิ่งปิด) ──────────────────
+#
+# เดิม ``except LineApiError`` แค่ log แล้วจบ → รอบที่ส่งไม่ถึง **ไม่มีแถวใน
+# chat_logs เลย** ธีสิสนับจำนวนรอบที่ตอบได้จากตารางนี้ตรง ๆ ความล้มเหลวจึง
+# หายไปจากข้อมูลและอัตราการตอบสำเร็จสูงเกินจริงแบบเงียบ ๆ
+
+
+def chat_log_writes(db) -> list[tuple]:
+    """params ของทุก ``INSERT INTO chat_logs`` ที่ถูกยิง — ใช้นับว่าเขียนกี่แถว"""
+    return [params for sql, params in db.executed if "INSERT INTO chat_logs" in sql]
+
+
+async def test_push_failure_still_writes_chat_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ส่งไม่สำเร็จ → ยังต้องได้ ``chat_logs`` **1 แถว** ที่ ``status='send_failed'``
+    และ ``answered_by`` ต้องเป็นค่าที่ router ตัดสินไว้ (ไม่ถูกทับด้วยป้าย
+    ความล้มเหลว — พื้นผิวที่ตอบกับผลการส่งเป็นคนละเรื่อง)
+
+    ใช้ event ที่ไม่มี ``replyToken`` เพื่อให้เหลือทาง push ทางเดียว
+    """
+    from app.repository import CHAT_STATUS_SEND_FAILED
+
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((500, {"message": "Internal server error"}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 7}})
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    event = postback_event("action=menu&src=rich")
+    del event["replyToken"]
+
+    await main.process_event(event, sending_settings())
+
+    assert recorder.paths() == [PUSH_PATH]
+
+    writes = chat_log_writes(db)
+    assert len(writes) == 1, f"ต้องเขียนแถวเดียว (ได้ {len(writes)})"
+    params = writes[0]
+    assert params[2] == "rich_menu", "ป้ายพื้นผิวของ router ต้องคงอยู่"
+    assert params[3] == "menu"
+    assert params[11] == CHAT_STATUS_SEND_FAILED
+
+
+async def test_reply_then_push_failure_logs_exactly_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    reply พัง → fallback ไป push → push พังด้วย = **1 แถว ไม่ใช่ 2**
+
+    ``reply_or_push`` ลอง push ให้ในตัวก่อนจะโยน ``LineApiError`` ออกมา
+    ถ้าใครเพิ่มการบันทึกไว้ทั้งใน client และใน ``process_event``
+    ตัวเลขในธีสิสจะนับรอบเดียวเป็นสองรอบ
+    """
+    from app.repository import CHAT_STATUS_SEND_FAILED
+
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((400, {"message": "Invalid reply token"}), (500, {}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 7}})
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    with caplog.at_level(logging.ERROR, logger="app.main"):
+        await main.process_event(message_event("ขอแบบฟอร์มลาพัก"), sending_settings())
+
+    assert recorder.paths() == [REPLY_PATH, PUSH_PATH]
+
+    writes = chat_log_writes(db)
+    assert len(writes) == 1, f"ลองสองทางแต่เป็นรอบเดียว (ได้ {len(writes)} แถว)"
+    assert writes[0][1] == "ขอแบบฟอร์มลาพัก"
+    assert writes[0][11] == CHAT_STATUS_SEND_FAILED
+    # ความล้มเหลวของการส่งต้องยังเห็นใน log ไม่ถูกกลืนโดยการบันทึก
+    assert "LINE API" in caplog.text
+
+
+async def test_successful_send_is_logged_as_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """เส้นทางปกติต้องได้ ``status='delivered'`` — ไม่งั้นแยกสองกรณีไม่ออก"""
+    from app.repository import CHAT_STATUS_DELIVERED
+
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((200, {}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 7}})
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    await main.process_event(postback_event("action=menu"), sending_settings())
+
+    writes = chat_log_writes(db)
+    assert len(writes) == 1
+    assert writes[0][11] == CHAT_STATUS_DELIVERED
+
+
+async def test_send_failure_with_broken_db_keeps_the_send_error_visible(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    เขียน ``chat_logs`` ไม่ได้ **ตอนที่ส่งก็ไม่สำเร็จ** — ห้ามให้ความล้มเหลว
+    ของการบันทึกบังความล้มเหลวของการส่ง และห้าม exception หลุดออกจาก
+    background task (ถ้าหลุด LINE จะไม่มีใครเห็นเลยว่าเกิดอะไรขึ้น)
+    """
+    from .helpers import FakeWriteDatabase
+
+    class BrokenDb(FakeWriteDatabase):
+        async def execute(self, sql: str, params=None) -> int:
+            raise RuntimeError("disk full")
+
+    recorder = Recorder((400, {"message": "Invalid reply token"}), (500, {}))
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", BrokenDb({"RETURNING id": {"id": 7}}))
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        await main.process_event(message_event(), sending_settings())
+
+    assert "LINE API" in caplog.text, "ต้องยังเห็นสาเหตุจริงว่าส่งไม่ได้"
+    assert "chat_logs" in caplog.text, "และเห็นว่าบันทึกไม่สำเร็จด้วย"
 
 
 # ── AI Chat ผ่าน webhook ทั้งเส้นทาง (Requirement ข้อ 9) ──────────────────
