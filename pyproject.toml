@@ -1,0 +1,43 @@
+# ============================================================================
+#  Metadata + dependency ของโปรเจกต์ (อ่านได้ด้วย pip / uv / เครื่องมือสแกน)
+#
+#  เวอร์ชัน pin ไว้ตรงกับ environment ที่ยืนยันแล้วว่าใช้งานได้จริง
+#  (ตรวจเมื่อ 2026-08-19 — Python 3.13.14, เทสผ่าน 244 tests + 17 doctests)
+#  ต้องแก้ทั้งที่นี่และใน requirements*.txt ให้ตรงกันเสมอ
+#
+#  ตั้งใจไม่ใส่ [build-system] — โปรเจกต์นี้รันจาก repo ตรง ๆ (pythonpath = .)
+#  ใส่ build backend แล้วจะไป guess package layout ซึ่งกระทบวิธีรันเทส
+#  ติดตั้งจริงใช้:  python -m pip install -r requirements-dev.txt
+#
+#  ตั้งค่า pytest ยังอยู่ที่ pytest.ini — ไม่ย้ายมาที่นี่
+# ============================================================================
+
+[project]
+name = "line-bot-jang"
+version = "0.1.0"
+description = "LINE AI Academic Assistant — แชทบอทให้คำปรึกษาด้านการเรียน มรภ.มหาสารคาม"
+readme = "README.md"
+requires-python = ">=3.13"
+
+# ── รันแอป (ตรงกับ requirements.txt) ────────────────────────────────────────
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.42.0",
+    "pydantic==2.12.5",
+    "pydantic-settings==2.15.0",
+    "httpx==0.28.1",
+    "psycopg[binary]==3.3.4",
+    "psycopg-pool==3.3.1",
+]
+
+# ── scraper + ตรวจ SQL + เทส (ตรงกับ requirements-dev.txt) ──────────────────
+[project.optional-dependencies]
+dev = [
+    "requests==2.32.5",
+    "urllib3==2.6.3",
+    "beautifulsoup4==4.15.0",
+    "lxml==6.1.1",
+    "sqlglot==30.17.0",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+]

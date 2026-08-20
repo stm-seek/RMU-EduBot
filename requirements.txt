@@ -1,0 +1,22 @@
+# ============================================================================
+#  Dependency สำหรับรันแอป (FastAPI + LINE webhook + Postgres)
+#
+#  ติดตั้ง:  python -m pip install -r requirements.txt
+#
+#  เวอร์ชัน pin ไว้ตรงกับ environment ที่ยืนยันแล้วว่าใช้งานได้จริง
+#  (ตรวจเมื่อ 2026-08-19 — Python 3.13.14, เทสผ่าน 244 tests + 17 doctests)
+#
+#  ตัวที่ใช้เฉพาะตอน scrape / ตรวจ SQL / รันเทส อยู่ใน requirements-dev.txt
+# ============================================================================
+
+fastapi==0.115.0
+# [standard] จำเป็น — httptools/websockets/watchfiles (uvloop ข้ามให้เองบน Windows)
+uvicorn[standard]==0.42.0
+# import ตรงใน app/config.py, app/main.py จึงประกาศเอง ไม่พึ่ง fastapi ลากมา
+pydantic==2.12.5
+pydantic-settings==2.15.0
+# ใช้ทั้งเรียก LINE API / LLM และเป็น backend ของ fastapi TestClient
+httpx==0.28.1
+# [binary] จำเป็นบน Windows — ไม่ต้องมี libpq/คอมไพเลอร์
+psycopg[binary]==3.3.4
+psycopg-pool==3.3.1

@@ -1,0 +1,38 @@
+# --- secrets / env ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# --- scraped personal data (PDPA) ---
+kb/data/students/
+*student_data*.json
+*_private.json
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# --- scraper cache / db ---
+kb/data/raw/
+kb/data/*.db
+kb/data/*.db-journal
+
+# --- editor / os ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# สำรอง webhook URL เดิมของ LINE ก่อนเปลี่ยนไปใช้ tunnel
+.webhook-endpoint.bak
+.server.*.log
+.cf.*.log
+.claude/
+.funnel.log
+.tslog.txt
+.cf.log

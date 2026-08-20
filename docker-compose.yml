@@ -1,0 +1,58 @@
+# Postgres + pgvector สำหรับรันในเครื่อง (local dev)
+#
+# ใช้ image pgvector/pgvector ที่มี extension vector มาให้แล้ว
+# ไม่ต้อง compile เอง
+#
+#   docker compose up -d
+#   docker compose logs -f db      # ดูว่า migration รันผ่าน
+#
+# migration ใน db/migrations/ จะรัน *อัตโนมัติครั้งแรกที่สร้าง volume*
+# ถ้าแก้ไฟล์ SQL แล้วอยากรันใหม่: docker compose down -v && docker compose up -d
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: rmu_bot_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rmubot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rmubot_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-rmu_bot}
+      # ให้ error ภาษาไทยอ่านออก + collation ที่เรียงไทยได้
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+      TZ: Asia/Bangkok
+    ports:
+      # bind แค่ localhost — ไม่เปิด DB ออกเน็ต
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # ไฟล์ใน docker-entrypoint-initdb.d รันตามลำดับชื่อไฟล์ตอน init ครั้งแรก
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rmubot} -d ${POSTGRES_DB:-rmu_bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # pgAdmin — ไม่จำเป็น แต่สะดวกตอน dev
+  # เปิดด้วย: docker compose --profile tools up -d
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: rmu_bot_pgadmin
+    profiles: ["tools"]
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@local.dev}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "127.0.0.1:5050:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+    name: rmu_bot_pgdata
