@@ -84,6 +84,18 @@ class Settings(BaseSettings):
     rag_similarity_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     rag_top_k: int = Field(default=5, ge=1, le=50)
 
+    # ── AI Chat (Requirement ข้อ 9) ─────────────────────────────────────────
+    # ปิดทั้งชั้นได้ด้วยตัวเดียว (เช่น key หมดกะทันหัน) — router จะถอยกลับไป
+    # ตอบ fallback แบบเดิม ไม่ใช่พัง
+    ai_chat_enabled: bool = True
+    # จำนวนรอบสนทนาเก่าที่ดึงจาก chat_logs มาต่อเป็น context
+    # 4 รอบ = 8 message ≈ ไม่กี่ร้อย token — พอสำหรับ "แล้วต้องทำยังไงอีก"
+    # โดยไม่ทำให้ prompt บวม (ทุกข้อความถูกตัดเพดานด้วยค่าข้างล่างอีกที)
+    ai_chat_history_turns: int = Field(default=4, ge=0, le=10)
+    # เพดานตัวอักษรรวมของประวัติ — กันข้อความยาวพิเศษทำ prompt บวม
+    # นับจากรอบล่าสุดย้อนหลัง เกินเมื่อไหร่หยุดดึงเพิ่ม
+    ai_chat_max_history_chars: int = Field(default=2_000, ge=0)
+
     # ── Scope ───────────────────────────────────────────────────────────────
     default_program_id: int = 59721
     default_program_code: str = "643170151"

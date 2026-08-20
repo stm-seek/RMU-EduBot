@@ -17,9 +17,10 @@ Repository — SQL ทั้งหมดของชั้นที่ 1 (ตอ
 
 from __future__ import annotations
 
+import json
 import logging
 
-from .db import SupportsQuery
+from .db import SupportsExecute, SupportsQuery
 
 log = logging.getLogger("app.repository")
 
@@ -287,6 +288,109 @@ async def latest_term(db: SupportsQuery) -> dict | None:
     return await db.fetch_one(SQL_LATEST_TERM)
 
 
+# ── บทสนทนา: ประวัติ + log (ชั้นที่ 3 — AI Chat) ───────────────────────────
+#
+# สองตารางนี้ต่างจากข้างบนตรงที่เป็น **ทางเขียน** → ต้องใช้ SupportsExecute
+# (ดู :class:`app.db.SupportsExecute`) แยก Protocol ไว้เพื่อให้ชั้นอ่าน
+# ไม่มีสิทธิ์เขียนโดยบังเอิญ
+
+SQL_RECENT_CHAT = """
+SELECT message_text, response_text
+FROM chat_logs
+WHERE user_id = %s
+  AND answered_by = 'ai_chat'
+  AND message_text IS NOT NULL
+  AND response_text IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT %s
+"""
+
+
+async def recent_chat(db: SupportsQuery, user_id: int, turns: int) -> list[dict]:
+    """
+    ดึงบทสนทนา AI Chat ล่าสุดของ user คนนี้ (เก่า → ใหม่)
+
+    ``user_id`` คือ id ใน ``app_users`` (ผูกกับ ``line_user_hash``) ดังนั้น
+    ประวัติ **แยกกันตามผู้ใช้โดยอัตโนมัติ** — ไม่มีทางที่คนหนึ่งเห็นบริบท
+    ของอีกคน และดึงเฉพาะแถว ``answered_by='ai_chat'`` ที่เก็บ ``response_text``
+    ไว้ ไม่ปนกับคำตอบจากปุ่ม/ค้นหา (พวกนั้นไม่มีบทสนทนาให้จำ)
+
+    ``ORDER BY ... DESC`` แล้วกลับลำดับใน Python — ให้รอบล่าสุดอยู่ท้าย
+    เพื่อส่งเข้า LLM ตามลำดับจริง
+    """
+    rows = await db.fetch_all(SQL_RECENT_CHAT, (user_id, turns))
+    return list(reversed(rows))
+
+
+SQL_INSERT_CHAT_LOG = """
+INSERT INTO chat_logs (
+    user_id, message_text, answered_by, intent_key, confidence,
+    response_text, citations, latency_ms, llm_model, prompt_tokens, output_tokens
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
+
+
+async def insert_chat_log(
+    db: SupportsExecute,
+    *,
+    user_id: int | None,
+    message_text: str | None,
+    answered_by: str,
+    intent_key: str | None,
+    confidence: float | None,
+    response_text: str | None,
+    citations: list[dict] | None,
+    latency_ms: int | None,
+    llm_model: str | None,
+    prompt_tokens: int | None,
+    output_tokens: int | None,
+) -> int:
+    """
+    บันทึก 1 รอบสนทนาลง ``chat_logs``
+
+    ``user_id`` เป็น ``None`` ได้ — webhook บาง event ไม่มี userId
+    (เช่นใน group) ก็ยังเก็บข้อความ+ชั้นที่ตอบไว้ใช้วัดผลได้
+    """
+    return await db.execute(
+        SQL_INSERT_CHAT_LOG,
+        (
+            user_id,
+            message_text,
+            answered_by,
+            intent_key,
+            confidence,
+            response_text,
+            json.dumps(citations, ensure_ascii=False) if citations is not None else None,
+            latency_ms,
+            llm_model,
+            prompt_tokens,
+            output_tokens,
+        ),
+    )
+
+
+SQL_TOUCH_APP_USER = """
+INSERT INTO app_users (line_user_hash, last_seen_at)
+VALUES (%s, now())
+ON CONFLICT (line_user_hash) DO UPDATE
+SET last_seen_at = now()
+RETURNING id
+"""
+
+
+async def ensure_user(db: SupportsQuery, line_user_hash: str) -> int:
+    """
+    หา/สร้างแถว ``app_users`` แล้วคืน ``id``
+
+    ใช้ ``ON CONFLICT ... DO UPDATE SET last_seen_at`` เพราะ ``INSERT ...
+    ON CONFLICT DO NOTHING RETURNING id`` **ไม่คืนแถว** เมื่อชน (id เป็น
+    ``None``) ส่วน ``DO UPDATE`` คืนแถวเสมอ และได้ ``last_seen_at`` ฟรีด้วย
+    (PDPA: เก็บแค่ hash + เวลา ไม่เก็บชื่อ ไม่เก็บข้อความส่วนตัวตรงนี้)
+    """
+    row = await db.fetch_one(SQL_TOUCH_APP_USER, (line_user_hash,))
+    return int(row["id"])
+
+
 # ── ทะเบียนรวมของ SQL ทั้งไฟล์ (ใช้ในเทส) ───────────────────────────────────
 
 ALL_QUERIES: dict[str, str] = {
@@ -301,4 +405,7 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_COURSE_BY_CODE": SQL_COURSE_BY_CODE,
     "SQL_OFFERINGS_FOR_COURSE": SQL_OFFERINGS_FOR_COURSE,
     "SQL_LATEST_TERM": SQL_LATEST_TERM,
+    "SQL_RECENT_CHAT": SQL_RECENT_CHAT,
+    "SQL_INSERT_CHAT_LOG": SQL_INSERT_CHAT_LOG,
+    "SQL_TOUCH_APP_USER": SQL_TOUCH_APP_USER,
 }

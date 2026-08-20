@@ -173,6 +173,32 @@ class FakeDatabase:
         raise AssertionError(f"ไม่มี query ที่มี {needle!r} ถูกเรียก")
 
 
+class FakeWriteDatabase(FakeDatabase):
+    """
+    :class:`FakeDatabase` ที่รองรับ **ทางเขียน** (``execute``) ด้วย
+
+    ใช้เทส ``chat_logs`` / ``app_users`` โดยไม่ต้องมี Postgres จริง
+    บันทึกทุก execute ไว้ให้เทสตรวจว่า SQL/params ถูกต้อง
+    """
+
+    def __init__(
+        self, rules: dict[str, list[dict] | dict | None] | None = None
+    ) -> None:
+        super().__init__(rules)
+        self.executed: list[tuple[str, tuple | None]] = []
+
+    async def execute(self, sql: str, params=None) -> int:
+        self.executed.append((sql, params))
+        return 1
+
+    def executed_for(self, needle: str) -> tuple | None:
+        """params ของ execute แรกที่มี ``needle`` อยู่ใน SQL"""
+        for sql, params in self.executed:
+            if needle in sql:
+                return params
+        raise AssertionError(f"ไม่มี execute ที่มี {needle!r} ถูกเรียก")
+
+
 # ── ตรวจข้อจำกัดของ LINE ─────────────────────────────────────────────────────
 
 

@@ -166,3 +166,13 @@ def no_data_message(topic: str) -> dict:
         "แนะนำให้ติดต่อสำนักงานคณะโดยตรง",
         quick_reply(MAIN_MENU_ACTIONS),
     )
+
+
+def ai_chat_message(text: str) -> dict:
+    """
+    คำตอบจาก AI Chat (Requirement ข้อ 9) — ข้อความของ LLM ตรง ๆ + ปุ่มเมนู
+
+    ไม่ต่อ header/footer ว่า "เป็นคำตอบจาก AI" ในข้อความ เพราะ user กดเข้ามา
+    ถาม AI อยู่แล้ว แต่ถ้าต้องการเพิ่มภายหลังแก้ที่นี่ที่เดียว
+    """
+    return text_message(text, quick_reply(MAIN_MENU_ACTIONS))

@@ -430,3 +430,166 @@ async def test_process_event_reads_db_from_module_state(
 
     assert db.count == 1, "ต้องใช้ฐานข้อมูลที่เปิดไว้ตอน startup"
     assert recorder.paths() == [REPLY_PATH]
+
+
+# ── chat_logs: บันทึกทุกคำตอบ (Requirement ข้อ 15) ────────────────────────
+
+
+async def test_process_event_writes_chat_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    ตอบสำเร็จแล้วต้องเขียน ``chat_logs`` 1 แถว — ใช้เป็นข้อมูลวัดผลธีสิส
+    (fallback rate / intent distribution) และเป็นบริบทของ AI Chat รอบถัดไป
+    """
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((200, {}))
+    db = FakeWriteDatabase(
+        {
+            "GROUP BY category": [{"category": "loan", "total": 12}],
+            "RETURNING id": {"id": 12},
+        }
+    )
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    await main.process_event(postback_event("action=documents"), sending_settings())
+
+    params = db.executed_for("INSERT INTO chat_logs")
+    assert params is not None
+    # (user_id, message_text, answered_by, intent_key, ...)
+    assert params[1] == "action=documents"
+    assert params[2] == "rich_menu"
+    assert params[3] == "documents"
+
+
+async def test_process_event_logs_text_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ข้อความที่ user พิมพ์ต้องถูกบันทึกลง ``message_text`` ด้วย"""
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((200, {}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 12}})
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    await main.process_event(message_event("สวัสดีครับ"), sending_settings())
+
+    params = db.executed_for("INSERT INTO chat_logs")
+    assert params[1] == "สวัสดีครับ"
+    assert params[2] == "fallback"
+
+
+async def test_chat_log_failure_never_breaks_conversation(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    DB เขียนไม่ได้หลังจากตอบไปแล้ว → นักศึกษาต้องยังได้คำตอบ
+    (เสียข้อมูลวัดผล ดีกว่าตอบเงียบ)
+    """
+    from .helpers import FakeWriteDatabase
+
+    class BrokenDb(FakeWriteDatabase):
+        async def execute(self, sql: str, params=None) -> int:
+            raise RuntimeError("disk full")
+
+    recorder = Recorder((200, {}))
+    db = BrokenDb()
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        await main.process_event(postback_event("action=menu"), sending_settings())
+
+    # ข้อความยังถูกส่ง + เตือนเรื่อง log แต่ไม่ ERROR
+    assert recorder.paths() == [REPLY_PATH]
+    assert "chat_logs" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+# ── AI Chat ผ่าน webhook ทั้งเส้นทาง (Requirement ข้อ 9) ──────────────────
+
+
+def llm_response(text: str = "แนะนำให้อ่านเป็นรอบสั้น ๆ ครับ") -> dict:
+    return {
+        "model": "gemini-3.5-flash-lite",
+        "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 150, "completion_tokens": 60},
+    }
+
+
+async def test_ai_chat_answers_and_logs_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    พิมพ์คำถามทั่วไป → ตอบด้วย LLM → บันทึก ``chat_logs`` พร้อม
+    ``answered_by='ai_chat'`` + ต้นทุน token (ใช้วัดผลธีสิสได้จริง)
+    """
+    from app.llm import LlmClient
+
+    from .helpers import FakeWriteDatabase
+
+    class HistoryDb(FakeWriteDatabase):
+        """INSERT/RETURNING คืนแถว ส่วน SELECT ประวัติคืนว่าง"""
+
+    line_recorder = Recorder((200, {}))
+    db = HistoryDb({"RETURNING id": {"id": 9}, "FROM chat_logs": []})
+    monkeypatch.setattr(main, "_http", line_recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    llm_recorder = Recorder((200, llm_response()))
+    monkeypatch.setattr(
+        main, "_llm", LlmClient(sending_settings(llm_api_key="k"), llm_recorder.client())
+    )
+
+    settings = sending_settings(llm_api_key="k")
+    await main.process_event(message_event("อ่านหนังสือก่อนสอบยังไงดี"), settings)
+
+    # ข้อความจาก LLM ถูกส่งกลับผ่าน reply
+    assert line_recorder.paths() == [REPLY_PATH]
+    reply_body = line_recorder.json_body()
+    assert any(
+        "แนะนำให้อ่าน" in m.get("text", "") for m in reply_body["messages"]
+    )
+
+    # chat_logs เก็บชั้นที่ตอบ + model + token
+    params = db.executed_for("INSERT INTO chat_logs")
+    assert params[2] == "ai_chat"
+    assert params[8] == "gemini-3.5-flash-lite"  # llm_model
+    assert params[9] == 150  # prompt_tokens
+    assert params[10] == 60  # output_tokens
+    assert params[0] == 9  # user_id จาก ensure_user
+
+
+async def test_ai_chat_remembers_context_per_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    รอบที่สองต้องดึงประวัติรอบแรกจาก ``chat_logs`` มาใส่ใน messages
+    ที่ส่งให้ LLM — และดึงด้วย ``user_id`` ของคนนี้เท่านั้น
+    """
+    from app.llm import LlmClient
+
+    from .helpers import FakeWriteDatabase
+
+    line_recorder = Recorder((200, {}))
+    history_rows = [
+        {"message_text": "เพิ่งเข้ามหาลัยควรปรับตัวยังไง", "response_text": "ตอบรอบแรก"},
+    ]
+    db = FakeWriteDatabase({"RETURNING id": {"id": 5}, "FROM chat_logs": history_rows})
+    monkeypatch.setattr(main, "_http", line_recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+
+    llm_recorder = Recorder((200, llm_response()))
+    monkeypatch.setattr(
+        main, "_llm", LlmClient(sending_settings(llm_api_key="k"), llm_recorder.client())
+    )
+
+    settings = sending_settings(llm_api_key="k")
+    await main.process_event(message_event("แล้วต้องทำยังไงอีก"), settings)
+
+    # ดึงประวัติด้วย user_id ที่ ensure_user คืนมา
+    assert db.params_for("FROM chat_logs")[0] == 5
+
+    # ประวัติรอบแรกอยู่ใน payload ที่ส่งให้ LLM
+    request_body = llm_recorder.json_body()
+    contents = [m["content"] for m in request_body["messages"]]
+    assert "ตอบรอบแรก" in contents
+    assert "แล้วต้องทำยังไงอีก" in contents
+    assert request_body["messages"][0]["role"] == "system"

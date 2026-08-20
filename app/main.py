@@ -40,12 +40,13 @@ from pydantic import BaseModel, Field
 
 from . import router as bot_router
 from .config import Settings, get_settings
-from .db import Database, SupportsQuery
+from .db import Database, SupportsExecute, SupportsQuery
 from .db import connect as connect_database
 from .line import messages as msg
-from .line.auth import LiffAuthError, VerifiedUser, verify_id_token
+from .line.auth import LiffAuthError, VerifiedUser, hash_user_id, verify_id_token
 from .line.client import LineApiError, LineClient
 from .line.signature import verify_signature
+from .llm import LlmClient
 
 log = logging.getLogger("app.main")
 
@@ -56,6 +57,10 @@ _http: httpx.AsyncClient | None = None
 # connection pool ของ Postgres — ``None`` ได้ (ยังไม่ตั้ง DATABASE_URL หรือต่อไม่ได้)
 # ตั้งใจให้แอปทำงานต่อได้แบบไม่มี DB แล้วให้บอทตอบว่า "ยังไม่มีข้อมูล"
 _db: Database | None = None
+
+# LLM client — ``None`` ได้ (ยังไม่ตั้ง LLM_API_KEY) AI Chat จะข้ามตัวเอง
+# ใช้ httpx client ตัวเดียวกับทั้งแอป (connection pool เดียว)
+_llm: LlmClient | None = None
 
 
 def _configure_logging(level: str) -> None:
@@ -84,7 +89,7 @@ def _configure_logging(level: str) -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global _http, _db
+    global _http, _db, _llm
     settings = get_settings()
     _configure_logging(settings.log_level)
     _http = httpx.AsyncClient(timeout=30.0)
@@ -102,11 +107,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if not getattr(settings, name):
             log.warning("ยังไม่ได้ตั้ง %s — ฟีเจอร์ที่เกี่ยวข้องจะใช้ไม่ได้", label)
 
+    # LLM สร้างก่อนต่อ DB — AI Chat ใช้ DB ด้วย แต่สร้าง client ล่วงหน้าได้
+    # (ไม่ยิงเน็ตตอนสร้าง) ถ้าไม่มี key ก็ปล่อยให้ None แล้วข้ามชั้นนี้ไป
+    if settings.llm_api_key and _http is not None:
+        _llm = LlmClient(settings, _http)
+        log.info("LLM พร้อม (model=%s)", settings.llm_model)
+
     _db = await connect_database(settings)
 
     try:
         yield
     finally:
+        _llm = None
         if _db is not None:
             await _db.close()
             _db = None
@@ -137,6 +149,11 @@ def get_db() -> SupportsQuery | None:
     ดีกว่าเงียบหรือส่ง 500 กลับ LINE (ซึ่งจะทำให้ LINE retry ซ้ำ)
     """
     return _db
+
+
+def get_llm() -> LlmClient | None:
+    """LLM client — ``None`` ได้เมื่อไม่ได้ตั้ง ``LLM_API_KEY``"""
+    return _llm
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -199,13 +216,21 @@ async def health(settings: SettingsDep) -> dict:
 
 
 async def build_result(
-    event: dict, db: SupportsQuery | None = None
+    event: dict,
+    db: SupportsQuery | None = None,
+    *,
+    settings: Settings | None = None,
+    llm: LlmClient | None = None,
+    user_hash: str | None = None,
 ) -> bot_router.RouteResult | None:
     """
     ตัดสินใจว่าจะตอบอะไร — **ไม่แตะ LINE API เลย**
 
     แยกออกจากการส่งเพื่อให้เทสได้โดยไม่ต้องมี access token
     และเพื่อให้ error เรื่อง config ไม่ปนกับ bug ของ router
+
+    ``settings``/``llm``/``user_hash`` ส่งต่อให้ AI Chat (Requirement ข้อ 9)
+    ถ้า ``llm`` เป็น ``None`` router จะตอบ fallback แบบเดิม ไม่มีอะไรพัง
     """
     event_type = event.get("type")
 
@@ -229,7 +254,13 @@ async def build_result(
                 ],
                 answered_by="fallback",
             )
-        return await bot_router.handle_text(message.get("text", ""), db)
+        return await bot_router.handle_text(
+            message.get("text", ""),
+            db,
+            settings=settings,
+            llm=llm,
+            user_hash=user_hash,
+        )
 
     log.debug("ข้าม event ประเภท %r", event_type)
     return None
@@ -247,8 +278,21 @@ async def process_event(event: dict, settings: Settings) -> None:
     user_id = source.get("userId")
     reply_token = event.get("replyToken")
 
+    # hash user id ก่อนทำอะไรทั้งสิ้น — ทุกชั้นที่อยากจำบริบทผู้ใช้ต้องใช้ค่านี้
+    # (ไม่ใช่ line_user_id ดิบ — PDPA ดู :func:`app.line.auth.hash_user_id`)
+    # ไม่มี pepper → ไม่ hash → AI Chat ไม่จำบริบท แต่บอทยังตอบชั้นอื่นได้
+    user_hash = None
+    if user_id and settings.user_id_pepper:
+        user_hash = hash_user_id(user_id, settings.user_id_pepper)
+
     try:
-        result = await build_result(event, get_db())
+        result = await build_result(
+            event,
+            get_db(),
+            settings=settings,
+            llm=get_llm(),
+            user_hash=user_hash,
+        )
         if result is None:
             return
 
@@ -291,12 +335,65 @@ async def process_event(event: dict, settings: Settings) -> None:
             result.intent_key,
             channel,
         )
-        # TODO: บันทึกลง chat_logs เมื่อต่อ DB แล้ว
+
+        # บันทึกลง chat_logs — วัดผลธีสิส (fallback rate, intent, ต้นทุน LLM)
+        # และเก็บบริบทสนทนาให้ AI Chat ในรอบถัดไป (Requirement ข้อ 9)
+        await _log_conversation(event, result, user_hash)
 
     except LineApiError as exc:
         log.error("LINE API ล้มเหลว: %s", exc)
     except Exception:
         log.exception("ประมวลผล event ล้มเหลว (type=%s)", event_type)
+
+
+async def _log_conversation(
+    event: dict,
+    result: bot_router.RouteResult,
+    user_hash: str | None,
+) -> None:
+    """
+    เขียน 1 รอบสนทนาลง ``chat_logs`` — **ล้มเหลวได้แต่ห้ามพังบทสนทนา**
+
+    ส่งข้อความไปแล้วค่อยบันทึก: ถ้า DB เขียนไม่ได้ นักศึกษาก็ยังได้คำตอบ
+    (แค่เสียข้อมูลวัดผล) ซึ่งดีกว่าตอบเงียบเพราะ log ล้ม
+    """
+    from . import repository as repo
+
+    db = get_db()
+    if db is None or not isinstance(db, SupportsExecute):
+        return
+
+    try:
+        # หา/สร้าง app_users ก่อน — chat_logs.user_id อ้างอิงตารางนั้น
+        # ถ้า router รู้ user_id อยู่แล้ว (ai_chat) ใช้เลย ไม่ต้อง ensure ซ้ำ
+        app_user_id = result.user_id
+        if app_user_id is None and user_hash:
+            app_user_id = await repo.ensure_user(db, user_hash)
+
+        message_text = (event.get("message") or {}).get("text")
+        if event.get("type") == "postback":
+            message_text = (event.get("postback") or {}).get("data")
+
+        response_text = "\n".join(
+            message.get("text", "") for message in result.messages if message.get("text")
+        ) or None
+
+        await repo.insert_chat_log(
+            db,
+            user_id=app_user_id,
+            message_text=message_text,
+            answered_by=result.answered_by,
+            intent_key=result.intent_key,
+            confidence=result.confidence,
+            response_text=response_text,
+            citations=result.citations or None,
+            latency_ms=result.latency_ms,
+            llm_model=result.llm_model,
+            prompt_tokens=result.prompt_tokens,
+            output_tokens=result.output_tokens,
+        )
+    except Exception:
+        log.warning("บันทึก chat_logs ไม่สำเร็จ", exc_info=True)
 
 
 @app.post("/webhook")

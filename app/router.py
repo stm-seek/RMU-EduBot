@@ -10,12 +10,14 @@ Router 3 ชั้น: postback → FAQ → RAG → fallback
 ชั้นที่ 1 ตอบจาก DB ตรง ๆ: เร็ว ฟรี แม่น 100%  ← **ทำแล้ว** ครอบคลุม
 postback จากปุ่ม, รหัสวิชา 7 หลัก, และ **ค้นด้วยคำที่พิมพ์มา** (``pg_trgm``)
 ชั้นที่ 2 (FAQ) ใช้คำตอบที่คนเขียนไว้ ไม่เรียก LLM → ประหยัดและคุมคำตอบได้
-ชั้นที่ 3 (RAG) generate จาก chunk ที่ retrieve ได้ + แนบแหล่งอ้างอิงเสมอ
+ชั้นที่ 3 (RAG/AI Chat) generate ด้วย LLM — ตอนนี้ **AI Chat ทำแล้ว**
+(คำแนะนำการเรียนทั่วไป ตอบจาก ``app/ai_chat.py``) ส่วน RAG/FAQ ยังไม่มี
+เพราะตาราง ``rag_chunks``/``faqs`` ยังว่าง (บล็อกที่เนื้อหาทางการ)
 
-**ค่า ``answered_by`` ที่ไฟล์นี้ผลิตได้จริงตอนนี้มี 5 ค่า**: ``rich_menu``
+**ค่า ``answered_by`` ที่ไฟล์นี้ผลิตได้จริงตอนนี้มี 6 ค่า**: ``rich_menu``
 (กดปุ่ม), ``search`` (พิมพ์คำแล้วค้นจาก DB), ``no_data`` (เข้าใจคำถามแต่ไม่มี
-ข้อมูล), ``db_error`` (ถามฐานข้อมูลไม่สำเร็จ), ``fallback`` (ไม่เข้าใจคำถาม)
-— ยังไม่มี ``faq`` / ``planner`` / ``rag`` เพราะยังไม่ได้เขียนชั้นนั้น
+ข้อมูล), ``db_error`` (ถามฐานข้อมูลไม่สำเร็จ), ``fallback`` (ไม่เข้าใจคำถาม),
+``ai_chat`` (LLM ตอบคำถามทั่วไป) — ยังไม่มี ``faq`` / ``planner`` / ``rag``
 
 ``db`` ที่ทุก handler รับเป็น ``None`` ได้ (ยังไม่ตั้ง ``DATABASE_URL`` หรือ
 ต่อไม่ได้ตอนสตาร์ท) → ตอบว่า "ยังไม่มีข้อมูล" ไม่ใช่ 500 และไม่ใช่เงียบหาย
@@ -28,6 +30,7 @@ import logging
 import re
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import parse_qsl
 
 from . import repository as repo
@@ -67,7 +70,7 @@ class RouteResult:
 
     messages: list[dict]
     # ค่าที่ผลิตได้จริงตอนนี้: rich_menu / search / no_data / db_error / fallback
-    # (faq / planner / rag ยังไม่มีชั้นที่ผลิตค่าเหล่านี้ — อย่าเคลมในเอกสาร)
+    # / ai_chat (faq / planner / rag ยังไม่มีชั้นที่ผลิตค่าเหล่านี้ — อย่าเคลมในเอกสาร)
     answered_by: str
     intent_key: str | None = None
     confidence: float | None = None
@@ -75,6 +78,10 @@ class RouteResult:
     llm_model: str | None = None
     prompt_tokens: int | None = None
     output_tokens: int | None = None
+    latency_ms: int | None = None
+    # id ใน ``app_users`` ถ้า router รู้แล้ว (เช่น ai_chat ที่ต้อง ensure_user
+    # อยู่แล้ว) — ``app.main`` จะได้ไม่ต้อง ensure ซ้ำตอนเขียน ``chat_logs``
+    user_id: int | None = None
 
 
 def parse_postback_data(data: str) -> dict[str, str]:
@@ -558,25 +565,47 @@ def _program_code() -> str:
 # ── ชั้นที่ 2 + 3: ข้อความพิมพ์อิสระ ─────────────────────────────────────────
 
 
-async def handle_text(text: str, db: SupportsQuery | None = None) -> RouteResult:
+async def handle_text(
+    text: str,
+    db: SupportsQuery | None = None,
+    *,
+    settings: Any | None = None,
+    llm: Any | None = None,
+    user_hash: str | None = None,
+) -> RouteResult:
     """
     จัดการข้อความที่ user พิมพ์เอง
 
     ทำแล้ว: **รหัสวิชา 7 หลัก** → ตอบจาก DB ตรง ๆ, และ **ค้นด้วยคำที่พิมพ์มา**
     (``pg_trgm`` word_similarity) → เอกสาร/อาจารย์ ทั้งสองทางยังเป็นชั้นที่ 1
-    คือตอบจากฐานข้อมูลตรง ๆ ไม่เรียก LLM เลย
-    ยังไม่ทำ: FAQ ที่คนเขียนคำตอบไว้ (ชั้น 2) และ RAG (ชั้น 3)
+    คือตอบจากฐานข้อมูลตรง ๆ
+    ชั้นที่ 3: ค้นไม่เจอและเงื่อนไขครบ → **AI Chat** (``app/ai_chat.py``)
+    ตอบคำถามทั่วไปด้านการเรียนด้วย LLM พร้อมจำบริบทแยกตามผู้ใช้
+    ยังไม่ทำ: FAQ ที่คนเขียนคำตอบไว้ (ชั้น 2) และ RAG (ตาราง ``rag_chunks`` ว่าง)
+
+    ``settings``/``llm``/``user_hash`` เป็น keyword-only และ ``None`` ได้ —
+    เทสเดิมที่เรียก ``handle_text(text, db)`` ยังทำงานเหมือนเดิมทุกประการ
+    (ไม่มี LLM ก็ตอบ fallback แบบเก่า)
     """
     cleaned = (text or "").strip()
     if not cleaned:
         return _fallback()
 
     return await _guard(
-        _dispatch_text(cleaned, db), topic="ที่ถาม", intent_key="text"
+        _dispatch_text(cleaned, db, settings=settings, llm=llm, user_hash=user_hash),
+        topic="ที่ถาม",
+        intent_key="text",
     )
 
 
-async def _dispatch_text(cleaned: str, db: SupportsQuery | None) -> RouteResult:
+async def _dispatch_text(
+    cleaned: str,
+    db: SupportsQuery | None,
+    *,
+    settings: Any | None = None,
+    llm: Any | None = None,
+    user_hash: str | None = None,
+) -> RouteResult:
     match = COURSE_CODE_PATTERN.search(cleaned)
     if match:
         return await _course_answer(db, match.group(1))
@@ -585,6 +614,33 @@ async def _dispatch_text(cleaned: str, db: SupportsQuery | None) -> RouteResult:
         found = await _search_answer(db, cleaned)
         if found is not None:
             return found
+
+    # ── ชั้นที่ 3: AI Chat ────────────────────────────────────────────────
+    # import ตรงนี้ไม่ใช่บนไฟล์ เพราะ ``ai_chat`` import RouteResult จากไฟล์นี้
+    # กลับไป (circular import) — และ router ตอนไม่มี LLM ก็ไม่จำเป็นต้องโหลด
+    if settings is not None and llm is not None:
+        from . import ai_chat
+        from .llm import LlmError
+
+        try:
+            result = await ai_chat.answer(settings, llm, db, user_hash, cleaned)
+            if result is not None:
+                return result
+        except LlmError:
+            # LLM timeout/429/ตอบว่าง — บอกตรง ๆ ว่าระบบ AI ขัดข้อง
+            # แย่กว่าตอบว่าไม่มีข้อมูลนิดเดียว แต่ดีกว่าเงียบหายแน่นอน
+            log.warning("AI Chat ไม่สำเร็จ — ตอบขัดข้องแทน", exc_info=True)
+            return RouteResult(
+                messages=[
+                    msg.text_message(
+                        "ขออภัยครับ ตอนนี้ระบบตอบด้วย AI ขัดข้องชั่วคราว\n"
+                        "รบกวนลองอีกครั้งในอีกสักครู่ หรือเลือกหัวข้อจากปุ่มด้านล่างครับ",
+                        _menu_quick_reply(),
+                    )
+                ],
+                answered_by="fallback",
+                intent_key="ai_chat_error",
+            )
 
     return RouteResult(
         messages=[
