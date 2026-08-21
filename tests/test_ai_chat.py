@@ -355,6 +355,61 @@ def test_system_prompt_forbids_making_up_official_data() -> None:
     assert "ภาษาไทย" in ai_chat.SYSTEM_PROMPT
 
 
+def test_system_prompt_asks_for_a_single_polite_tail() -> None:
+    """
+    "ลงท้ายครับ" แบบเดิมทำให้โมเดลเขียน "ครับ" สองรอบ (สั่งลงท้าย + ทำตาม
+    ประวัติที่ลงท้ายทุกคำตอบ) — ตอนนี้สั่งชัดว่าครั้งเดียว
+    """
+    assert "เพียงครั้งเดียว" in ai_chat.SYSTEM_PROMPT
+
+
+# ── ลบหางสุภาพซ้ำ ("ครับ ครับ") ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("อ่านเป็นรอบสั้น ๆ ครับ ครับ", "อ่านเป็นรอบสั้น ๆ ครับ"),
+        ("ครับ ครับ ครับ", "ครับ"),
+        ("ลองจัดตารางดูครับ ครับ.", "ลองจัดตารางดูครับ."),
+        ("พักสายตาระหว่างอ่านด้วยค่ะ ค่ะ", "พักสายตาระหว่างอ่านด้วยค่ะ"),
+        ("ทำได้เลยครับผม ครับผม", "ทำได้เลยครับผม"),
+    ],
+)
+def test_dedupe_removes_the_repeated_polite_tail(raw: str, expected: str) -> None:
+    assert ai_chat.dedupe_trailing_politeness(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "ครับ",  # คำเดียวห้ามแตะ
+        "ไม่มีข้อมูลเรื่องนี้ครับ",  # ลงท้ายรอบเดียวอยู่แล้ว
+        "อ่านหนังสือยังไงครับ",  # ครับกลาง/ท้ายเดี่ยว
+        "ครับ ผมแนะนำให้อ่านสั้น ๆ ครับ",  # ซ้ำคนละตำแหน่งไม่แตะ (ไม่ได้อยู่ท้าย)
+        "สู้ ๆ นะจ๊ะ จ้ะ",  # สะกดต่างกัน (คนละรูปวรรณยุกต์) = คนละคำ ไม่แตะ
+        "ทำได้เลยครับผม ครับ",  # คนละคำไม่ใช่การพิมพ์ซ้ำ ไม่แตะ
+    ],
+)
+def test_dedupe_leaves_clean_text_untouched(raw: str) -> None:
+    assert ai_chat.dedupe_trailing_politeness(raw) == raw
+
+
+async def test_in_session_answer_strips_the_doubled_polite_tail() -> None:
+    """
+    บั๊กที่เห็นจริงตอนทดสอบปุ่มปรึกษา AI: โมเดลลงท้าย "ครับ ครับ" —
+    ข้อความที่ส่งให้ user และที่เก็บเป็นประวัติต้องเหลือ "ครับ" เดียว
+    """
+    recorder = Recorder((200, chat_ok("แนะนำให้อ่านเป็นรอบสั้น ๆ ครับ ครับ")))
+    result = await ai_chat.dispatch(
+        settings(), make_llm(recorder), db_with_session(session_row()),
+        USER_HASH, "อ่านหนังสือยังไงดี",
+    )
+    assert result is not None
+    assert result.messages[0]["text"].endswith("รอบสั้น ๆ ครับ")
+    assert "ครับ ครับ" not in result.messages[0]["text"]
+
+
 def test_system_prompt_forbids_collecting_personal_data() -> None:
     assert "รหัสนักศึกษา" in ai_chat.SYSTEM_PROMPT
 

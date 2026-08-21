@@ -41,6 +41,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 
 from . import repository as repo
@@ -69,7 +70,8 @@ EXIT_KEYWORDS = {"ออก", "จบ", "พอ", "พอแค่นี้", "�
 # คือนักศึกษาเสียหายจริง (Requirement ข้อ 11 และ 14)
 SYSTEM_PROMPT = """\
 คุณเป็นผู้ช่วยให้คำปรึกษาด้านการเรียนและชีวิตมหาวิทยาลัย \
-ของนักศึกษามหาวิทยาลัยราชภัฏมหาสารคาม ตอบเป็นภาษาไทย สุภาพ ลงท้ายครับ
+ของนักศึกษามหาวิทยาลัยราชภัฏมหาสารคาม ตอบเป็นภาษาไทย สุภาพ \
+ลงท้ายด้วย "ครับ" เพียงครั้งเดียว
 
 คุณให้คำแนะนำทั่วไปได้ เช่น การปรับตัวในมหาวิทยาลัย การจัดการเวลา \
 เทคนิคการอ่านหนังสือ/จดสรุป การเตรียมสอบ การจัดลำดับความสำคัญ
@@ -163,6 +165,39 @@ def _llm_capable(
 def _strip_prefix(text: str) -> str:
     """ดึงคำนำหน้า "ปรึกษา" + ตัวคั่นออก — เหลือแต่คำถามจริง"""
     return text.removeprefix(CONSULT_PREFIX).lstrip(" \t:：.-—")
+
+
+# คำลงท้ายสุภาพที่ LLM ชอบพิมพ์ซ้ำสองรอบ ("ครับ ครับ") — เห็นจริงตอนทดสอบ
+# ปุ่มปรึกษา AI เพราะ system prompt สั่ง "ลงท้ายครับ" บวกกับประวัติในโหมด
+# ที่ทุกคำตอบลงท้ายเหมือนกัน โมเดลจึงต่อท้ายซ้ำเป็นนิสัย
+# **ครับผม ต้องอยู่ก่อน ครับ** ใน alternation ไม่งั้นจะ match แค่ครึ่งคำ
+# ยุบเฉพาะคำที่ **สะกดเหมือนกัน** เท่านั้น — "จ๊ะ จ้ะ" (คนละวรรณยุกต์)
+# ถือเป็นคนละคำ ไม่แตะ
+_POLITE_WORD = r"(?:ครับผม|ครับ|ค่ะ|คะ|ฮะ|จ้ะ|จ้า)"
+_DUPLICATE_POLITE_TAIL = re.compile(
+    rf"(?P<word>{_POLITE_WORD})"               # ตัวแรกสุด — เก็บไว้
+    rf"(?:\s*[,.!！]?)"                        # จุดคั่นของมัน (ถ้ามี) ทิ้งไป
+    rf"(?:\s+(?P=word)\s*[,.!！]?)*"           # ตัวซ้ำกลางทาง (สะกดเดียวกันเท่านั้น)
+    rf"\s+(?P=word)"                           # ตัวสุดท้าย
+    rf"(?P<tail>\s*[,.!！]?)\s*$"              # จุดคั่นท้ายสุดของตัวสุดท้าย — เก็บไว้
+)
+
+
+def dedupe_trailing_politeness(text: str) -> str:
+    """
+    ยุบคำลงท้ายสุภาพที่ซ้ำกันท้ายประโยคให้เหลือคำเดียว — คำแรกไม่ถูกแตะ
+    แต่เครื่องหมายวรรคตอน **ตัวสุดท้าย** ถูกเก็บไว้
+
+    >>> dedupe_trailing_politeness("อ่านเป็นรอบสั้น ๆ ครับ ครับ")
+    'อ่านเป็นรอบสั้น ๆ ครับ'
+    >>> dedupe_trailing_politeness("ลองจัดตารางอ่านดูครับ ครับ.")
+    'ลองจัดตารางอ่านดูครับ.'
+    >>> dedupe_trailing_politeness("ครับ")
+    'ครับ'
+    >>> dedupe_trailing_politeness("ไม่มีข้อมูลเรื่องนี้ครับ")
+    'ไม่มีข้อมูลเรื่องนี้ครับ'
+    """
+    return _DUPLICATE_POLITE_TAIL.sub(r"\g<word>\g<tail>", text.rstrip())
 
 
 def _session_expired(settings: Settings, session: dict, now: datetime | None) -> bool:
@@ -352,7 +387,12 @@ async def _llm_answer(
         temperature=settings.llm_temperature,
     )
 
-    if not result.text:
+    # ลบหางสุภาพซ้ำ ("ครับ ครับ" → "ครับ") ก่อนเช็คคำตอบว่าง — ทำตรงนี้ที่เดียว
+    # เพื่อให้ข้อความที่เก็บลง chat_logs (ทั้ง response_text ที่ user เห็น
+    # และประวัติที่ป้อนกลับเข้า LLM รอบถัดไป) สะอาดเหมือนข้อความที่ส่งออกไป
+    answer = dedupe_trailing_politeness(result.text)
+
+    if not answer:
         # โมเดลตอบว่าง (เช่น safety filter) — ให้ผู้เรียก fallback
         raise LlmError(None, "LLM ตอบกลับมาว่างเปล่า")
 
@@ -365,7 +405,7 @@ async def _llm_answer(
     )
 
     return RouteResult(
-        messages=[msg.ai_session_message(result.text)],
+        messages=[msg.ai_session_message(answer)],
         answered_by="ai_chat",
         intent_key="ai_chat",
         llm_model=result.model,
