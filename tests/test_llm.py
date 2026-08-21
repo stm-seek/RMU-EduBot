@@ -6,12 +6,14 @@
 ``/embeddings``, ``Authorization: Bearer``) เพราะถ้าเพี้ยนไปแม้แต่นิด
 จะใช้กับ Gemini/OpenAI/Ollama ร่วมกันไม่ได้
 
-เทส retry ทุกตัว **patch ``asyncio.sleep`` เป็น no-op** — ของจริงรอ 2 แล้ว 4 วินาที
-ถ้าไม่ patch ชุดเทสจะช้าจนคนไม่อยากรัน
+เทส retry ทุกตัว **patch ``asyncio.sleep`` เป็น no-op** และฉีด jitter คงที่
+— ของจริงรอ 0.5/1/2 วินาที ถ้าไม่ patch ชุดเทสจะช้าจนคนไม่อยากรัน และถ้าไม่
+ฉีด jitter ผลจะสุ่มไปด้วย (ดู ``no_sleep`` และ ``llm_client`` ข้างล่าง)
 """
 
 from __future__ import annotations
 
+import json
 from typing import Callable
 
 import httpx
@@ -27,7 +29,7 @@ PROMPT = [{"role": "user", "content": "ถอนรายวิชาวัน�
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ตัดเวลารอ backoff ออกจากเทส (ของจริง 2s + 4s)"""
+    """ตัดเวลารอ backoff ออกจากเทส (ของจริง 0.5 + 1 + 2 วินาที)"""
 
     async def _instant(_seconds: float) -> None:
         return None
@@ -36,7 +38,21 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def llm_settings(**overrides):
+    # ปิด fallback เป็นค่าเริ่มต้นของเทสส่วนใหญ่ — เทสเก่าทุกตัวเขียนไว้ตอนที่
+    # ยังไม่มีฟีเจอร์นี้ และต้องยืนยันว่าพฤติกรรม "โมเดลเดียว" ยังเหมือนเดิม
+    overrides.setdefault("llm_fallback_models", "")
     return make_settings(llm_api_key="test_llm_key", **overrides)
+
+
+def make_client(settings, http: httpx.AsyncClient, **kwargs) -> LlmClient:
+    """
+    ``LlmClient`` ที่ jitter เป็น 0 คงที่ — เทสจึง deterministic
+
+    ของจริงใช้ ``random.random()`` ซึ่งถ้าปล่อยไว้ เทสที่นับเวลา/งบเวลา
+    จะผ่านหรือไม่ผ่านแบบสุ่ม
+    """
+    kwargs.setdefault("jitter", lambda: 0.0)
+    return LlmClient(settings, http, **kwargs)
 
 
 def make_http(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.AsyncClient:
@@ -207,14 +223,21 @@ async def test_does_not_retry_client_error() -> None:
     assert "valid API key" in info.value.body
 
 
-async def test_gives_up_after_three_attempts() -> None:
+async def test_gives_up_after_four_attempts_on_the_same_model() -> None:
+    """
+    เพดานต่อโมเดลคือ 4 ครั้ง (ปรับจาก 3 เมื่อ 21 ส.ค. 2026)
+
+    ของจริงวัดได้ว่า 503 ``high demand`` ของ Gemini เป็น spike ต่อ request
+    ยิงใหม่อีกไม่กี่วินาทีก็ผ่าน จึง "รอสั้นลองมากครั้ง" แทน "รอนานยอมแพ้เร็ว"
+    แต่ไม่ลองเกินนี้ เพราะต้องเหลือเวลาให้ไล่โมเดลสำรองในงบเดียวกัน
+    """
     recorder = Recorder((503, {"error": "unavailable"}))
 
     async with recorder.client() as http:
         with pytest.raises(LlmError) as info:
             await LlmClient(llm_settings(), http).chat(PROMPT)
 
-    assert recorder.count == 3
+    assert recorder.count == llm_module.MAX_ATTEMPTS_PER_MODEL == 4
     assert info.value.status_code == 503
 
 
@@ -234,7 +257,7 @@ async def test_timeout_becomes_llm_error() -> None:
         with pytest.raises(LlmError, match="timeout"):
             await LlmClient(llm_settings(), http).chat(PROMPT)
 
-    assert attempts == 3
+    assert attempts == llm_module.MAX_ATTEMPTS_PER_MODEL
 
 
 async def test_chat_rejects_empty_answer_when_reasoning_ate_the_budget() -> None:
@@ -288,6 +311,214 @@ async def test_chat_keeps_finish_reason_for_logging() -> None:
 
     assert result.text == "ตอบแล้วครับ"
     assert result.finish_reason == "stop"
+
+
+async def test_retries_twice_then_succeeds_on_the_third_call() -> None:
+    """
+    เคสที่เจอจริงบน production 21 ส.ค. 2026: 503 ``high demand`` ติดกันสองครั้ง
+    แล้วครั้งที่ 3 ผ่าน — ผู้ใช้ต้องได้คำตอบ ไม่ใช่ข้อความ "ระบบขัดข้อง"
+    """
+    recorder = Recorder(
+        (503, {"error": {"code": 503, "message": "high demand"}}),
+        (503, {"error": {"code": 503, "message": "high demand"}}),
+        (200, chat_response()),
+    )
+
+    async with recorder.client() as http:
+        result = await make_client(llm_settings(), http).chat(PROMPT)
+
+    assert recorder.count == 3
+    assert result.text == "ตอบแล้วครับ"
+
+
+# ── เชนโมเดลสำรอง (แก้ 503 high demand ที่โมเดลหลักล่มยาว) ───────────────────
+
+
+class FakeClock:
+    """
+    นาฬิกาปลอมสำหรับเทสงบเวลา — คืนค่าตามลำดับที่กำหนด (ค่าท้ายค้างไว้)
+
+    ต้องปลอมเพราะเทสจะรอเวลาจริงไม่ได้ และการนับเวลาจริงบนเครื่องที่รันเทส
+    ทำให้ผลลัพธ์แกว่งตามความเร็วเครื่อง
+    """
+
+    def __init__(self, *values: float) -> None:
+        self._values = list(values)
+        self.calls = 0
+
+    def __call__(self) -> float:
+        value = self._values[min(self.calls, len(self._values) - 1)]
+        self.calls += 1
+        return value
+
+
+def chain_settings(**overrides):
+    """settings ที่เปิดเชนสำรอง 2 ตัว (ชื่อโมเดลตรงกับที่ยืนยันกับ API จริง)"""
+    return make_settings(
+        llm_api_key="test_llm_key",
+        llm_model="gemini-3.5-flash-lite",
+        llm_fallback_models="gemini-3.1-flash-lite, gemini-3-flash-preview",
+        **overrides,
+    )
+
+
+def only_model_works(
+    good_model: str | None,
+) -> tuple[Callable[[httpx.Request], httpx.Response], list[str]]:
+    """
+    handler ที่ตอบ 200 ให้โมเดลเดียว ที่เหลือ 503 (เลียนแบบ high demand)
+
+    ``good_model=None`` = ทุกโมเดล 503 คืน list ของชื่อโมเดลที่ถูกยิงจริงมาด้วย
+    เพื่อให้เทสตรวจได้ว่าไล่เชนตามลำดับและไม่ยิงซ้ำโมเดลที่ล่มแล้ว
+    """
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        if model != good_model:
+            return httpx.Response(
+                503, json={"error": {"code": 503, "message": "high demand"}}
+            )
+        # provider สะท้อนชื่อโมเดลที่ตอบจริงกลับมาในฟิลด์ ``model``
+        return httpx.Response(200, json=chat_response(model=model))
+
+    return handler, seen
+
+
+async def test_switches_to_the_fallback_model_when_the_primary_is_overloaded() -> None:
+    """
+    หัวใจของการแก้ 21 ส.ค. 2026 — วัดของจริงแล้วว่า 503 เกิดแยกกันต่อโมเดล
+    (นาทีเดียวกัน ``gemini-3.5-flash-lite`` 503 แต่ ``gemini-3.1-flash-lite``
+    ตอบได้ปกติ) retry อย่างเดียวจึงไม่พอถ้าโมเดลหลักล่มยาว
+
+    ``ChatResult.model`` ต้องเป็นชื่อโมเดล **ที่ตอบจริง** เพราะ ``app/ai_chat.py``
+    log ค่านี้ลง ``chat_logs`` และธีสิสใช้ตัวเลขนี้รายงาน
+    """
+    handler, seen = only_model_works("gemini-3.1-flash-lite")
+
+    async with make_http(handler) as http:
+        result = await make_client(chain_settings(), http).chat(PROMPT)
+
+    assert result.text == "ตอบแล้วครับ"
+    assert result.model == "gemini-3.1-flash-lite", "ต้องเป็นโมเดลที่ตอบจริง"
+    # ลองโมเดลหลักครบ 4 ครั้งก่อน แล้วค่อยข้ามไปสำรองตัวแรก
+    assert seen == ["gemini-3.5-flash-lite"] * 4 + ["gemini-3.1-flash-lite"]
+
+
+async def test_raises_when_every_model_in_the_chain_is_overloaded() -> None:
+    """
+    ทุกตัวในเชน 503 → ต้องโยน ``LlmError`` ออกไปให้ router ตอบ fallback ตามเดิม
+    (ห้ามคืนคำตอบว่างเงียบ ๆ ซึ่งจะกลายเป็นบับเบิลเปล่าใน LINE)
+    """
+    handler, seen = only_model_works(None)
+
+    async with make_http(handler) as http:
+        with pytest.raises(LlmError) as info:
+            await make_client(chain_settings(), http).chat(PROMPT)
+
+    assert info.value.status_code == 503
+    assert len(seen) == 3 * llm_module.MAX_ATTEMPTS_PER_MODEL, "3 โมเดล × 4 ครั้ง"
+    assert seen[-1] == "gemini-3-flash-preview", "ตัวสุดท้ายในเชนต้องถูกลองด้วย"
+
+
+@pytest.mark.parametrize("status", [400, 401])
+async def test_client_error_skips_both_retry_and_fallback(status: int) -> None:
+    """
+    key ผิด/payload ผิด = สลับโมเดลก็พังเหมือนกัน — ต้องเด้งทันทีที่ยิงครั้งแรก
+
+    ถ้าปล่อยให้ไล่เชน จะกลายเป็นยิงเปล่า 12 ครั้งทุกครั้งที่ตั้ง ``.env`` ผิด
+    แล้ว config ที่ผิดจะถูกกลบด้วยข้อความ 503 จนหาสาเหตุไม่เจอ
+    """
+    recorder = Recorder((status, {"error": {"message": "Please pass a valid API key"}}))
+
+    async with recorder.client() as http:
+        with pytest.raises(LlmError) as info:
+            await make_client(chain_settings(), http).chat(PROMPT)
+
+    assert recorder.count == 1, "ห้าม retry และห้ามสลับโมเดล"
+    assert info.value.status_code == status
+    assert info.value.retryable is False
+
+
+async def test_stops_when_the_wall_clock_budget_is_used_up() -> None:
+    """
+    เพดานเวลารวมคุม **ทั้งเชน** — เลยงบแล้วต้องเลิกทันที ห้ามลองโมเดลถัดไป
+
+    เหตุผล: reply token ของ LINE อายุสั้น ถ้าไล่ 3 โมเดล × งบต่อโมเดล
+    ผู้ใช้จะรอเป็นนาทีแล้วสุดท้ายตอบผ่าน reply ไม่ได้ (ต้องไป push ซึ่งกินโควตา)
+
+    นาฬิกาปลอมกระโดดไป 40 วินาที (เกินงบ 28) หลังยิงครั้งแรก
+    """
+    clock = FakeClock(0.0, 0.0, 40.0)
+    handler, seen = only_model_works(None)
+
+    async with make_http(handler) as http:
+        client = make_client(chain_settings(), http, clock=clock)
+        with pytest.raises(LlmError, match="เกินงบ"):
+            await client.chat(PROMPT)
+
+    assert seen == ["gemini-3.5-flash-lite"], "หมดงบแล้วห้ามยิงต่อ ไม่ว่ากี่โมเดล"
+
+
+async def test_does_not_fall_back_when_output_budget_was_eaten_by_thinking() -> None:
+    """
+    ``finish_reason=length`` + ไม่มีเนื้อ = ``LLM_MAX_OUTPUT_TOKENS`` ตั้งต่ำเกินไป
+    ซึ่งใช้ร่วมกันทุกโมเดลในเชน → สลับไปก็เจอเหมือนเดิม เสีย token เปล่า
+    จึงตั้งใจให้เด้งออกทันทีเพื่อให้เห็นว่าเป็นปัญหา config ไม่ใช่โมเดลล่ม
+    """
+    recorder = Recorder(
+        (
+            200,
+            {
+                "model": "gemini-3.5-flash-lite",
+                "choices": [
+                    {"message": {"role": "assistant"}, "finish_reason": "length"}
+                ],
+                "usage": {"prompt_tokens": 14, "completion_tokens": 0},
+            },
+        )
+    )
+
+    async with recorder.client() as http:
+        with pytest.raises(LlmError, match="LLM_MAX_OUTPUT_TOKENS"):
+            await make_client(chain_settings(), http).chat(PROMPT)
+
+    assert recorder.count == 1, "ห้ามสลับโมเดลเพราะ max_tokens ไม่พอ"
+
+
+async def test_empty_fallback_setting_keeps_the_old_single_model_behaviour() -> None:
+    """
+    regression guard: ``LLM_FALLBACK_MODELS`` ว่าง = ปิดฟีเจอร์สนิท
+
+    ยิงแค่โมเดลหลักตามจำนวนครั้งของโมเดลเดียว ไม่มีชื่อโมเดลอื่นหลุดออกไป
+    (สำคัญกับคนที่ใช้ provider อื่นซึ่งไม่มีโมเดลชื่อ gemini-* อยู่จริง)
+    """
+    handler, seen = only_model_works(None)
+
+    async with make_http(handler) as http:
+        with pytest.raises(LlmError):
+            await make_client(llm_settings(), http).chat(PROMPT)
+
+    assert seen == [llm_settings().llm_model] * llm_module.MAX_ATTEMPTS_PER_MODEL
+
+
+async def test_explicit_model_argument_is_not_repeated_in_the_chain() -> None:
+    """
+    ผู้เรียกระบุ ``model=`` ที่ตรงกับตัวในเชนสำรอง — ต้องไม่ยิงโมเดลนั้นซ้ำสองรอบ
+    (เสียเวลาในงบเดียวกันไปกับโมเดลที่เพิ่งล่มไปเมื่อกี้)
+    """
+    handler, seen = only_model_works(None)
+
+    async with make_http(handler) as http:
+        with pytest.raises(LlmError):
+            await make_client(chain_settings(), http).chat(
+                PROMPT, model="gemini-3.1-flash-lite"
+            )
+
+    assert seen[: llm_module.MAX_ATTEMPTS_PER_MODEL] == ["gemini-3.1-flash-lite"] * 4
+    assert seen.count("gemini-3.1-flash-lite") == 4, "ห้ามยิงซ้ำรอบสอง"
+    assert set(seen) == {"gemini-3.1-flash-lite", "gemini-3-flash-preview"}
 
 
 # ── embedding ───────────────────────────────────────────────────────────────

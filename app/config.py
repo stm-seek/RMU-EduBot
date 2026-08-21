@@ -68,6 +68,25 @@ class Settings(BaseSettings):
     llm_max_output_tokens: int = 2048
     llm_temperature: float = 0.3
 
+    # ── ทนต่อโมเดลโอเวอร์โหลด (Gemini free tier คืน 503 บ่อยมาก) ─────────────
+    # วัดจริง 21 ส.ค. 2026 ช่วง 01:52–02:06: ยิง LLM 7 ครั้ง ได้ 503
+    # ``This model is currently experiencing high demand`` ในการยิงครั้งแรก
+    # **ทั้ง 7 ครั้ง** สุดท้ายผู้ใช้เห็นข้อความ "ระบบขัดข้อง" 4 ใน 7 ครั้ง (57%)
+    # และไม่เกี่ยวกับเนื้อหาคำถามเลย — เป็น spike ชั่วขณะที่เกิดต่อ request
+    #
+    # โมเดลสำรอง (คอมมา-เซพาเรต, ว่าง = ปิดฟีเจอร์ ใช้โมเดลหลักตัวเดียว)
+    # ยืนยันกับ API จริงแล้วว่าสองตัวนี้มีอยู่และตอบไทยได้ (1.0 วิ / 4.2 วิ)
+    # เลือกคนละรุ่น/คนละขนาดตั้งใจ เพราะวัดแล้วพบว่า 503 เกิดแยกกันเป็นก้อน:
+    # นาทีเดียวกัน flash-lite ตัวใหม่ 503 แต่ 3.1-flash-lite ตอบได้ปกติ
+    # (``gemini-flash-lite-latest`` ใช้เป็นสำรองไม่ได้ผล — เป็น alias ที่ 503
+    # พร้อมกับโมเดลหลัก ส่วนสาย 2.x ถูกปลดแล้ว ยืนยัน 404)
+    llm_fallback_models: str = "gemini-3.1-flash-lite,gemini-3-flash-preview"
+    # เพดานเวลารวมของการ retry + ไล่โมเดลสำรอง **ทั้งเชน** (ไม่รีเซ็ตต่อโมเดล)
+    # ตั้ง 28 วิ เพราะ reply token ของ LINE อายุสั้น: ถ้าลากยาวจนหมดอายุ
+    # ต้องไปใช้ push ซึ่งกินโควตาข้อความฟรีของ free tier แทน — ยอมตอบว่า
+    # ขัดข้องเร็ว ๆ ดีกว่าให้ผู้ใช้นั่งรอเป็นนาทีแล้วยังไม่ได้อะไร
+    llm_retry_budget_seconds: float = Field(default=28.0, gt=0.0, le=300.0)
+
     # ── Embedding ───────────────────────────────────────────────────────────
     embedding_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
     embedding_api_key: str = ""
@@ -166,6 +185,24 @@ class Settings(BaseSettings):
     def embedding_key(self) -> str:
         """ถ้าไม่ตั้ง EMBEDDING_API_KEY ให้ใช้ตัวเดียวกับ LLM"""
         return self.embedding_api_key or self.llm_api_key
+
+    @property
+    def llm_fallback_model_list(self) -> list[str]:
+        """
+        ``llm_fallback_models`` (คอมมา-เซพาเรต) → list ที่ strip แล้ว
+
+        ทนกับการเว้นวรรค/คอมมาเกินใน ``.env`` เพราะพิมพ์ผิดตรงนี้แล้วจะไปโผล่
+        เป็น 404 ตอนโมเดลหลักล่ม ซึ่งเป็นจังหวะที่ดีบักยากที่สุด
+
+        >>> s = Settings(_env_file=None, llm_fallback_models=' a , , b ')
+        >>> s.llm_fallback_model_list
+        ['a', 'b']
+        >>> Settings(_env_file=None, llm_fallback_models='').llm_fallback_model_list
+        []
+        """
+        return [
+            name.strip() for name in self.llm_fallback_models.split(",") if name.strip()
+        ]
 
     def require(self, *names: str) -> None:
         """
