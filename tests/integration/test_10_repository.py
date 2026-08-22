@@ -25,14 +25,17 @@ from app.db import Database
 pytestmark = pytest.mark.integration
 
 # หมวดเอกสาร + จำนวน ตามลำดับที่ SQL_DOCUMENT_CATEGORIES คืนมา
-# (count desc, category asc) — รวม 31 ไม่ใช่ 32 เพราะกรองลิงก์ตายออก 1 ฉบับ
+# (count desc, category asc) — ตอนนี้เข้าได้ครบทุกฉบับ (รอบตรวจ 22 ส.ค. 2026
+# เว็บที่เคยล่มอย่าง e-activity กลับมาแล้ว และเพิ่มปฏิทินสหกิจศึกษาในหมวด
+# internship) ถ้ามีลิงก์ตายอีก ผลรวมตรงนี้จะน้อยกว่าแถวในตาราง
 REAL_CATEGORIES = [
     ("loan", 12),
     ("registration", 5),
+    ("internship", 4),
     ("curriculum", 3),
-    ("internship", 3),
     ("exam_prep", 2),
     ("regulation", 2),
+    ("activity", 1),
     ("calendar", 1),
     ("it_account", 1),
     ("scholarship", 1),
@@ -68,22 +71,23 @@ def test_document_categories_matches_real_seed(
     assert [(row["category"], row["total"]) for row in rows] == REAL_CATEGORIES
 
 
-def test_document_categories_drops_the_one_dead_link(
+def test_document_categories_counts_every_row_when_links_are_alive(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    ตาราง ``documents`` มี 32 แถว แต่รวมทุกหมวดได้ 31
+    ตาราง ``documents`` มี 33 แถว และรวมทุกหมวดต้องได้ 33 เท่ากัน
 
-    ฉบับที่หายไปคือ ``ระบบกิจกรรมนักศึกษา (e-activity)`` ที่ ``is_available``
-    เป็น false — พิสูจน์ว่าตัวกรองลิงก์ตายทำงานกับข้อมูลจริง ไม่ใช่แค่มีใน SQL
+    ณ รอบตรวจ 22 ส.ค. 2026 ลิงก์เข้าได้ครบทุกฉบับ (``e-activity`` ที่เคยล่ม
+    กลับมาแล้ว) ตัวกรองลิงก์ตายจึงไม่มีอะไรให้ตัดในชุดข้อมูลนี้ — ผลของตัวกรอง
+    ยังมีเทสระดับ SQL ครอบคลุมใน ``tests/test_repository.py`` แยกไว้ ถ้าวันใด
+    ลิงก์ตายอีกครั้ง ผลรวมตรงนี้จะมีค่าน้อยกว่าแถวในตาราง นั่นคือตัวกรองทำงาน
     """
     rows = run(repo.document_categories(live_db))
     total = sum(row["total"] for row in rows)
     table_rows = run(live_db.fetch_one("SELECT count(*) AS n FROM documents"))
 
-    assert table_rows is not None and table_rows["n"] == 32
-    assert total == 31
-    assert "activity" not in {row["category"] for row in rows}
+    assert table_rows is not None and table_rows["n"] == 33
+    assert total == 33
 
 
 def test_documents_in_category_returns_real_rows(
@@ -228,8 +232,11 @@ def test_search_documents_finds_short_queries_users_actually_type(
 
     assert len(found["กยศ"]) == 5
     assert len(found["กู้ยืม"]) == 4
-    assert len(found["ฝึกงาน"]) == 3
-    assert found["ปฏิทิน"] == ["ปฏิทินการศึกษา (ระบบบริการการศึกษา)"]
+    assert len(found["ฝึกงาน"]) == 4
+    assert found["ปฏิทิน"] == [
+        "ปฏิทินการศึกษา (ระบบบริการการศึกษา)",
+        "ปฏิทินสหกิจศึกษา (ศูนย์สหกิจศึกษาฯ)",
+    ]
     assert all(title.startswith(("1", "หน้ารวม")) for title in found["กยศ"]), found["กยศ"]
     # ช่องว่างของข้อมูล ไม่ใช่ของ query — บันทึกไว้ให้รอบ re-scrape เก็บเพิ่ม
     assert found["ดรอป"] == []

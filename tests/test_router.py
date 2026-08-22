@@ -24,7 +24,7 @@ from .helpers import FakeDatabase, assert_line_limits
 CATEGORY_ROWS = [
     {"category": "loan", "total": 12},
     {"category": "registration", "total": 5},
-    {"category": "internship", "total": 3},
+    {"category": "internship", "total": 4},
 ]
 
 DOCUMENT_ROWS = [

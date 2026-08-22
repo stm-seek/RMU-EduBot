@@ -95,7 +95,7 @@ def test_check_connection_recovers_after_database_restart(
 
     # ข้อมูลยังครบ = ใช้ restart ไม่ใช่ down -v
     documents = run(live_db.fetch_one("SELECT count(*) AS n FROM documents"))
-    assert documents is not None and documents["n"] == 32
+    assert documents is not None and documents["n"] == 33
 
     print(f"\npool ฟื้นตัวใน {elapsed:.1f} วินาที (backend ใหม่หมดทั้ง pool)")
 
@@ -113,7 +113,7 @@ def test_repository_works_again_after_restart(
         "semester": 2,
         "offerings": 45,
     }
-    assert len(run(repo.document_categories(live_db))) == 10
+    assert len(run(repo.document_categories(live_db))) == 11
 
     async def concurrent() -> list[Any]:
         return await asyncio.gather(

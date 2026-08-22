@@ -20,7 +20,7 @@ from .conftest import ALL_TABLES
 
 pytestmark = pytest.mark.integration
 
-# จำนวนแถวที่ seed ใส่ไว้ — 002_seed_data.sql (1,065 แถว)
+# จำนวนแถวที่ seed ใส่ไว้ — 002_seed_data.sql (1,066 แถว)
 # บวก 003_curriculum_rules.sql (แผนการเรียนของ 643170151 อีก 32 แถว)
 EXPECTED_SEED_ROWS = {
     "curriculum_rules": 32,
@@ -31,7 +31,7 @@ EXPECTED_SEED_ROWS = {
     "offerings": 337,
     "offering_slots": 292,
     "offering_patterns": 45,
-    "documents": 32,
+    "documents": 33,
     "instructors": 28,
     "instructor_affiliations": 33,
 }

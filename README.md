@@ -15,9 +15,9 @@ Planner Engine (ความก้าวหน้าตามหลักสู�
 หลักสูตร MDI 643170151    15 หมวด, 68 วิชา, 120 หน่วยกิต  (ตรวจแล้วหน่วยกิตตรงทุกหมวด)
 คำอธิบายรายวิชา           68/68 วิชา
 ตารางสอน                  337 หมู่เรียน, 292 คาบ, 4 เทอม (2567/1 - 2568/2)
-เอกสาร/แบบฟอร์ม           32 รายการ  (ตรวจลิงก์แล้วเข้าได้ 31)
+เอกสาร/แบบฟอร์ม           33 รายการ  (ตรวจลิงก์ 22 ส.ค. 2026 เข้าได้ครบ)
 อาจารย์                   28 คน, 33 สังกัด
-                          รวม 1,065 แถว
+                          รวม 1,066 แถว
 ```
 
 รายละเอียด + ข้อจำกัดที่พบ ดู [`kb/README.md`](kb/README.md)
@@ -26,7 +26,7 @@ Planner Engine (ความก้าวหน้าตามหลักสู�
 
 ```
 db/migrations/001_init.sql   19 ตาราง, 19 index, pgvector + pg_trgm
-db/seed/002_seed_data.sql    1,065 INSERT (idempotent ผ่าน ON CONFLICT)
+db/seed/002_seed_data.sql    1,066 INSERT (idempotent ผ่าน ON CONFLICT)
 docker-compose.yml           Postgres 17 + pgvector
 ```
 

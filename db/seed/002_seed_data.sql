@@ -1,7 +1,7 @@
 -- ==========================================================================
 --  Seed data — สร้างอัตโนมัติจาก kb/data/rmu_kb.db
 --  ห้ามแก้ไฟล์นี้ด้วยมือ ให้แก้ที่ scraper แล้ว export ใหม่
---  สร้างเมื่อ: 2026-08-17T09:32:24+00:00
+--  สร้างเมื่อ: 2026-08-22T18:42:51+00:00
 --
 --  ต้องรัน 001_init.sql ก่อน
 --  รันซ้ำได้ (idempotent ผ่าน ON CONFLICT)
@@ -7043,9 +7043,9 @@ ON CONFLICT (course_code) DO UPDATE SET
     detail = EXCLUDED.detail,
     computed_at = EXCLUDED.computed_at;
 
--- ── documents (32 แถว) ─────────────────────────────────────────────────
+-- ── documents (33 แถว) ─────────────────────────────────────────────────
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('registration', 'เอกสารขอเพิ่มรายวิชาเรียน', 'https://sci.rmu.ac.th/wp-content/uploads/2024/08/เอกสารขอเพิ่มรายวิชาเรียน.pdf', 'pdf', 'student', 'เพิ่มวิชา,เพิ่มรายวิชา,ขอเพิ่มวิชา,ลงวิชาเพิ่ม,แอดวิชา', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 124683, TRUE, '2026-08-17T07:08:00+00:00', '2026-08-17T07:08:00+00:00')
+VALUES ('registration', 'เอกสารขอเพิ่มรายวิชาเรียน', 'https://sci.rmu.ac.th/wp-content/uploads/2024/08/เอกสารขอเพิ่มรายวิชาเรียน.pdf', 'pdf', 'student', 'เพิ่มวิชา,เพิ่มรายวิชา,ขอเพิ่มวิชา,ลงวิชาเพิ่ม,แอดวิชา', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 124683, TRUE, '2026-08-22T18:40:35+00:00', '2026-08-22T18:40:35+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7061,7 +7061,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('registration', 'เอกสารขอยืนยันลงทะเบียนเรียน (ล่าช้า)', 'https://sci.rmu.ac.th/wp-content/uploads/2024/08/เอกสารขอยืนยันลงทะเบียนเรียนล่าช้า.pdf', 'pdf', 'student', 'ลงทะเบียนล่าช้า,ยืนยันลงทะเบียน,ลงทะเบียนช้า,ลืมลงทะเบียน', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 123257, TRUE, '2026-08-17T07:08:00+00:00', '2026-08-17T07:08:00+00:00')
+VALUES ('registration', 'เอกสารขอยืนยันลงทะเบียนเรียน (ล่าช้า)', 'https://sci.rmu.ac.th/wp-content/uploads/2024/08/เอกสารขอยืนยันลงทะเบียนเรียนล่าช้า.pdf', 'pdf', 'student', 'ลงทะเบียนล่าช้า,ยืนยันลงทะเบียน,ลงทะเบียนช้า,ลืมลงทะเบียน', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 123257, TRUE, '2026-08-22T18:40:36+00:00', '2026-08-22T18:40:36+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7077,7 +7077,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('registration', 'เอกสารขอขยายหน่วยกิต', 'https://sci.rmu.ac.th/wp-content/uploads/2024/08/เอกสารขอขยายหน่วยกิต.pdf', 'pdf', 'student', 'ขยายหน่วยกิต,ลงเกินหน่วยกิต,หน่วยกิตเกิน,ลงเกิน', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 93509, TRUE, '2026-08-17T07:08:00+00:00', '2026-08-17T07:08:00+00:00')
+VALUES ('registration', 'เอกสารขอขยายหน่วยกิต', 'https://sci.rmu.ac.th/wp-content/uploads/2024/08/เอกสารขอขยายหน่วยกิต.pdf', 'pdf', 'student', 'ขยายหน่วยกิต,ลงเกินหน่วยกิต,หน่วยกิตเกิน,ลงเกิน', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 93509, TRUE, '2026-08-22T18:40:36+00:00', '2026-08-22T18:40:36+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7093,7 +7093,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('registration', 'เอกสารขอเปิดรายวิชาเรียน (ปรับปรุง 2568)', 'https://sci.rmu.ac.th/wp-content/uploads/2025/06/เอกสารขอเปิดรายวิชาเรียน-ปรับปรุง2568.pdf', 'pdf', 'student', 'ขอเปิดวิชา,เปิดรายวิชา,ขอเปิดรายวิชา,วิชาไม่เปิด', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 354778, TRUE, '2026-08-17T07:08:00+00:00', '2026-08-17T07:08:00+00:00')
+VALUES ('registration', 'เอกสารขอเปิดรายวิชาเรียน (ปรับปรุง 2568)', 'https://sci.rmu.ac.th/wp-content/uploads/2025/06/เอกสารขอเปิดรายวิชาเรียน-ปรับปรุง2568.pdf', 'pdf', 'student', 'ขอเปิดวิชา,เปิดรายวิชา,ขอเปิดรายวิชา,วิชาไม่เปิด', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 354778, TRUE, '2026-08-22T18:40:36+00:00', '2026-08-22T18:40:36+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7109,7 +7109,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '101 แบบคำขอกู้ยืมเงิน', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/101-แบบคำขอกู้ยืมเงิน.pdf', 'pdf', 'student', 'กู้ยืม,กยศ,แบบคำขอกู้,ขอกู้เงิน,กู้เรียน,เงินกู้', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 1889597, TRUE, '2026-08-17T07:08:01+00:00', '2026-08-17T07:08:01+00:00')
+VALUES ('loan', '101 แบบคำขอกู้ยืมเงิน', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/101-แบบคำขอกู้ยืมเงิน.pdf', 'pdf', 'student', 'กู้ยืม,กยศ,แบบคำขอกู้,ขอกู้เงิน,กู้เรียน,เงินกู้', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 1889597, TRUE, '2026-08-22T18:40:36+00:00', '2026-08-22T18:40:36+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7125,7 +7125,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '102 หนังสือรับรองรายได้ครอบครัว (กยศ.)', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/102-หนังสือรับรองรายได้ครอบครัว-กยศ.pdf', 'pdf', 'student', 'รับรองรายได้,กยศ,รายได้ครอบครัว,หนังสือรับรองรายได้', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 254396, TRUE, '2026-08-17T07:08:01+00:00', '2026-08-17T07:08:01+00:00')
+VALUES ('loan', '102 หนังสือรับรองรายได้ครอบครัว (กยศ.)', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/102-หนังสือรับรองรายได้ครอบครัว-กยศ.pdf', 'pdf', 'student', 'รับรองรายได้,กยศ,รายได้ครอบครัว,หนังสือรับรองรายได้', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 254396, TRUE, '2026-08-22T18:40:36+00:00', '2026-08-22T18:40:36+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7141,7 +7141,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '103 หนังสือรับรองรายได้ครอบครัว (กรอ.)', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/102-หนังสือรับรองรายได้ครอบครัว-กรอ.pdf', 'pdf', 'student', 'รับรองรายได้,กรอ,รายได้ครอบครัว', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 32939, TRUE, '2026-08-17T07:08:01+00:00', '2026-08-17T07:08:01+00:00')
+VALUES ('loan', '103 หนังสือรับรองรายได้ครอบครัว (กรอ.)', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/102-หนังสือรับรองรายได้ครอบครัว-กรอ.pdf', 'pdf', 'student', 'รับรองรายได้,กรอ,รายได้ครอบครัว', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 32939, TRUE, '2026-08-22T18:40:37+00:00', '2026-08-22T18:40:37+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7157,7 +7157,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '104 หนังสือแสดงความคิดเห็นของอาจารย์ที่ปรึกษา', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/103-หนังสือแสดงความคิดเห็นของอาจารย์ที่ปรึกษา.pdf', 'pdf', 'student', 'อาจารย์ที่ปรึกษา,ความคิดเห็นอาจารย์,กยศ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 460625, TRUE, '2026-08-17T07:08:01+00:00', '2026-08-17T07:08:01+00:00')
+VALUES ('loan', '104 หนังสือแสดงความคิดเห็นของอาจารย์ที่ปรึกษา', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/103-หนังสือแสดงความคิดเห็นของอาจารย์ที่ปรึกษา.pdf', 'pdf', 'student', 'อาจารย์ที่ปรึกษา,ความคิดเห็นอาจารย์,กยศ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 460625, TRUE, '2026-08-22T18:40:37+00:00', '2026-08-22T18:40:37+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7173,7 +7173,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '105 บันทึกข้อตกลงต่อท้ายสัญญากู้ยืม', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/104-บันทึกข้อตกลงต่อท้ายสัญญากู้ยืม.doc', 'doc', 'student', 'สัญญากู้ยืม,บันทึกข้อตกลง,ต่อท้ายสัญญา', NULL, 'seed (คัดด้วยมือ)', 200, 'application/msword', 34304, TRUE, '2026-08-17T07:08:01+00:00', '2026-08-17T07:08:01+00:00')
+VALUES ('loan', '105 บันทึกข้อตกลงต่อท้ายสัญญากู้ยืม', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/104-บันทึกข้อตกลงต่อท้ายสัญญากู้ยืม.doc', 'doc', 'student', 'สัญญากู้ยืม,บันทึกข้อตกลง,ต่อท้ายสัญญา', NULL, 'seed (คัดด้วยมือ)', 200, 'application/msword', 34304, TRUE, '2026-08-22T18:40:37+00:00', '2026-08-22T18:40:37+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7189,7 +7189,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '106 แบบรายงานข้อมูลผู้กู้ยืมเงิน', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/108-แบบรายงานข้อมูลผู้กู้ยืมเงิน.pdf', 'pdf', 'student', 'รายงานข้อมูลผู้กู้,ผู้กู้ยืม,กยศ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 809870, TRUE, '2026-08-17T07:08:01+00:00', '2026-08-17T07:08:01+00:00')
+VALUES ('loan', '106 แบบรายงานข้อมูลผู้กู้ยืมเงิน', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/108-แบบรายงานข้อมูลผู้กู้ยืมเงิน.pdf', 'pdf', 'student', 'รายงานข้อมูลผู้กู้,ผู้กู้ยืม,กยศ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 809870, TRUE, '2026-08-22T18:40:37+00:00', '2026-08-22T18:40:37+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7205,7 +7205,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '107 แบบฟอร์มบันทึกกิจกรรมจิตอาสา', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/107-แบบฟอร์มบันทึกกิจกรรมจิตอาสา.docx', 'docx', 'student', 'จิตอาสา,ชั่วโมงจิตอาสา,กิจกรรมจิตอาสา,กยศ ชั่วโมง', NULL, 'seed (คัดด้วยมือ)', 200, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 33038, TRUE, '2026-08-17T07:08:02+00:00', '2026-08-17T07:08:02+00:00')
+VALUES ('loan', '107 แบบฟอร์มบันทึกกิจกรรมจิตอาสา', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/107-แบบฟอร์มบันทึกกิจกรรมจิตอาสา.docx', 'docx', 'student', 'จิตอาสา,ชั่วโมงจิตอาสา,กิจกรรมจิตอาสา,กยศ ชั่วโมง', NULL, 'seed (คัดด้วยมือ)', 200, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 33038, TRUE, '2026-08-22T18:40:37+00:00', '2026-08-22T18:40:37+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7221,7 +7221,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '108 กยศ. แบบรายงานสถานภาพการศึกษา', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/กยศ-แบบรายงานสถานภาพการศึกษา.pdf', 'pdf', 'student', 'สถานภาพการศึกษา,กยศ,รายงานสถานภาพ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 522117, TRUE, '2026-08-17T07:08:02+00:00', '2026-08-17T07:08:02+00:00')
+VALUES ('loan', '108 กยศ. แบบรายงานสถานภาพการศึกษา', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/กยศ-แบบรายงานสถานภาพการศึกษา.pdf', 'pdf', 'student', 'สถานภาพการศึกษา,กยศ,รายงานสถานภาพ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 522117, TRUE, '2026-08-22T18:40:38+00:00', '2026-08-22T18:40:38+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7237,7 +7237,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '109 กรอ. แบบรายงานสถานภาพการศึกษา', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/กรอ-แบบรายงานสถานภาพการศึกษา.pdf', 'pdf', 'student', 'สถานภาพการศึกษา,กรอ,รายงานสถานภาพ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 553911, TRUE, '2026-08-17T07:08:02+00:00', '2026-08-17T07:08:02+00:00')
+VALUES ('loan', '109 กรอ. แบบรายงานสถานภาพการศึกษา', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/กรอ-แบบรายงานสถานภาพการศึกษา.pdf', 'pdf', 'student', 'สถานภาพการศึกษา,กรอ,รายงานสถานภาพ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 553911, TRUE, '2026-08-22T18:40:38+00:00', '2026-08-22T18:40:38+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7253,7 +7253,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '110 ตัวอย่างการทำสัญญา กยศ. กับธนาคารอิสลาม', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/105-ตัวอย่างการทำสัญญา-กยศ-กับธนาคารอิสลาม.pdf', 'pdf', 'student', 'ทำสัญญา,ธนาคารอิสลาม,กยศ,ตัวอย่างสัญญา', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 253069, TRUE, '2026-08-17T07:08:02+00:00', '2026-08-17T07:08:02+00:00')
+VALUES ('loan', '110 ตัวอย่างการทำสัญญา กยศ. กับธนาคารอิสลาม', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/105-ตัวอย่างการทำสัญญา-กยศ-กับธนาคารอิสลาม.pdf', 'pdf', 'student', 'ทำสัญญา,ธนาคารอิสลาม,กยศ,ตัวอย่างสัญญา', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 253069, TRUE, '2026-08-22T18:40:38+00:00', '2026-08-22T18:40:38+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7269,7 +7269,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', '111 ตัวอย่างการทำสัญญา กรอ. กับธนาคารอิสลาม', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/105-ตัวอย่างการทำสัญญา-กรอ-กับธนาคารอิสลาม.pdf', 'pdf', 'student', 'ทำสัญญา,ธนาคารอิสลาม,กรอ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 104923, TRUE, '2026-08-17T07:08:02+00:00', '2026-08-17T07:08:02+00:00')
+VALUES ('loan', '111 ตัวอย่างการทำสัญญา กรอ. กับธนาคารอิสลาม', 'https://sci.rmu.ac.th/wp-content/uploads/2016/07/105-ตัวอย่างการทำสัญญา-กรอ-กับธนาคารอิสลาม.pdf', 'pdf', 'student', 'ทำสัญญา,ธนาคารอิสลาม,กรอ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 104923, TRUE, '2026-08-22T18:40:38+00:00', '2026-08-22T18:40:38+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7285,7 +7285,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('internship', 'แบบฟอร์มตอบกลับจากหน่วยงานที่นักศึกษาออกฝึกประสบการณ์', 'https://sci.rmu.ac.th/wp-content/uploads/2016/12/ฟอร์ม-แบบตอบกลับ.doc', 'doc', 'student', 'ฝึกงาน,แบบตอบกลับ,หน่วยงานฝึกงาน,ตอบรับฝึกงาน', NULL, 'seed (คัดด้วยมือ)', 200, 'application/msword', 26112, TRUE, '2026-08-17T07:08:03+00:00', '2026-08-17T07:08:03+00:00')
+VALUES ('internship', 'แบบฟอร์มตอบกลับจากหน่วยงานที่นักศึกษาออกฝึกประสบการณ์', 'https://sci.rmu.ac.th/wp-content/uploads/2016/12/ฟอร์ม-แบบตอบกลับ.doc', 'doc', 'student', 'ฝึกงาน,แบบตอบกลับ,หน่วยงานฝึกงาน,ตอบรับฝึกงาน', NULL, 'seed (คัดด้วยมือ)', 200, 'application/msword', 26112, TRUE, '2026-08-22T18:40:39+00:00', '2026-08-22T18:40:39+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7301,7 +7301,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('registration', 'หน้ารวมเอกสาร/คำร้องทั่วไป คณะวิทยาศาสตร์และเทคโนโลยี', 'https://sci.rmu.ac.th/?p=6289', 'page', 'student', 'คำร้อง,เอกสาร,แบบฟอร์ม,ดาวน์โหลดเอกสาร', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', NULL, TRUE, '2026-08-17T07:08:04+00:00', '2026-08-17T07:08:04+00:00')
+VALUES ('registration', 'หน้ารวมเอกสาร/คำร้องทั่วไป คณะวิทยาศาสตร์และเทคโนโลยี', 'https://sci.rmu.ac.th/?p=6289', 'page', 'student', 'คำร้อง,เอกสาร,แบบฟอร์ม,ดาวน์โหลดเอกสาร', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', NULL, TRUE, '2026-08-22T18:40:42+00:00', '2026-08-22T18:40:42+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7317,7 +7317,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('loan', 'หน้ารวมข้อมูลการกู้ยืมเงินเพื่อการศึกษา', 'https://sci.rmu.ac.th/?page_id=509', 'page', 'student', 'กู้ยืม,กยศ,กรอ,เงินกู้,กู้เรียน,ทุนกู้ยืม', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', NULL, TRUE, '2026-08-17T07:08:04+00:00', '2026-08-17T07:08:04+00:00')
+VALUES ('loan', 'หน้ารวมข้อมูลการกู้ยืมเงินเพื่อการศึกษา', 'https://sci.rmu.ac.th/?page_id=509', 'page', 'student', 'กู้ยืม,กยศ,กรอ,เงินกู้,กู้เรียน,ทุนกู้ยืม', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', NULL, TRUE, '2026-08-22T18:40:42+00:00', '2026-08-22T18:40:42+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7333,7 +7333,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('calendar', 'ปฏิทินการศึกษา (ระบบบริการการศึกษา)', 'https://regis.rmu.ac.th/registrar/calendar.asp', 'page', 'student', 'ปฏิทินการศึกษา,วันเปิดเทอม,วันลงทะเบียน,วันสอบ,เดดไลน์,ถอนวิชา', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html', NULL, TRUE, '2026-08-17T07:08:05+00:00', '2026-08-17T07:08:05+00:00')
+VALUES ('calendar', 'ปฏิทินการศึกษา (ระบบบริการการศึกษา)', 'https://regis.rmu.ac.th/registrar/calendar.asp', 'page', 'student', 'ปฏิทินการศึกษา,วันเปิดเทอม,วันลงทะเบียน,วันสอบ,เดดไลน์,ถอนวิชา', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html', NULL, TRUE, '2026-08-22T18:40:43+00:00', '2026-08-22T18:40:43+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7349,7 +7349,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('curriculum', 'โครงสร้างหลักสูตร (ระบบบริการการศึกษา)', 'https://regis.rmu.ac.th/registrar/program_info.asp', 'page', 'student', 'หลักสูตร,โครงสร้างหลักสูตร,หน่วยกิต,วิชาบังคับ', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html', NULL, TRUE, '2026-08-17T07:08:05+00:00', '2026-08-17T07:08:05+00:00')
+VALUES ('curriculum', 'โครงสร้างหลักสูตร (ระบบบริการการศึกษา)', 'https://regis.rmu.ac.th/registrar/program_info.asp', 'page', 'student', 'หลักสูตร,โครงสร้างหลักสูตร,หน่วยกิต,วิชาบังคับ', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html', NULL, TRUE, '2026-08-22T18:40:43+00:00', '2026-08-22T18:40:43+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7365,7 +7365,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('curriculum', 'ค้นหารายวิชาที่เปิดสอน (ระบบบริการการศึกษา)', 'https://regis.rmu.ac.th/registrar/class_info.asp', 'page', 'student', 'วิชาเปิดสอน,ตารางเรียน,ค้นหารายวิชา,หมู่เรียน,ที่นั่ง', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html', NULL, TRUE, '2026-08-17T07:08:05+00:00', '2026-08-17T07:08:05+00:00')
+VALUES ('curriculum', 'ค้นหารายวิชาที่เปิดสอน (ระบบบริการการศึกษา)', 'https://regis.rmu.ac.th/registrar/class_info.asp', 'page', 'student', 'วิชาเปิดสอน,ตารางเรียน,ค้นหารายวิชา,หมู่เรียน,ที่นั่ง', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html', NULL, TRUE, '2026-08-22T18:40:43+00:00', '2026-08-22T18:40:43+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7381,7 +7381,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('curriculum', 'ระบบบริหารจัดการหลักสูตร (ข้อมูลหลักสูตรที่เปิดสอน)', 'https://promo-curriculum.rmu.ac.th', 'page', 'student', 'หลักสูตรที่เปิดสอน,สมัครเรียน,ข้อมูลหลักสูตร', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', 2727, TRUE, '2026-08-17T07:08:05+00:00', '2026-08-17T07:08:05+00:00')
+VALUES ('curriculum', 'ระบบบริหารจัดการหลักสูตร (ข้อมูลหลักสูตรที่เปิดสอน)', 'https://promo-curriculum.rmu.ac.th', 'page', 'student', 'หลักสูตรที่เปิดสอน,สมัครเรียน,ข้อมูลหลักสูตร', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', 2727, TRUE, '2026-08-22T18:40:43+00:00', '2026-08-22T18:40:43+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7397,7 +7397,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('staff', 'ข้อมูลบุคลากรสายวิชาการ คณะเทคโนโลยีสารสนเทศ', 'https://www.itrmu.org/academic_staff.php', 'page', 'student', 'อาจารย์,ติดต่ออาจารย์,อีเมลอาจารย์,รายชื่ออาจารย์', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', 3474, TRUE, '2026-08-17T07:08:05+00:00', '2026-08-17T07:08:05+00:00')
+VALUES ('staff', 'ข้อมูลบุคลากรสายวิชาการ คณะเทคโนโลยีสารสนเทศ', 'https://www.itrmu.org/academic_staff.php', 'page', 'student', 'อาจารย์,ติดต่ออาจารย์,อีเมลอาจารย์,รายชื่ออาจารย์', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', 3474, TRUE, '2026-08-22T18:40:44+00:00', '2026-08-22T18:40:44+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7413,7 +7413,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('scholarship', 'ข่าวทุนการศึกษา คณะวิทยาศาสตร์และเทคโนโลยี', 'https://sci.rmu.ac.th/?cat=6', 'page', 'student', 'ทุนการศึกษา,ขอทุน,สมัครทุน,ทุนเรียน', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', NULL, TRUE, '2026-08-17T07:08:06+00:00', '2026-08-17T07:08:06+00:00')
+VALUES ('scholarship', 'ข่าวทุนการศึกษา คณะวิทยาศาสตร์และเทคโนโลยี', 'https://sci.rmu.ac.th/?cat=6', 'page', 'student', 'ทุนการศึกษา,ขอทุน,สมัครทุน,ทุนเรียน', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', NULL, TRUE, '2026-08-22T18:40:44+00:00', '2026-08-22T18:40:44+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7429,7 +7429,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('it_account', 'สำนักคอมพิวเตอร์ (อีเมลมหาวิทยาลัย / บัญชีเครือข่าย / WiFi)', 'https://cc.rmu.ac.th/', 'page', 'student', 'อีเมลมหาลัย,email,ขออีเมล,wifi,รหัสผ่านเน็ต,internet,เครือข่าย,อินเทอร์เน็ต', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', 45160, TRUE, '2026-08-17T07:08:03+00:00', '2026-08-17T07:08:03+00:00')
+VALUES ('it_account', 'สำนักคอมพิวเตอร์ (อีเมลมหาวิทยาลัย / บัญชีเครือข่าย / WiFi)', 'https://cc.rmu.ac.th/', 'page', 'student', 'อีเมลมหาลัย,email,ขออีเมล,wifi,รหัสผ่านเน็ต,internet,เครือข่าย,อินเทอร์เน็ต', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', 45160, TRUE, '2026-08-22T18:40:40+00:00', '2026-08-22T18:40:40+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7445,7 +7445,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('internship', 'แบบฟอร์มประวัตินักศึกษาออกฝึกประสบการณ์วิชาชีพ', 'https://sci.rmu.ac.th/wp-content/uploads/2016/12/%E0%B8%9F%E0%B8%AD%E0%B8%A3%E0%B9%8C%E0%B8%A1-%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%A7%E0%B8%B1%E0%B8%95%E0%B8%B4%E0%B8%99%E0%B8%B1%E0%B8%81%E0%B8%A8%E0%B8%B6%E0%B8%81%E0%B8%A9%E0%B8%B2.doc', 'doc', 'student', 'ฝึกงาน,ประวัตินักศึกษา,ฝึกประสบการณ์,ฟอร์มประวัติ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/msword', 27648, TRUE, '2026-08-17T07:08:03+00:00', '2026-08-17T07:08:03+00:00')
+VALUES ('internship', 'แบบฟอร์มประวัตินักศึกษาออกฝึกประสบการณ์วิชาชีพ', 'https://sci.rmu.ac.th/wp-content/uploads/2016/12/%E0%B8%9F%E0%B8%AD%E0%B8%A3%E0%B9%8C%E0%B8%A1-%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%A7%E0%B8%B1%E0%B8%95%E0%B8%B4%E0%B8%99%E0%B8%B1%E0%B8%81%E0%B8%A8%E0%B8%B6%E0%B8%81%E0%B8%A9%E0%B8%B2.doc', 'doc', 'student', 'ฝึกงาน,ประวัตินักศึกษา,ฝึกประสบการณ์,ฟอร์มประวัติ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/msword', 27648, TRUE, '2026-08-22T18:40:39+00:00', '2026-08-22T18:40:39+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7461,7 +7461,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('activity', 'ระบบกิจกรรมนักศึกษา (e-activity)', 'https://e-activity.rmu.ac.th', 'page', 'student', 'กิจกรรม,ชั่วโมงกิจกรรม,เก็บชั่วโมง,กิจกรรมนักศึกษา', NULL, 'seed (คัดด้วยมือ)', 500, 'text/html; charset=UTF-8', 2077, FALSE, '2026-08-17T07:08:06+00:00', '2026-08-17T07:08:06+00:00')
+VALUES ('activity', 'ระบบกิจกรรมนักศึกษา (e-activity)', 'https://e-activity.rmu.ac.th', 'page', 'student', 'กิจกรรม,ชั่วโมงกิจกรรม,เก็บชั่วโมง,กิจกรรมนักศึกษา', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', 2077, TRUE, '2026-08-22T18:40:45+00:00', '2026-08-22T18:40:45+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7477,7 +7477,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('exam_prep', 'เทคนิคการทำข้อสอบ TOEIC', 'https://sci.rmu.ac.th/wp-content/uploads/2018/06/3-เทคนิคการทำข้อสอบ-toeic.pdf', 'pdf', 'student', 'toeic,สอบภาษาอังกฤษ,เทคนิคสอบ,ข้อสอบอังกฤษ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 483623, TRUE, '2026-08-17T07:08:06+00:00', '2026-08-17T07:08:06+00:00')
+VALUES ('exam_prep', 'เทคนิคการทำข้อสอบ TOEIC', 'https://sci.rmu.ac.th/wp-content/uploads/2018/06/3-เทคนิคการทำข้อสอบ-toeic.pdf', 'pdf', 'student', 'toeic,สอบภาษาอังกฤษ,เทคนิคสอบ,ข้อสอบอังกฤษ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 483623, TRUE, '2026-08-22T18:40:47+00:00', '2026-08-22T18:40:47+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7493,7 +7493,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('exam_prep', 'แนวข้อสอบ IELTS', 'https://sci.rmu.ac.th/wp-content/uploads/2018/06/2-ข้อสอบ-ielts.pdf', 'pdf', 'student', 'ielts,สอบภาษาอังกฤษ,แนวข้อสอบ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 1208715, TRUE, '2026-08-17T07:08:06+00:00', '2026-08-17T07:08:06+00:00')
+VALUES ('exam_prep', 'แนวข้อสอบ IELTS', 'https://sci.rmu.ac.th/wp-content/uploads/2018/06/2-ข้อสอบ-ielts.pdf', 'pdf', 'student', 'ielts,สอบภาษาอังกฤษ,แนวข้อสอบ', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 1208715, TRUE, '2026-08-22T18:40:47+00:00', '2026-08-22T18:40:47+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7509,7 +7509,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('regulation', 'พ.ร.บ. คอมพิวเตอร์ ฉบับที่ 1 พ.ศ. 2550', 'https://sci.rmu.ac.th/wp-content/uploads/2022/03/พรบ.-ว่าด้วยการกระทำความผิดทางคอมพิวเตอร์-พ.ศ.-2550.pdf', 'pdf', 'student', 'พรบคอมพิวเตอร์,กฎหมายคอมพิวเตอร์,พรบ 2550', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 118710, TRUE, '2026-08-17T07:08:07+00:00', '2026-08-17T07:08:07+00:00')
+VALUES ('regulation', 'พ.ร.บ. คอมพิวเตอร์ ฉบับที่ 1 พ.ศ. 2550', 'https://sci.rmu.ac.th/wp-content/uploads/2022/03/พรบ.-ว่าด้วยการกระทำความผิดทางคอมพิวเตอร์-พ.ศ.-2550.pdf', 'pdf', 'student', 'พรบคอมพิวเตอร์,กฎหมายคอมพิวเตอร์,พรบ 2550', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 118710, TRUE, '2026-08-22T18:40:47+00:00', '2026-08-22T18:40:47+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7525,7 +7525,7 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('regulation', 'พ.ร.บ. คอมพิวเตอร์ ฉบับที่ 2 พ.ศ. 2560 (แก้ไขเพิ่มเติม)', 'https://sci.rmu.ac.th/wp-content/uploads/2022/03/พรบ-คอมพิวเตอร์-ฉบับที่-2-2560.pdf', 'pdf', 'student', 'พรบคอมพิวเตอร์,กฎหมายคอมพิวเตอร์,พรบ 2560', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 116631, TRUE, '2026-08-17T07:08:07+00:00', '2026-08-17T07:08:07+00:00')
+VALUES ('regulation', 'พ.ร.บ. คอมพิวเตอร์ ฉบับที่ 2 พ.ศ. 2560 (แก้ไขเพิ่มเติม)', 'https://sci.rmu.ac.th/wp-content/uploads/2022/03/พรบ-คอมพิวเตอร์-ฉบับที่-2-2560.pdf', 'pdf', 'student', 'พรบคอมพิวเตอร์,กฎหมายคอมพิวเตอร์,พรบ 2560', NULL, 'seed (คัดด้วยมือ)', 200, 'application/pdf', 116631, TRUE, '2026-08-22T18:40:48+00:00', '2026-08-22T18:40:48+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,
@@ -7541,7 +7541,23 @@ ON CONFLICT (url) DO UPDATE SET
     checked_at = EXCLUDED.checked_at,
     scraped_at = EXCLUDED.scraped_at;
 INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
-VALUES ('internship', 'แบบฟอร์มแจ้งเปลี่ยนระยะเวลาการออกฝึกประสบการณ์วิชาชีพ', 'https://sci.rmu.ac.th/wp-content/uploads/2016/12/%E0%B9%81%E0%B8%88%E0%B9%89%E0%B8%87%E0%B9%80%E0%B8%9B%E0%B8%A5%E0%B8%B5%E0%B9%88%E0%B8%A2%E0%B8%99%E0%B8%A3%E0%B8%B0%E0%B8%A2%E0%B8%B0%E0%B9%80%E0%B8%A7%E0%B8%A5%E0%B8%B2%E0%B8%81%E0%B8%B2%E0%B8%A3%E0%B8%AD%E0%B8%AD%E0%B8%81%E0%B8%9D%E0%B8%B6%E0%B8%81%E0%B8%AF1.docx', 'docx', 'student', 'ฝึกงาน,ฝึกประสบการณ์,เปลี่ยนวันฝึกงาน,เลื่อนฝึกงาน', NULL, 'seed (คัดด้วยมือ)', 200, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 92027, TRUE, '2026-08-17T07:08:03+00:00', '2026-08-17T07:08:03+00:00')
+VALUES ('internship', 'แบบฟอร์มแจ้งเปลี่ยนระยะเวลาการออกฝึกประสบการณ์วิชาชีพ', 'https://sci.rmu.ac.th/wp-content/uploads/2016/12/%E0%B9%81%E0%B8%88%E0%B9%89%E0%B8%87%E0%B9%80%E0%B8%9B%E0%B8%A5%E0%B8%B5%E0%B9%88%E0%B8%A2%E0%B8%99%E0%B8%A3%E0%B8%B0%E0%B8%A2%E0%B8%B0%E0%B9%80%E0%B8%A7%E0%B8%A5%E0%B8%B2%E0%B8%81%E0%B8%B2%E0%B8%A3%E0%B8%AD%E0%B8%AD%E0%B8%81%E0%B8%9D%E0%B8%B6%E0%B8%81%E0%B8%AF1.docx', 'docx', 'student', 'ฝึกงาน,ฝึกประสบการณ์,เปลี่ยนวันฝึกงาน,เลื่อนฝึกงาน', NULL, 'seed (คัดด้วยมือ)', 200, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 92027, TRUE, '2026-08-22T18:40:38+00:00', '2026-08-22T18:40:38+00:00')
+ON CONFLICT (url) DO UPDATE SET
+    category = EXCLUDED.category,
+    title = EXCLUDED.title,
+    doc_type = EXCLUDED.doc_type,
+    audience = EXCLUDED.audience,
+    keywords = EXCLUDED.keywords,
+    note = EXCLUDED.note,
+    source_page = EXCLUDED.source_page,
+    http_status = EXCLUDED.http_status,
+    content_type = EXCLUDED.content_type,
+    content_length = EXCLUDED.content_length,
+    is_available = EXCLUDED.is_available,
+    checked_at = EXCLUDED.checked_at,
+    scraped_at = EXCLUDED.scraped_at;
+INSERT INTO documents (category, title, url, doc_type, audience, keywords, note, source_page, http_status, content_type, content_length, is_available, checked_at, scraped_at)
+VALUES ('internship', 'ปฏิทินสหกิจศึกษา (ศูนย์สหกิจศึกษาฯ)', 'https://coopcenter.rmu.ac.th/%E0%B8%9B%E0%B8%8F%E0%B8%B4%E0%B8%97%E0%B8%B4%E0%B8%99%E0%B8%AA%E0%B8%AB%E0%B8%81%E0%B8%B4%E0%B8%88%E0%B8%A8%E0%B8%B6%E0%B8%81%E0%B8%A9%E0%B8%B2/', 'page', 'student', 'สหกิจ,ปฏิทินสหกิจ,ฝึกงาน,ออกฝึก,วันส่งเอกสาร,กำหนดการสหกิจ,ฝึกประสบการณ์', NULL, 'seed (คัดด้วยมือ)', 200, 'text/html; charset=UTF-8', NULL, TRUE, '2026-08-22T18:40:39+00:00', '2026-08-22T18:40:39+00:00')
 ON CONFLICT (url) DO UPDATE SET
     category = EXCLUDED.category,
     title = EXCLUDED.title,

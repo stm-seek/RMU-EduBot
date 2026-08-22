@@ -32,7 +32,7 @@ def test_document_menu_buttons_all_lead_to_real_answers(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    เมนูหมวดเอกสารสร้างปุ่มจากข้อมูลจริง 10 หมวด — ทุกปุ่มต้องกดได้
+    เมนูหมวดเอกสารสร้างปุ่มจากข้อมูลจริง 11 หมวด — ทุกปุ่มต้องกดได้
 
     ถ้าหมวดใดสะกดไม่ตรงกับที่ ``documents_in_category`` ใช้ค้น จะได้
     ``answered_by == "no_data"`` ซึ่งเป็นทางที่ผู้ใช้เจอบั๊กจริง ๆ
@@ -44,7 +44,7 @@ def test_document_menu_buttons_all_lead_to_real_answers(
     targets = [
         data for data in _quick_reply_data(menu) if "cat=" in data
     ]
-    assert len(targets) == 10
+    assert len(targets) == 11
 
     for data in targets:
         answer = run(rt.handle_postback(data, live_db))

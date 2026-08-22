@@ -104,7 +104,9 @@ def test_query_has_no_string_interpolation(name: str) -> None:
 
 def test_document_queries_exclude_dead_links_and_staff_docs() -> None:
     """
-    ส่งลิงก์ตายให้นักศึกษาแย่กว่าไม่ส่ง (32 ฉบับ เข้าได้จริง 31)
+    ส่งลิงก์ตายให้นักศึกษาแย่กว่าไม่ส่ง — ตัวกรอง ``is_available`` ต้องมีทุก
+    คำค้น (รอบตรวจ 22 ส.ค. 2026 ทั้ง 33 ฉบับเข้าได้ ถ้าลิงก์ตายอีกครั้ง
+    ตัวกรองจะตัดออกเอง)
     และเอกสารของเจ้าหน้าที่ไม่ควรโผล่ในคำตอบของนักศึกษา
     """
     for name in ("SQL_DOCUMENT_CATEGORIES", "SQL_DOCUMENTS_IN_CATEGORY", "SQL_SEARCH_DOCUMENTS"):
