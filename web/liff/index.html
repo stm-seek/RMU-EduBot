@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ติ๊กวิชาที่ผ่านแล้ว</title>
+<!--
+  หน้า LIFF: ให้นักศึกษาติ๊กวิชาที่ผ่านแล้ว → เป็น input ของ Planner Engine
+
+  ข้อตกลงด้านความปลอดภัยที่ห้ามแก้:
+    * ส่ง **ID token** (liff.getIDToken()) ไปให้ backend verify กับ LINE ทุกครั้ง
+      ห้ามส่ง userId จาก liff.getContext() เพราะปลอมได้ (LINE เตือนไว้เอง)
+    * ไม่เก็บ token ลง localStorage — อยู่ในหน่วยความจำของหน้านี้เท่านั้น
+    * ตัวเลขสรุปทั้งหมดมาจาก backend ไม่คำนวณซ้ำในหน้าเว็บ (สองฝั่งคิดเองแล้ว
+      ไม่ตรงกันคือบั๊กที่ผู้ใช้เห็นก่อนเรา)
+-->
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px 14px 96px;
+    font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif;
+    line-height: 1.55; background: #f6f7f9; color: #14161a;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 4px; }
+  .sub { color: #5b6472; font-size: .82rem; margin-bottom: 14px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 14px;
+    margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.07);
+  }
+  .summary { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+  .stat b { display: block; font-size: 1.25rem; }
+  .stat span { font-size: .74rem; color: #5b6472; }
+  .bar { height: 8px; border-radius: 99px; background: #e6e9ee; margin-top: 10px; }
+  .bar > i { display: block; height: 100%; border-radius: 99px; background: #06c755; }
+  .warn {
+    background: #fff8e1; border: 1px solid #f2d98a; color: #6b4e00;
+    border-radius: 10px; padding: 10px 12px; font-size: .8rem; margin-bottom: 12px;
+  }
+  .err { background: #fdecea; border-color: #f3b7b1; color: #7d221a; }
+  h2 { font-size: .9rem; margin: 0 0 8px; color: #2c333d; }
+  label {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 9px 4px; border-top: 1px solid #eef0f4; cursor: pointer;
+  }
+  label:first-of-type { border-top: 0; }
+  label input { margin: 4px 0 0; width: 20px; height: 20px; flex: none; }
+  .code { font-variant-numeric: tabular-nums; color: #5b6472; font-size: .78rem; }
+  .name { font-size: .9rem; }
+  .done .name { color: #6b7280; text-decoration: line-through; }
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 14px 14px;
+    background: rgba(246,247,249,.96); border-top: 1px solid #e3e6ea;
+  }
+  button {
+    width: 100%; padding: 13px; border: 0; border-radius: 10px;
+    background: #06c755; color: #fff; font-size: 1rem; font-weight: 600;
+  }
+  button[disabled] { background: #b7bfc9; }
+  .muted { color: #5b6472; font-size: .78rem; text-align: center; margin-top: 6px; }
+</style>
+</head>
+<body>
+<h1>วิชาที่ผ่านแล้ว</h1>
+<div class="sub" id="sub">กำลังโหลด…</div>
+<div id="notices"></div>
+<div id="summary"></div>
+<div id="terms"></div>
+<footer>
+  <button id="save" disabled>บันทึก</button>
+  <div class="muted" id="status">ระบบไม่เก็บเกรดและไม่ขอรหัสผ่านระบบทะเบียน</div>
+</footer>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+"use strict";
+
+// token อยู่ในตัวแปรนี้เท่านั้น — ไม่ลง localStorage/sessionStorage
+let idToken = null;
+let state = null;
+
+const el = (id) => document.getElementById(id);
+
+function notice(text, isError) {
+  const box = document.createElement("div");
+  box.className = isError ? "warn err" : "warn";
+  box.textContent = text;
+  el("notices").appendChild(box);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || `ผิดพลาด (HTTP ${res.status})`);
+  }
+  return data;
+}
+
+function termLabel(year, semester) {
+  return `ปี ${year} ภาคเรียนที่ ${semester}`;
+}
+
+function renderSummary(p) {
+  const left =
+    p.credits_left_to_graduate === null || p.credits_left_to_graduate === undefined
+      ? "-"
+      : p.credits_left_to_graduate;
+  el("summary").innerHTML = `
+    <div class="card">
+      <div class="summary">
+        <div class="stat"><b>${p.passed_courses}/${p.plan_courses}</b><span>วิชาที่ผ่าน</span></div>
+        <div class="stat"><b>${p.passed_credits}</b><span>หน่วยกิตที่ผ่าน</span></div>
+        <div class="stat"><b>${p.remaining_courses}</b><span>วิชาที่เหลือในแผน</span></div>
+        <div class="stat"><b>${left}</b><span>หน่วยกิตที่ยังต้องเก็บ</span></div>
+      </div>
+      <div class="bar"><i style="width:${Math.min(100, p.percent_complete)}%"></i></div>
+    </div>`;
+}
+
+function renderPlan(plan) {
+  const groups = new Map();
+  for (const course of plan) {
+    const key = `${course.std_year}-${course.std_semester}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(course);
+  }
+
+  const root = el("terms");
+  root.textContent = "";
+  for (const [key, courses] of groups) {
+    const [year, semester] = key.split("-");
+    const card = document.createElement("div");
+    card.className = "card";
+    const head = document.createElement("h2");
+    const credits = courses.reduce((sum, c) => sum + (c.credits || 0), 0);
+    head.textContent = `${termLabel(year, semester)} — ${courses.length} วิชา ${credits} หน่วยกิต`;
+    card.appendChild(head);
+
+    for (const course of courses) {
+      const row = document.createElement("label");
+      row.className = course.passed ? "done" : "";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = course.passed;
+      box.dataset.code = course.course_code;
+      box.addEventListener("change", () => {
+        row.className = box.checked ? "done" : "";
+        el("save").disabled = false;
+        el("status").textContent = "ยังไม่ได้บันทึก";
+      });
+      const text = document.createElement("div");
+      text.innerHTML =
+        `<div class="name"></div><div class="code"></div>`;
+      text.querySelector(".name").textContent = course.name || "(ไม่มีชื่อวิชาในคลังข้อมูล)";
+      text.querySelector(".code").textContent =
+        `${course.course_code_full || course.course_code} · ${course.credits_text || (course.credits ?? "-") + " หน่วยกิต"}`;
+      row.append(box, text);
+      card.appendChild(row);
+    }
+    root.appendChild(card);
+  }
+}
+
+function checkedCodes() {
+  return Array.from(document.querySelectorAll("input[type=checkbox]:checked")).map(
+    (box) => box.dataset.code
+  );
+}
+
+function applyState(next) {
+  state = next;
+  el("sub").textContent =
+    `${next.program_name || ""} (${next.program_code}) · ${next.plan.length} วิชาในแผน`.trim();
+  renderSummary(next.progress);
+  renderPlan(next.plan);
+  if (!next.progress.prereq_known) {
+    notice(
+      "ระบบยังไม่มีข้อมูลวิชาบังคับก่อน (ระบบทะเบียนไม่เผยแพร่) " +
+        "ลำดับที่เห็นคือเทอมที่แผนการเรียนแนะนำเท่านั้น"
+    );
+  }
+  if (next.progress.passed_outside_plan.length) {
+    notice(`มีวิชาที่ติ๊กไว้แต่ไม่อยู่ในแผน ${next.progress.passed_outside_plan.length} วิชา`);
+  }
+}
+
+async function save() {
+  const button = el("save");
+  button.disabled = true;
+  el("status").textContent = "กำลังบันทึก…";
+  try {
+    const result = await api("/api/liff/completed_courses", {
+      id_token: idToken,
+      course_codes: checkedCodes(),
+      program_code: state ? state.program_code : undefined,
+    });
+    el("notices").textContent = "";
+    applyState(result);
+    el("status").textContent = `บันทึกแล้ว ${result.saved} วิชา`;
+  } catch (error) {
+    el("status").textContent = "";
+    notice(`บันทึกไม่สำเร็จ: ${error.message}`, true);
+    button.disabled = false;
+  }
+}
+
+async function start() {
+  try {
+    const config = await fetch("/api/liff/config").then((res) => res.json());
+    if (!config.liff_id) {
+      throw new Error("ยังไม่ได้ตั้งค่า LIFF_ID ที่เซิร์ฟเวอร์");
+    }
+    await liff.init({ liffId: config.liff_id });
+    if (!liff.isLoggedIn()) {
+      liff.login({ redirectUri: window.location.href });
+      return;
+    }
+    idToken = liff.getIDToken();
+    if (!idToken) {
+      throw new Error("ไม่ได้รับ ID token — ตรวจ scope openid ของ LINE Login channel");
+    }
+    applyState(await api("/api/liff/state", { id_token: idToken }));
+    el("save").addEventListener("click", save);
+    el("status").textContent = "ติ๊กแล้วกดบันทึก";
+  } catch (error) {
+    el("sub").textContent = "";
+    notice(`เปิดหน้านี้ไม่สำเร็จ: ${error.message}`, true);
+  }
+}
+
+start();
+</script>
+</body>
+</html>

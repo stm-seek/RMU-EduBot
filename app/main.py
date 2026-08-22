@@ -31,13 +31,15 @@ import contextlib
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Annotated, AsyncIterator
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from . import planner
 from . import router as bot_router
 from .config import Settings, get_settings
 from .db import Database, SupportsExecute, SupportsQuery
@@ -543,16 +545,31 @@ class LiffLoginResponse(BaseModel):
     is_new_user: bool = False
 
 
-async def require_verified_user(
-    payload: LiffLoginRequest, settings: SettingsDep, http: HttpDep
+async def verify_or_401(
+    id_token: str, settings: Settings, http: httpx.AsyncClient
 ) -> VerifiedUser:
-    """dependency: verify ID token กับ LINE ก่อนเข้าถึง endpoint"""
+    """
+    verify ID token กับ LINE แล้วแปลง error เป็น HTTP status ที่ถูกต้อง
+
+    แยกออกมาเป็นฟังก์ชันธรรมดา (ไม่ใช่ dependency) เพราะ endpoint ที่รับ body
+    มากกว่า ``id_token`` ต้องประกาศ body model ของตัวเอง — ถ้าใช้ dependency
+    ที่ประกาศ body ด้วย FastAPI จะบังคับให้ body ซ้อนเป็นสองก้อน
+    (``{"payload": ..., "body": ...}``) ซึ่งฝั่งหน้าเว็บต้องรู้เรื่องภายในของ
+    เซิร์ฟเวอร์เพื่อจะยิงให้ถูก
+    """
     try:
-        return await verify_id_token(payload.id_token, settings, http)
+        return await verify_id_token(id_token, settings, http)
     except LiffAuthError as exc:
         raise _http_error(401, str(exc)) from exc
     except RuntimeError as exc:
         raise _http_error(503, str(exc)) from exc
+
+
+async def require_verified_user(
+    payload: LiffLoginRequest, settings: SettingsDep, http: HttpDep
+) -> VerifiedUser:
+    """dependency: verify ID token กับ LINE ก่อนเข้าถึง endpoint"""
+    return await verify_or_401(payload.id_token, settings, http)
 
 
 def _http_error(status: int, detail: str):
@@ -571,15 +588,44 @@ async def liff_login(
     ตามแผน B: **ไม่ขอรหัสผ่านระบบทะเบียน** นักศึกษาแจ้งวิชาที่ผ่านเองผ่าน LIFF
     เก็บลง DB แค่ ``user_hash`` + ``program_code`` + รายการรหัสวิชา
     ไม่เก็บชื่อ ไม่เก็บรหัสนักศึกษา ไม่เก็บเกรด
+
+    ``display_name`` ที่คืนกลับไปใช้ทักทายบนหน้าเว็บเท่านั้น — **ไม่ถูกเขียนลง
+    ฐานข้อมูล** (มาจาก ID token ที่ผู้ใช้ถืออยู่แล้ว ไม่ใช่ของใหม่ที่เราไปเก็บ)
+
+    ไม่มี DB ก็ยังตอบ 200: หน้า LIFF จะแสดงว่าบันทึกไม่ได้ ดีกว่าค้างที่หน้าขาว
     """
-    # TODO: upsert app_users เมื่อต่อ DB แล้ว
-    log.info("LIFF login สำเร็จ (hash=%s...)", user.user_hash[:12])
+    is_new = True
+    db = get_db()
+    if db is not None and isinstance(db, SupportsExecute):
+        from . import repository as repo
+
+        before = await repo.user_profile(db, user.user_hash)
+        is_new = before is None
+        await repo.ensure_user(db, user.user_hash)
+
+    log.info("LIFF login สำเร็จ (hash=%s... ผู้ใช้ใหม่=%s)", user.user_hash[:12], is_new)
     return LiffLoginResponse(
         success=True,
         user_hash=user.user_hash,
         display_name=user.display_name,
-        is_new_user=True,
+        is_new_user=is_new,
     )
+
+
+# หน้า LIFF เสิร์ฟจากแอปเดียวกัน ไม่แยก static host
+#
+# เหตุผล: LIFF ต้องเป็น HTTPS และต้องเรียก /api/liff/* ได้ อยู่โดเมนเดียวกัน
+# แล้วไม่ต้องตั้ง CORS เลย (CORS ที่ตั้งผิดคือช่องให้เว็บอื่นยิง API แทนผู้ใช้)
+# Endpoint URL ที่ต้องใส่ใน LINE Developers Console = <PUBLIC_BASE_URL>/liff
+LIFF_PAGE = Path(__file__).resolve().parent.parent / "web" / "liff" / "index.html"
+
+
+@app.get("/liff", response_class=HTMLResponse)
+async def liff_page() -> HTMLResponse:
+    """หน้าติ๊กวิชาที่ผ่านแล้ว — ไฟล์เดียว ไม่มี asset ภายนอกนอกจาก LIFF SDK"""
+    if not LIFF_PAGE.is_file():  # pragma: no cover - ไฟล์หายจาก repo เท่านั้น
+        raise _http_error(500, "ไม่พบไฟล์หน้า LIFF ในเซิร์ฟเวอร์")
+    return HTMLResponse(LIFF_PAGE.read_text(encoding="utf-8"))
 
 
 @app.get("/api/liff/config")
@@ -592,4 +638,163 @@ async def liff_config(settings: SettingsDep) -> dict:
     return {
         "liff_id": settings.liff_id,
         "program_code": settings.default_program_code,
+        "max_credits_per_term": settings.planner_max_credits,
+    }
+
+
+# ── LIFF: ติ๊กวิชาที่ผ่านแล้ว (input ของ Planner Engine) ──────────────────────
+#
+# ทำไมต้องให้ติ๊กเอง: ระบบไม่ได้ต่อกับระบบทะเบียน และ **ไม่ขอรหัสผ่าน**
+# ของนักศึกษาโดยเจตนา (เก็บรหัสผ่านระบบราชการไว้ในแอปนักศึกษาคือความเสี่ยง
+# ที่ไม่คุ้มกับความสะดวก) จึงแลกด้วยการติ๊กครั้งเดียวแล้วใช้ได้ตลอด
+#
+# เก็บแค่ "ผ่าน/ไม่ผ่าน" ไม่เก็บเกรด — คำนวณหน่วยกิตกับลำดับวิชาได้ครบ
+# โดยข้อมูลอ่อนไหวน้อยลงมาก (ดู PDPA ใน db/migrations/001_init.sql)
+
+
+class LiffStateRequest(BaseModel):
+    id_token: str = Field(min_length=16)
+
+
+class LiffSaveRequest(BaseModel):
+    id_token: str = Field(min_length=16)
+    # รหัสวิชา 7 หลักที่ติ๊กว่าผ่านแล้ว — ส่งมาทั้งชุดเสมอ (ไม่ใช่ diff)
+    # เพราะ "ชุด" คือสิ่งที่ผู้ใช้เห็นบนหน้าจอ ส่ง diff แล้วพลาดหนึ่งครั้ง
+    # สองฝั่งจะไม่ตรงกันอย่างเงียบ ๆ
+    course_codes: list[str] = Field(default_factory=list, max_length=400)
+    program_code: str | None = Field(default=None, max_length=20)
+    study_year: int | None = Field(default=None, ge=1, le=8)
+
+
+def _require_writable_db() -> SupportsExecute:
+    db = get_db()
+    if db is None or not isinstance(db, SupportsExecute):
+        raise _http_error(503, "ฐานข้อมูลยังไม่พร้อม — ลองอีกครั้งในอีกสักครู่")
+    return db
+
+
+def _plan_payload(plan_rows: list[dict], passed: set[str]) -> list[dict]:
+    """แผนการเรียนในรูปที่หน้าเว็บ render เป็น checkbox ได้ตรง ๆ"""
+    return [
+        {
+            "course_code": row["course_code"],
+            "course_code_full": row.get("course_code_full"),
+            "name": row.get("name_th"),
+            "credits": row.get("credits"),
+            "credits_text": row.get("credits_text"),
+            "std_year": row.get("std_year"),
+            "std_semester": row.get("std_semester"),
+            "note": row.get("note"),
+            "passed": row["course_code"] in passed,
+        }
+        for row in plan_rows
+    ]
+
+
+def _progress_payload(progress: planner.Progress) -> dict:
+    """สรุปตัวเลขจาก :class:`app.planner.Progress` ให้หน้าเว็บแสดงหัวข้อสรุป"""
+    return {
+        "program_code": progress.program_code,
+        "plan_courses": progress.plan_courses,
+        "passed_courses": len(progress.passed_statuses),
+        "passed_credits": progress.passed_credits,
+        "remaining_courses": len(progress.remaining),
+        "remaining_plan_credits": progress.remaining_plan_credits,
+        "percent_complete": progress.percent_complete,
+        "total_credits_required": progress.total_credits_required,
+        "credits_left_to_graduate": progress.credits_left_to_graduate,
+        # หน้าเว็บต้องบอกผู้ใช้ตรง ๆ ว่ายังไม่มีข้อมูลวิชาบังคับก่อน
+        "prereq_known": progress.prereq_known,
+        "passed_outside_plan": list(progress.passed_outside_plan),
+    }
+
+
+async def _load_state(db: SupportsExecute, user_hash: str, program_code: str) -> dict:
+    """อ่านสถานะทั้งหมดที่หน้า LIFF ต้องใช้ใน 5 คิวรี (ไม่ขึ้นกับจำนวนวิชา)"""
+    from . import repository as repo
+
+    user_id = await repo.ensure_user(db, user_hash)
+    profile = await repo.user_profile(db, user_hash) or {}
+    chosen = profile.get("program_code") or program_code
+
+    plan_rows = await repo.curriculum_plan(db, chosen)
+    done_rows = await repo.completed_courses(db, user_id)
+    passed = {row["course_code"] for row in done_rows}
+    program = await repo.program_info(db, chosen)
+    prereq_rows = await repo.prerequisites_for_program(db, chosen)
+
+    progress = planner.evaluate(
+        chosen,
+        plan_rows,
+        passed,
+        prereq_rows=prereq_rows,
+        total_credits_required=(program or {}).get("total_credits"),
+    )
+    return {
+        "program_code": chosen,
+        "program_name": (program or {}).get("program_name"),
+        "study_year": profile.get("study_year"),
+        "plan": _plan_payload(plan_rows, passed),
+        "progress": _progress_payload(progress),
+    }
+
+
+@app.post("/api/liff/state")
+async def liff_state(
+    payload: LiffStateRequest, settings: SettingsDep, http: HttpDep
+) -> dict:
+    """
+    แผนการเรียน + วิชาที่ติ๊กไว้แล้ว + ตัวเลขความก้าวหน้า — สำหรับ render หน้าเว็บ
+
+    ต้องส่ง ID token มาทุกครั้ง (ไม่มี session cookie): ``userId`` จาก
+    ``liff.getContext()`` ปลอมได้ ถ้าเชื่อค่านั้นใครก็อ่านข้อมูลคนอื่นได้
+    """
+    user = await verify_or_401(payload.id_token, settings, http)
+    db = _require_writable_db()
+    return await _load_state(db, user.user_hash, settings.default_program_code)
+
+
+@app.post("/api/liff/completed_courses")
+async def liff_save_completed(
+    payload: LiffSaveRequest, settings: SettingsDep, http: HttpDep
+) -> dict:
+    """
+    บันทึก "ชุด" วิชาที่ผ่านแล้ว แล้วคืนสถานะใหม่กลับไปทั้งก้อน
+
+    คืนสถานะใหม่ด้วย (ไม่ใช่แค่ ``{"ok": true}``) เพื่อให้หน้าเว็บแสดงตัวเลข
+    ที่ **เซิร์ฟเวอร์คำนวณ** ไม่ใช่ตัวเลขที่หน้าเว็บเดาเอง — สองฝั่งคิดเองแล้ว
+    ไม่ตรงกันคือบั๊กที่ผู้ใช้เห็นก่อนเราเสมอ
+    """
+    user = await verify_or_401(payload.id_token, settings, http)
+    db = _require_writable_db()
+
+    from . import repository as repo
+
+    user_id = await repo.ensure_user(db, user.user_hash)
+    if payload.program_code or payload.study_year:
+        await repo.set_user_program(
+            db,
+            user.user_hash,
+            program_code=payload.program_code,
+            study_year=payload.study_year,
+        )
+
+    # กันขยะเข้าตาราง: รับเฉพาะรหัส 7 หลักที่อยู่ในหลักสูตรจริง
+    program_code = payload.program_code or settings.default_program_code
+    plan_rows = await repo.curriculum_plan(db, program_code)
+    known = {row["course_code"] for row in plan_rows}
+    accepted = sorted({code.strip() for code in payload.course_codes} & known)
+    rejected = sorted({code.strip() for code in payload.course_codes} - known)
+    if rejected:
+        log.info("ติ๊กรหัสที่ไม่อยู่ในแผน %s — ไม่บันทึก %s", program_code, rejected)
+
+    counts = await repo.replace_completed_courses(db, user_id, accepted)
+    state = await _load_state(db, user.user_hash, program_code)
+    return {
+        "success": True,
+        "saved": len(accepted),
+        "added": counts.get("added", 0),
+        "removed": counts.get("removed", 0),
+        "rejected": rejected,
+        **state,
     }

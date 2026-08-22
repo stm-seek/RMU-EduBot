@@ -20,6 +20,7 @@ from .helpers import (
     TEST_LOGIN_CHANNEL_ID,
     TEST_PEPPER,
     TEST_USER_ID,
+    FakeWriteDatabase,
     Recorder,
     make_settings,
 )
@@ -151,7 +152,12 @@ def test_liff_config_returns_public_values(make_client) -> None:
     client = make_client(liff_settings())
     body = client.get("/api/liff/config").json()
 
-    assert body == {"liff_id": "1234567890-abcdefgh", "program_code": "643170151"}
+    assert body == {
+        "liff_id": "1234567890-abcdefgh",
+        "program_code": "643170151",
+        # หน้าเว็บบอกผู้ใช้ว่าเพดานหน่วยกิตที่ระบบใช้คิดคือเท่าไร
+        "max_credits_per_term": 22,
+    }
 
 
 # ── /api/liff/login ─────────────────────────────────────────────────────────
@@ -220,6 +226,162 @@ def test_login_verifies_token_with_line(make_client) -> None:
 
     assert str(recorder.requests[0].url) == "https://api.line.me/oauth2/v2.1/verify"
     assert VALID_TOKEN in recorder.text_body()
+
+
+# ── LIFF: หน้าเว็บ + ติ๊กวิชาที่ผ่าน ──────────────────────────────────────────
+
+
+PLAN_ROWS = [
+    {
+        "course_code": "7071101",
+        "course_code_full": "7071101-3",
+        "std_year": 1,
+        "std_semester": 1,
+        "credits": 3,
+        "credits_text": "3 (2-2-5)",
+        "name_th": "พื้นฐานเทคโนโลยีสารสนเทศ",
+        "note": None,
+    }
+]
+
+
+def liff_db(passed: list[str] | None = None) -> FakeWriteDatabase:
+    """FakeWriteDatabase ที่ตอบครบทุกคิวรีของ ``/api/liff/*``"""
+    done = passed or []
+    return FakeWriteDatabase(
+        {
+            "INSERT INTO app_users": {"id": 42},
+            "FROM app_users u": {
+                "id": 42,
+                "program_code": "643170151",
+                "study_year": 1,
+                "entry_year": 2564,
+                "completed_courses": len(done),
+            },
+            "FROM curriculum_rules cr": PLAN_ROWS,
+            "FROM prerequisites p": [],
+            "FROM user_completed_courses": [{"course_code": c} for c in done],
+            "FROM programs": {
+                "program_code": "643170151",
+                "program_name": "การจัดการนวัตกรรมดิจิทัล",
+                "total_credits": 120,
+            },
+            "WITH incoming": {"removed": 0, "added": len(done)},
+        }
+    )
+
+
+def test_liff_page_is_served_without_secrets(make_client) -> None:
+    """หน้า LIFF ต้องไม่ฝัง LIFF ID หรือ secret ไว้ในไฟล์ (อ่านจาก API ตอนรัน)"""
+    client = make_client(liff_settings())
+    response = client.get("/liff")
+
+    assert response.status_code == 200
+    assert "static.line-scdn.net/liff/edge/2/sdk.js" in response.text
+    assert "1234567890-abcdefgh" not in response.text
+    assert "getIDToken" in response.text, "ต้องส่ง ID token ไม่ใช่ userId"
+
+
+def test_liff_state_requires_database(make_client) -> None:
+    """ไม่มี DB = ยังเก็บ/อ่านข้อมูลไม่ได้ → 503 (ปัญหาของเซิร์ฟเวอร์)"""
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    client = make_client(liff_settings(), recorder.client())
+
+    response = client.post("/api/liff/state", json={"id_token": VALID_TOKEN})
+
+    assert response.status_code == 503
+
+
+def test_liff_state_returns_plan_and_progress(make_client, monkeypatch) -> None:
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(main, "_db", liff_db(["7071101"]))
+    client = make_client(liff_settings(), recorder.client())
+
+    body = client.post("/api/liff/state", json={"id_token": VALID_TOKEN}).json()
+
+    assert body["program_code"] == "643170151"
+    assert body["plan"][0]["course_code"] == "7071101"
+    assert body["plan"][0]["passed"] is True
+    assert body["progress"]["passed_credits"] == 3
+    assert body["progress"]["prereq_known"] is False
+
+
+def test_liff_state_never_returns_raw_line_user_id(make_client, monkeypatch) -> None:
+    """PDPA: ข้อมูลที่คืนออกไปห้ามมี ``line_user_id`` ดิบ"""
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(main, "_db", liff_db())
+    client = make_client(liff_settings(), recorder.client())
+
+    response = client.post("/api/liff/state", json={"id_token": VALID_TOKEN})
+
+    assert TEST_USER_ID not in response.text
+
+
+def test_liff_state_rejects_bad_token(make_client, monkeypatch) -> None:
+    recorder = Recorder((400, {"error_description": "JWS format error"}))
+    monkeypatch.setattr(main, "_db", liff_db())
+    client = make_client(liff_settings(), recorder.client())
+
+    response = client.post("/api/liff/state", json={"id_token": VALID_TOKEN})
+
+    assert response.status_code == 401
+
+
+def test_saving_completed_courses_ignores_codes_outside_the_plan(
+    make_client, monkeypatch
+) -> None:
+    """
+    รหัสที่ไม่อยู่ในหลักสูตรต้องไม่เข้าตาราง
+
+    หน้าเว็บส่งอะไรมาก็ได้ (แก้ JS ได้) — ถ้าไม่กรอง ตารางจะมีรหัสมั่ว
+    แล้ว planner นับหน่วยกิตจากขยะนั้น
+    """
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    database = liff_db(["7071101"])
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(liff_settings(), recorder.client())
+
+    body = client.post(
+        "/api/liff/completed_courses",
+        json={"id_token": VALID_TOKEN, "course_codes": ["7071101", "9999999"]},
+    ).json()
+
+    assert body["success"] is True
+    assert body["saved"] == 1
+    assert body["rejected"] == ["9999999"]
+    assert database.params_for("WITH incoming")[0] == ["7071101"]
+
+
+def test_saving_accepts_an_empty_selection(make_client, monkeypatch) -> None:
+    """เอาติ๊กออกหมด = ล้างข้อมูล ต้องทำได้ (ไม่ใช่ error)"""
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(main, "_db", liff_db())
+    client = make_client(liff_settings(), recorder.client())
+
+    response = client.post(
+        "/api/liff/completed_courses",
+        json={"id_token": VALID_TOKEN, "course_codes": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["saved"] == 0
+
+
+def test_login_creates_the_user_row(make_client, monkeypatch) -> None:
+    """login ต้อง upsert ``app_users`` ไม่ใช่แค่ verify แล้วทิ้ง"""
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    database = liff_db()
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(liff_settings(), recorder.client())
+
+    body = client.post("/api/liff/login", json={"id_token": VALID_TOKEN}).json()
+
+    assert body["success"] is True
+    # มีแถวอยู่แล้ว (fake ตอบ profile กลับมา) → ไม่ใช่ผู้ใช้ใหม่
+    assert body["is_new_user"] is False
+    assert database.params_for("INSERT INTO app_users") == (
+        hash_user_id(TEST_USER_ID, TEST_PEPPER),
+    )
 
 
 # ── lifespan ────────────────────────────────────────────────────────────────
