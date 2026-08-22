@@ -15,7 +15,8 @@ IMAGE := assets/rich_menu.png
 .PHONY: help install dev dev-reload db-up db-down db-reset db-shell migrate seed \
         scrape scrape-programs scrape-courses scrape-offerings \
         scrape-documents scrape-instructors export check verify test doctest clean \
-        rich-menu-dry rich-menu-apply rich-menu-apply-consult rich-menu-list rich-menu-delete
+        rich-menu-dry rich-menu-apply rich-menu-apply-consult rich-menu-list rich-menu-delete \
+        seed-curriculum
 
 help:
 	@echo.
@@ -97,6 +98,7 @@ migrate:
 	docker compose exec -T db psql -U rmubot -d rmu_bot -v ON_ERROR_STOP=1 < db/migrations/002_ai_sessions.sql
 	docker compose exec -T db psql -U rmubot -d rmu_bot -v ON_ERROR_STOP=1 < db/migrations/003_answered_by_values.sql
 	docker compose exec -T db psql -U rmubot -d rmu_bot -v ON_ERROR_STOP=1 < db/migrations/004_chat_log_status.sql
+	docker compose exec -T db psql -U rmubot -d rmu_bot -v ON_ERROR_STOP=1 < db/migrations/005_planner.sql
 
 # ── Rich Menu (LINE) ────────────────────────────────────────────────────────
 #
@@ -122,8 +124,15 @@ rich-menu-list:
 rich-menu-delete:
 	set PYTHONUTF8=1 && $(PY) scripts/rich_menu.py --delete $(RICHMENU_ID)
 
-seed:
+seed: seed-curriculum
 	docker compose exec -T db psql -U rmubot -d rmu_bot -v ON_ERROR_STOP=1 < db/seed/002_seed_data.sql
+
+# แผนการเรียนมาตรฐาน (curriculum_rules) — input ของ Planner Engine
+#
+# ใช้ psycopg ไม่ใช่ psql เพราะเครื่อง dev ไม่มี psql บน PATH และสคริปต์
+# ตรวจให้ด้วยว่าจำนวนวิชาในไฟล์เท่ากับที่เข้าตารางจริง (เคยหายไป 1 วิชาเงียบ ๆ)
+seed-curriculum:
+	set PYTHONUTF8=1 && $(PY) scripts/import_curriculum_rules.py
 
 # ── Scraper ─────────────────────────────────────────────────────────────────
 

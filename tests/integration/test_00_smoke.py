@@ -20,8 +20,10 @@ from .conftest import ALL_TABLES
 
 pytestmark = pytest.mark.integration
 
-# จำนวนแถวที่ 002_seed_data.sql ใส่ไว้ (รวม 1,065 แถว)
+# จำนวนแถวที่ seed ใส่ไว้ — 002_seed_data.sql (1,065 แถว)
+# บวก 003_curriculum_rules.sql (แผนการเรียนของ 643170151 อีก 32 แถว)
 EXPECTED_SEED_ROWS = {
+    "curriculum_rules": 32,
     "programs": 2,
     "categories": 26,
     "courses": 145,
@@ -36,9 +38,13 @@ EXPECTED_SEED_ROWS = {
 
 # ตารางที่ seed ตั้งใจปล่อยให้ว่าง — ถ้ามีข้อมูลโผล่มา แปลว่ามีคนรัน seed อื่นทับ
 # และค่าที่เทสอื่นคาดไว้ (เช่น prerequisites = 0) จะไม่จริงอีกต่อไป
+#
+# ``curriculum_rules`` **ออกจากลิสต์นี้แล้ว** ตั้งแต่ 22 ส.ค. 2026: แผนการเรียน
+# ของ 643170151 นำเข้าจริง 32 แถว (ดู db/seed/003_curriculum_rules.sql)
+# ส่วน ``prerequisites`` ยังว่างอยู่ เพราะระบบทะเบียนไม่เผยแพร่วิชาบังคับก่อน
+# ต้องกรอกจากเล่ม มคอ.2 ซึ่งยังไม่มี — planner รู้ตัวและบอกผู้ใช้ตรง ๆ
 EXPECTED_EMPTY = (
     "prerequisites",
-    "curriculum_rules",
     "faqs",
     "rag_chunks",
     "scrape_runs",
