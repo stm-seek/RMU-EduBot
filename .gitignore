@@ -43,3 +43,17 @@ tunnel_err.log
 .funnel.log
 .tslog.txt
 .cf.log
+
+# --- สคริปต์/บันทึกที่มีข้อมูลล็อกอินจริงของนักศึกษา (PDPA) ---
+# ทั้งหมดนี้เป็นร่องรอยจากการทดลอง "วิธีที่ 2" (ล็อกอินระบบทะเบียนด้วยรหัสผ่าน)
+# ซึ่งเลิกใช้ไปแล้ว — โปรเจกต์เลือกวิธีที่ 1 (ให้ นศ. ติ๊กวิชาเอง ไม่ขอรหัสผ่าน)
+# trace_rmu_login.py มี "รหัสประชาชนที่ใช้เป็นรหัสผ่าน" ของบัญชีจริงอยู่ในไฟล์
+# ห้าม commit เด็ดขาด ต้นฉบับควรย้ายไป D:/repo/_line-bot-jang_pii_archive/
+trace_rmu_login.py
+trace_correct_login.py
+inspect_login_form.py
+RMU_LOGIN_GUIDE.md
+RMU_LOGIN_FLOW_BREAKDOWN.md
+# snapshot ของหน้า "วิชาบังคับก่อน" มีชื่อ-รหัส นศ. และเกรดติดมาด้วย
+# (snapshot_curriculum_plan.txt ไม่มี จึง commit ได้ — ใช้เป็นที่มาของ seed 003)
+snapshot_prerequisites.txt
