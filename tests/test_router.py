@@ -377,8 +377,8 @@ async def test_instructors_intent_key_includes_group() -> None:
 
 async def test_plan_reports_only_what_it_knows() -> None:
     """
-    prerequisites/curriculum_rules ยังว่าง (รอ มคอ.2) → ห้ามรับปากว่าจัดแผนได้
-    ต้องบอกเหตุผลและเสนอสิ่งที่ทำได้จริงแทน
+    ไม่มีแผนปี/เทอมของหลักสูตรเลย → ห้ามรับปากว่าจัดแผนได้
+    ต้องบอกเหตุผลและเสนอสิ่งที่ทำได้จริง (รหัสวิชา 7 หลัก) แทน
     """
     result = await bot_router._plan_answer(plan_db())
 
@@ -386,11 +386,31 @@ async def test_plan_reports_only_what_it_knows() -> None:
     assert result.answered_by == bot_router.BUTTON_ANSWER
     text = result.messages[0]["text"]
     assert "45 วิชา" in text
-    assert "มคอ.2" in text
     assert "ยังจัดแผนรายเทอมให้ไม่ได้" in text
+    assert "รหัสวิชา 7 หลัก" in text
 
 
-async def test_plan_switches_message_when_curriculum_data_arrives() -> None:
+async def test_plan_offers_the_planner_once_the_study_plan_is_loaded() -> None:
+    """
+    สถานะจริงตอนนี้: มีแผนปี/เทอม 32 วิชา แต่ prerequisites ยังว่าง
+
+    ต้องบอกว่าคำนวณความก้าวหน้าได้แล้ว **พร้อมกับ** ไม่เคลมว่ารู้เงื่อนไข
+    วิชาบังคับก่อน — เคลมเกินตรงนี้แปลว่านักศึกษาจะเชื่อลำดับที่ไม่ได้ยืนยัน
+    """
+    with_plan = dict(COVERAGE_NO_PLAN, curriculum_rules=32)
+    result = await bot_router._plan_answer(plan_db(with_plan))
+
+    text = result.messages[0]["text"]
+    labels = [item["action"]["label"] for item in result.messages[0]["quickReply"]["items"]]
+
+    assert "แผนการเรียนมาตรฐาน 32 วิชา" in text
+    assert "ยังจัดแผนรายเทอมให้ไม่ได้" not in text
+    assert "ไม่ใช่เงื่อนไขบังคับ" in text
+    # ปุ่มนี้อยู่ใน MAIN_MENU_ACTIONS อยู่แล้ว — ต้องมีใบเดียว ไม่ใช่สองใบซ้อน
+    assert labels.count("ความก้าวหน้า") == 1
+
+
+async def test_plan_switches_message_when_prerequisites_arrive() -> None:
     """เมื่อกรอก มคอ.2 แล้ว ข้อความต้องเปลี่ยนเป็นเชิญให้ถามได้เลย"""
     complete = dict(COVERAGE_NO_PLAN, curriculum_rules=68, prerequisites=24)
     result = await bot_router._plan_answer(plan_db(complete))
@@ -398,6 +418,7 @@ async def test_plan_switches_message_when_curriculum_data_arrives() -> None:
     text = result.messages[0]["text"]
     assert "ยังจัดแผนรายเทอมให้ไม่ได้" not in text
     assert "ถามได้เลย" in text
+    assert "ไม่ใช่เงื่อนไขบังคับ" not in text
 
 
 async def test_plan_answers_no_data_when_nothing_loaded() -> None:

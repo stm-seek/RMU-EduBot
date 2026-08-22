@@ -94,19 +94,23 @@ def test_plan_answer_reports_the_real_gap(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    คำตอบเรื่องแผนการเรียนต้องพูดตัวเลขจริงและยอมรับว่าจัดแผนให้ไม่ได้
+    คำตอบเรื่องแผนการเรียนต้องพูดตัวเลขจริง และยอมรับส่วนที่ยังไม่รู้
 
-    (``prerequisites`` / ``curriculum_rules`` ยังว่าง รอ มคอ.2)
+    สถานะจริงตั้งแต่ 22 ส.ค. 2026: ``curriculum_rules`` มี 32 วิชาแล้ว
+    (จึงคำนวณความก้าวหน้าได้) แต่ ``prerequisites`` ยังว่าง → ต้องไม่เคลม
+    ว่ารู้เงื่อนไขวิชาบังคับก่อน
     """
     answer = run(rt.handle_postback("action=plan", live_db))
     text = answer.messages[0]["text"]
 
     assert answer.answered_by == "quick_reply"
     assert_line_limits(answer.messages)
+    assert "แผนการเรียนมาตรฐาน 32 วิชา" in text
     assert "68 วิชา" in text
     assert "45 วิชา" in text
     assert "เทอม 1: 37" in text and "เทอม 2: 33" in text
-    assert "มคอ.2" in text
+    assert "ไม่ใช่เงื่อนไขบังคับ" in text
+    assert "ยังจัดแผนรายเทอมให้ไม่ได้" not in text
 
 
 def test_course_code_typed_as_text_answers_from_real_data(

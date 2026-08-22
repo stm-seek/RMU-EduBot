@@ -71,14 +71,25 @@ def test_query_parses_as_postgres(name: str) -> None:
     assert tree is not None, f"{name} parse ไม่ได้"
 
 
+def cte_names(tree: exp.Expression) -> set[str]:
+    """
+    ชื่อ CTE (``WITH x AS (...)``) ในคิวรี
+
+    ต้องหักออกก่อนเทียบกับตารางจริง ไม่งั้นคิวรีที่ใช้ CTE จะถูกมองว่าอ้างตาราง
+    ที่ไม่มีใน schema (เจอกับ ``SQL_REPLACE_COMPLETED_COURSES`` ซึ่งใช้ CTE
+    ชื่อ incoming/removed/added เพื่อแทนที่ทั้งชุดใน statement เดียว)
+    """
+    return {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+
+
 @pytest.mark.parametrize("name", sorted(repo.ALL_QUERIES))
 def test_query_only_uses_existing_tables(name: str) -> None:
     """ชื่อตารางต้องมีอยู่ใน migration จริง"""
     tree = sqlglot.parse_one(normalize(repo.ALL_QUERIES[name]), dialect="postgres")
     used = {table.name for table in tree.find_all(exp.Table)}
-    unknown = used - schema_tables()
+    unknown = used - schema_tables() - cte_names(tree)
 
-    assert not unknown, f"{name} อ้างตารางที่ไม่มีใน 001_init.sql: {sorted(unknown)}"
+    assert not unknown, f"{name} อ้างตารางที่ไม่มีใน migration: {sorted(unknown)}"
 
 
 @pytest.mark.parametrize("name", sorted(repo.ALL_QUERIES))

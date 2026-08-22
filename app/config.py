@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     # ลากบริบทยาวเกินไป เมื่อครบจะจบ session และเสนอให้เริ่มใหม่
     ai_chat_session_max_turns: int = Field(default=20, ge=1, le=200)
 
+    # ── Planner (ความก้าวหน้าตามหลักสูตร — Requirement 4.1 หมวด 3) ──────────
+    # เพดานหน่วยกิตต่อภาคเรียนที่ใช้จัดตะกร้าวิชาเทอมถัดไป
+    #
+    # 22 เป็นค่าที่ใช้กันทั่วไปของปริญญาตรีภาคปกติ แต่ **ยังไม่ได้ยืนยันกับเล่ม
+    # ข้อบังคับของ RMU** (ไม่มีในคลังเอกสารที่ scrape มา) จึงเปิดให้แก้ทาง .env
+    # ได้โดยไม่ต้องแตะโค้ด และคำตอบที่ส่งให้ผู้ใช้บอกเพดานที่ใช้ไว้ตรง ๆ
+    planner_max_credits: int = Field(default=22, ge=3, le=30)
+
     # ── Scope ───────────────────────────────────────────────────────────────
     default_program_id: int = 59721
     default_program_code: str = "643170151"
@@ -192,6 +200,21 @@ class Settings(BaseSettings):
     def embedding_key(self) -> str:
         """ถ้าไม่ตั้ง EMBEDDING_API_KEY ให้ใช้ตัวเดียวกับ LLM"""
         return self.embedding_api_key or self.llm_api_key
+
+    @property
+    def liff_url(self) -> str:
+        """
+        ลิงก์เปิดหน้า LIFF — ว่างถ้ายังไม่ได้ตั้ง ``LIFF_ID``
+
+        LINE เปิด LIFF ผ่าน ``https://liff.line.me/<liffId>`` เสมอ ไม่ต้องตั้ง
+        URL แยก (ตั้งซ้ำแล้วมักลืมอัปเดตตัวหนึ่ง)
+
+        >>> Settings(_env_file=None, liff_id='1234-abcd').liff_url
+        'https://liff.line.me/1234-abcd'
+        >>> Settings(_env_file=None, liff_id='').liff_url
+        ''
+        """
+        return f"https://liff.line.me/{self.liff_id}" if self.liff_id else ""
 
     @property
     def llm_fallback_model_list(self) -> list[str]:

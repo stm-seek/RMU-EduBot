@@ -268,6 +268,9 @@ def _list_quick_reply(buttons: list[dict]) -> dict:
 
 POSTBACK_HANDLERS: dict[str, str] = {
     "plan": "แผนการเรียน",
+    # ความก้าวหน้าตามหลักสูตร — ``action=progress`` = ภาพรวม,
+    # ``action=progress&next=1`` = เสนอวิชาเทอมถัดไป (ดู app/progress.py)
+    "progress": "ความก้าวหน้าตามหลักสูตร",
     "calendar": "ปฏิทินการศึกษา",
     "documents": "เอกสาร/คำร้อง",
     "instructors": "ติดต่ออาจารย์",
@@ -401,6 +404,13 @@ async def _dispatch_postback(
 
     if action == "plan":
         return await _plan_answer(db)
+
+    if action == "progress":
+        from . import progress as prog
+
+        if params.get("next"):
+            return await prog.next_term_answer(db, user_hash, settings)
+        return await prog.progress_answer(db, user_hash, settings)
 
     if action == "course":
         code = params.get("code", "")
@@ -628,13 +638,25 @@ async def _plan_answer(db: SupportsQuery | None) -> RouteResult:
         f" ฤดูร้อน: {coverage.get('opens_sem3') or 0})",
     ]
 
+    if rules:
+        lines.insert(
+            0, f"  • แผนการเรียนมาตรฐาน {rules} วิชา (รู้ว่าวิชาไหนอยู่ปี/เทอมไหน)"
+        )
+
     if prerequisites and rules:
-        footer = "ถามได้เลยครับ เช่น “ลงวิชา 7010102 ได้เลยไหม”"
-    else:
-        # สถานะจริงตอนนี้: prerequisites/curriculum_rules ยังว่าง
+        footer = "ถามได้เลยครับ เช่น “ลงวิชา 7071201 ได้เลยไหม”"
+    elif rules:
+        # สถานะตอนนี้: มีแผนปี/เทอมแล้ว แต่ prerequisites ยังว่าง
+        # → คำนวณได้จริง แต่ต้องไม่เคลมว่ารู้เงื่อนไขวิชาบังคับก่อน
         footer = (
-            "ยังจัดแผนรายเทอมให้ไม่ได้ครับ เพราะข้อมูลวิชาบังคับก่อน (prerequisite)\n"
-            "และแผนปี/เทอม ระบบทะเบียนไม่ได้เผยแพร่ ต้องกรอกจากเล่ม มคอ.2 ก่อน\n\n"
+            "คำนวณให้ได้แล้วครับว่าผ่านไปเท่าไร เหลืออะไร และเทอมหน้าควรลงอะไร\n"
+            "(กดปุ่ม “ความก้าวหน้า” — ครั้งแรกต้องติ๊กวิชาที่ผ่านมาก่อน)\n\n"
+            "ยังไม่มีข้อมูลวิชาบังคับก่อน (prerequisite) ที่ระบบทะเบียนไม่เผยแพร่\n"
+            "ลำดับที่ได้จึงเป็นเทอมที่แผนแนะนำ ไม่ใช่เงื่อนไขบังคับครับ"
+        )
+    else:
+        footer = (
+            "ยังจัดแผนรายเทอมให้ไม่ได้ครับ เพราะยังไม่มีแผนปี/เทอมของหลักสูตรนี้\n\n"
             "ระหว่างนี้พิมพ์รหัสวิชา 7 หลักมาได้ครับ จะบอกว่าวิชานั้นเปิดเทอมไหน"
         )
 
@@ -676,7 +698,8 @@ async def handle_text(
     """
     จัดการข้อความที่ user พิมพ์เอง
 
-    ทำแล้ว: **รหัสวิชา 7 หลัก** → ตอบจาก DB ตรง ๆ, **โหมดปรึกษา AI**
+    ทำแล้ว: **รหัสวิชา 7 หลัก** → ตอบจาก DB ตรง ๆ, **ความก้าวหน้าตามหลักสูตร**
+    (ชั้น planner — คำนวณ ไม่ใช่ค้น ดู :mod:`app.progress`), **โหมดปรึกษา AI**
     (ดักก่อน search — ดู :mod:`app.ai_chat`), และ **ค้นด้วยคำที่พิมพ์มา**
     (``pg_trgm`` word_similarity) → เอกสาร/อาจารย์ ทั้งสองทางยังเป็นชั้นที่ 1
     คือตอบจากฐานข้อมูลตรง ๆ
@@ -707,9 +730,28 @@ async def _dispatch_text(
     llm: Any | None = None,
     user_hash: str | None = None,
 ) -> RouteResult:
+    # ── ชั้น planner: คำนวณจากข้อมูลจริง มาก่อน LLM เสมอ ────────────────────
+    # เหตุผลเดียวกับที่รหัสวิชา 7 หลักถูกดักก่อนโหมดปรึกษาอยู่แล้ว: เรื่องที่
+    # คำนวณได้แน่นอน (หน่วยกิต ลำดับวิชา) ห้ามให้ LLM เดา ต่อให้ผู้ใช้กำลัง
+    # อยู่ในโหมดปรึกษาก็ตาม
+    from . import progress as prog
+
     match = COURSE_CODE_PATTERN.search(cleaned)
     if match:
-        return await _course_answer(db, match.group(1), answered_by="course")
+        code = match.group(1)
+        # "ลงวิชา 7071201 ได้เลยไหม" ถามเงื่อนไขการลง ไม่ได้ถามรายละเอียดวิชา
+        # ตอบไม่ได้ (ยังไม่ติ๊กวิชา / วิชาไม่อยู่ในแผน) → ถอยไปทางเดิม
+        if prog.ELIGIBILITY_PATTERN.search(cleaned):
+            eligibility = await prog.eligibility_answer(db, user_hash, settings, code)
+            if eligibility is not None:
+                return eligibility
+        return await _course_answer(db, code, answered_by="course")
+
+    if prog.NEXT_TERM_PATTERN.search(cleaned):
+        return await prog.next_term_answer(db, user_hash, settings)
+
+    if prog.PROGRESS_PATTERN.search(cleaned):
+        return await prog.progress_answer(db, user_hash, settings)
 
     # ── ชั้นที่ 3: โหมดปรึกษา AI — ตรวจก่อน search ─────────────────────────
     # ข้อความระหว่างอยู่ในโหมดต้องตอบด้วย LLM (คนในโหมดต้องการคำตอบ

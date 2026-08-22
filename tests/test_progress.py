@@ -1,0 +1,280 @@
+"""
+เทสชั้น planner ที่ต่อกับบทสนทนา (:mod:`app.progress`)
+
+สิ่งที่ไฟล์นี้ยืนยัน:
+
+1. ปุ่ม/ข้อความเรื่องความก้าวหน้าถูกส่งไปที่ชั้น planner **ไม่ใช่** ไปค้นเอกสาร
+2. ยังไม่ได้ติ๊กวิชา → บอกวิธีให้ข้อมูล ไม่เดาจากชั้นปี และป้ายเป็น ``no_data``
+3. คำตอบต้องมีคำเตือนว่ายังไม่มีข้อมูลวิชาบังคับก่อน (ตราบใดที่ตารางยังว่าง)
+4. ข้อความที่ส่งออกไม่ละเมิด limit ของ LINE
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app import progress as prog
+from app import router
+
+from .helpers import FakeDatabase, assert_line_limits, make_settings
+
+USER_HASH = "hash-for-test"
+
+PLAN_ROWS = [
+    {
+        "course_code": "1000001",
+        "course_code_full": "1000001-1",
+        "std_year": 1,
+        "std_semester": 1,
+        "credits": 3,
+        "name_th": "วิชาปีหนึ่งเทอมหนึ่ง",
+        "opens_sem1": True,
+    },
+    {
+        "course_code": "2000001",
+        "course_code_full": "2000001-1",
+        "std_year": 2,
+        "std_semester": 1,
+        "credits": 3,
+        "name_th": "วิชาปีสองเทอมหนึ่ง",
+        "opens_sem1": True,
+    },
+]
+
+
+def db_with(passed: list[str], *, profile: dict | None = None) -> FakeDatabase:
+    """FakeDatabase ที่ตอบครบทุกคิวรีที่ :func:`app.progress.load_progress` ถาม"""
+    return FakeDatabase(
+        {
+            "FROM app_users u": profile
+            if profile is not None
+            else {
+                "id": 7,
+                "program_code": "643170151",
+                "study_year": 2,
+                "entry_year": 2564,
+                "completed_courses": len(passed),
+            },
+            "FROM curriculum_rules cr": PLAN_ROWS,
+            "FROM prerequisites p": [],
+            "FROM user_completed_courses": [{"course_code": code} for code in passed],
+            "FROM programs": {
+                "program_code": "643170151",
+                "program_name": "การจัดการนวัตกรรมดิจิทัล",
+                "total_credits": 120,
+            },
+            "FROM offerings o": [],
+            "FROM offerings": {"acad_year": 2568, "semester": 2, "offerings": 45},
+            # SQL_COURSE_BY_CODE — ทางตอบรายละเอียดวิชาแบบเดิม
+            "FROM courses c": {
+                "course_code": "2000001",
+                "name_th": "วิชาปีสองเทอมหนึ่ง",
+                "credits": 3,
+                "credits_text": "3 (2-2-5)",
+                "opens_sem1": True,
+            },
+        }
+    )
+
+
+@pytest.fixture
+def settings():
+    return make_settings(liff_id="1234-abcd")
+
+
+# ── การส่งต่อคำถาม ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["ความก้าวหน้าเป็นยังไง", "เหลืออีกกี่วิชา", "จบได้ไหม", "หน่วยกิตที่เหลือ"],
+)
+@pytest.mark.asyncio
+async def test_progress_questions_reach_the_planner(text: str, settings) -> None:
+    result = await router.handle_text(
+        text, db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert result.answered_by == "planner"
+    assert result.intent_key == "progress"
+    assert_line_limits(result.messages)
+
+
+@pytest.mark.parametrize("text", ["เทอมหน้าลงอะไรดี", "เทอมถัดไปเรียนอะไรต่อ"])
+@pytest.mark.asyncio
+async def test_next_term_questions_reach_the_planner(text: str, settings) -> None:
+    result = await router.handle_text(
+        text, db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert result.answered_by == "planner"
+    assert result.intent_key == "next_term"
+
+
+@pytest.mark.asyncio
+async def test_progress_button_uses_the_planner(settings) -> None:
+    result = await router.handle_postback(
+        "action=progress", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert result.answered_by == "planner"
+    assert_line_limits(result.messages)
+
+
+@pytest.mark.asyncio
+async def test_next_button_asks_for_next_term(settings) -> None:
+    result = await router.handle_postback(
+        "action=progress&next=1",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+
+    assert result.intent_key == "next_term"
+
+
+# ── ยังไม่มีข้อมูลของผู้ใช้ ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_no_profile_asks_to_tick_courses_instead_of_guessing(settings) -> None:
+    """
+    ไม่มีแถวผู้ใช้ → ต้องบอกวิธีให้ข้อมูล ไม่ใช่เดาจากชั้นปี
+
+    เดาแล้วผิดแบบที่ผู้ใช้จับไม่ได้ เพราะคำตอบหน้าตาเหมือนของจริงเป๊ะ
+    """
+    result = await router.handle_postback(
+        "action=progress", db_with([], profile=None), settings=settings, user_hash=USER_HASH
+    )
+    text = result.messages[0]["text"]
+
+    assert result.answered_by == "no_data"
+    assert result.intent_key == "progress_no_profile"
+    assert "ติ๊ก" in text
+    assert "รหัสผ่าน" in text, "ต้องบอกว่าไม่ได้ขอรหัสผ่านระบบทะเบียน"
+
+
+@pytest.mark.asyncio
+async def test_profile_without_ticked_courses_also_asks_first(settings) -> None:
+    profile = {
+        "id": 7,
+        "program_code": "643170151",
+        "study_year": 3,
+        "entry_year": 2564,
+        "completed_courses": 0,
+    }
+    result = await router.handle_postback(
+        "action=progress", db_with([], profile=profile), settings=settings, user_hash=USER_HASH
+    )
+
+    assert result.intent_key == "progress_no_profile"
+
+
+@pytest.mark.asyncio
+async def test_liff_button_is_omitted_when_liff_id_missing() -> None:
+    """ปุ่มที่กดแล้วไปหน้าเปล่าแย่กว่าไม่มีปุ่ม"""
+    result = await router.handle_postback(
+        "action=progress",
+        db_with([], profile=None),
+        settings=make_settings(liff_id=""),
+        user_hash=USER_HASH,
+    )
+    labels = [
+        item["action"]["label"]
+        for item in result.messages[0]["quickReply"]["items"]
+    ]
+
+    assert "ติ๊กวิชาที่ผ่านแล้ว" not in labels
+
+
+@pytest.mark.asyncio
+async def test_without_database_answers_no_data(settings) -> None:
+    result = await router.handle_postback(
+        "action=progress", None, settings=settings, user_hash=USER_HASH
+    )
+
+    assert result.answered_by == "no_data"
+
+
+# ── เนื้อหาคำตอบ ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_overview_reports_numbers_from_the_database(settings) -> None:
+    result = await router.handle_postback(
+        "action=progress", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+    text = result.messages[0]["text"]
+
+    assert "ผ่านแล้ว 1/2 วิชา" in text
+    assert "3 หน่วยกิต" in text
+    assert "120 หน่วยกิต" in text, "ต้องอ้างหน่วยกิตที่หลักสูตรกำหนด"
+    assert "2000001" in text, "วิชาที่ยังไม่ผ่านต้องถูกแสดง"
+
+
+@pytest.mark.asyncio
+async def test_answer_warns_that_prerequisites_are_unknown(settings) -> None:
+    """
+    ตาราง prerequisites ยังว่างจริง — ถ้าไม่เตือน นักศึกษาจะเข้าใจว่าลำดับนี้
+    คือเงื่อนไขวิชาบังคับก่อน แล้วไปลงวิชาที่ลงไม่ได้
+    """
+    result = await router.handle_postback(
+        "action=progress", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert "แผนการเรียนแนะนำ" in result.messages[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_eligibility_question_answers_from_user_state(settings) -> None:
+    """"ลงวิชา 2000001 ได้ไหม" ต้องตอบจากสถานะจริง ไม่ใช่รายละเอียดวิชาเฉย ๆ"""
+    result = await router.handle_text(
+        "ลงวิชา 2000001 ได้ไหม",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+
+    assert result.answered_by == "planner"
+    assert result.intent_key == "eligibility"
+    assert "ลงได้ครับ" in result.messages[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_eligibility_says_passed_when_already_done(settings) -> None:
+    result = await router.handle_text(
+        "1000001 ลงได้ไหม", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert "ผ่านวิชานี้แล้ว" in result.messages[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_course_code_without_eligibility_words_still_shows_course_details(
+    settings,
+) -> None:
+    """พิมพ์รหัสเปล่า ๆ = ถามรายละเอียดวิชา ต้องไม่ถูกชั้น planner ยึดไป"""
+    result = await router.handle_text(
+        "2000001", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert result.answered_by == "course"
+
+
+@pytest.mark.asyncio
+async def test_next_term_lists_only_courses_open_that_semester(settings) -> None:
+    """
+    เทอมล่าสุดในคลังคือ 2568/2 → เทอมถัดไปคือภาคเรียนที่ 1
+    วิชาที่เปิดเฉพาะเทอม 2 ต้องไม่ถูกเสนอ
+    """
+    result = await router.handle_postback(
+        "action=progress&next=1",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+    text = result.messages[0]["text"]
+
+    assert "ภาคเรียนที่ 1" in text
+    assert "2000001" in text
+    assert f"เพดานที่ใช้คิด {settings.planner_max_credits}" in text

@@ -520,20 +520,23 @@ def test_instructor_contact_coverage_has_no_phone_numbers(
 # ── แผนการเรียน / รายวิชา / วิชาที่เปิด ──────────────────────────────────────
 
 
-def test_planning_coverage_reports_zero_prerequisites_and_rules(
+def test_planning_coverage_reports_zero_prerequisites(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    สองตารางที่ยังว่างต้องรายงานเป็น 0 (ไม่ใช่ ``None``) ขณะที่ตัวอื่นมีค่าจริง
+    ตารางที่ยังว่างต้องรายงานเป็น 0 (ไม่ใช่ ``None``) ขณะที่ตัวอื่นมีค่าจริง
 
     ตัวเลขชุดนี้คือสิ่งที่บอทเอาไปพูดว่า "ตอบอะไรได้/ไม่ได้" ตาม Requirement
     ข้อ 14 — ถ้า 0 กลายเป็น ``None`` router จะแสดง 0 เหมือนกันแต่เงื่อนไข
     ``if not patterns and not rules`` จะเปลี่ยนพฤติกรรม
+
+    ``curriculum_rules`` = 32 ตั้งแต่ 22 ส.ค. 2026 (นำเข้าแผนการเรียนจริง)
+    ส่วน ``prerequisites`` ยังเป็น 0 เพราะระบบทะเบียนไม่เผยแพร่วิชาบังคับก่อน
     """
     coverage = run(repo.planning_coverage(live_db, get_settings().default_program_code))
 
     assert coverage == {
-        "curriculum_rules": 0,
+        "curriculum_rules": 32,
         "prerequisites": 0,
         "patterns": 45,
         "opens_sem1": 37,
@@ -998,6 +1001,158 @@ def test_ai_session_end_rejects_unknown_reason(
     run(repo.end_ai_session(live_db, session_id, "button"))
 
 
+# ── Planner: แผนการเรียน + วิชาที่ผ่านของผู้ใช้ ───────────────────────────────
+
+
+def test_curriculum_plan_returns_one_row_per_course_with_a_name(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    32 วิชา ไม่ซ้ำ และต้องมีชื่อวิชาครบทุกแถว
+
+    เคยพลาดมาแล้วสองแบบที่เทสนี้ดักไว้:
+
+    1. เก็บรหัสเต็ม ('7071102-3') ลง ``course_code`` → JOIN ``courses``
+       ไม่ติดเลยทั้ง 32 วิชา ชื่อหายหมดแบบไม่มี error
+    2. ``courses.course_code`` ซ้ำได้ (7071102 มี 3 แถว) → JOIN ธรรมดา
+       ทำให้ 32 วิชาบวมเป็น 50 กว่าแถว แล้วหน่วยกิตรวมผิดตามไปด้วย
+    """
+    rows = run(repo.curriculum_plan(live_db, get_settings().default_program_code))
+    codes = [row["course_code"] for row in rows]
+
+    assert len(rows) == 32
+    assert len(set(codes)) == 32, "แถวซ้ำ = LATERAL dedupe พัง"
+    assert all(row["name_th"] for row in rows), "ต้องมีชื่อวิชาครบทุกแถว"
+    assert all(row["credits"] for row in rows)
+    assert all(len(code) == 7 and code.isdigit() for code in codes)
+    assert all(row["course_code_full"] for row in rows)
+
+
+def test_curriculum_plan_matches_the_registrar_study_plan(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    โครงของแผนต้องตรงกับหน้า Student_Studyplan.asp ที่ scrape มา
+
+    ล็อกไว้เพราะเคยนำเข้าได้ 31 แถว (ปี 1 เทอม 1 หายไป 1 วิชา) แล้วรายงานว่า
+    สำเร็จ — ตัวเลขต่อเทอมคือที่เดียวที่จับความผิดพลาดแบบนั้นได้
+    """
+    rows = run(repo.curriculum_plan(live_db, get_settings().default_program_code))
+    per_term: dict[tuple[int, int], int] = {}
+    for row in rows:
+        key = (row["std_year"], row["std_semester"])
+        per_term[key] = per_term.get(key, 0) + 1
+
+    assert per_term == {
+        (1, 1): 6,
+        (1, 2): 6,
+        (2, 1): 5,
+        (2, 2): 5,
+        (3, 1): 4,
+        (3, 2): 2,
+        (4, 1): 3,
+        (4, 2): 1,
+    }
+    # 31 วิชา x 3 นก. + ฝึกประสบการณ์ 12 นก.
+    assert sum(row["credits"] for row in rows) == 105
+
+
+def test_prerequisites_for_program_is_still_empty(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    ยังไม่มีวิชาบังคับก่อน — ระบบทะเบียนไม่เผยแพร่ ต้องกรอกจากเล่ม มคอ.2
+
+    เทสนี้ไม่ใช่การล็อก "ต้องว่างตลอดไป" แต่เป็นหลักฐานว่าตอนนี้ว่างจริง
+    วันที่กรอกข้อมูลเข้าไปแล้ว ให้แก้เทสนี้พร้อมกับคำเตือนใน
+    ``app/progress.py::prereq_caveat``
+    """
+    rows = run(
+        repo.prerequisites_for_program(live_db, get_settings().default_program_code)
+    )
+
+    assert rows == []
+
+
+def test_program_info_reports_total_credits(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    หน่วยกิตของหลักสูตร (120) มากกว่าผลรวมของแผน (105 + เลือกเสรี 6 = 111)
+
+    planner ต้องคิด "เหลืออีกกี่หน่วยกิต" จากตัวเลขของหลักสูตร ไม่ใช่จากแผน
+    ไม่งั้นจะบอกนักศึกษาว่าเหลือน้อยกว่าจริง
+    """
+    program = run(repo.program_info(live_db, get_settings().default_program_code))
+
+    assert program is not None
+    assert program["total_credits"] == 120
+    assert program["program_name"] == "การจัดการนวัตกรรมดิจิทัล"
+
+
+def test_user_profile_is_none_before_the_user_exists(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    from .conftest import TEST_HASH_PREFIX
+
+    assert run(repo.user_profile(live_db, TEST_HASH_PREFIX + "ยังไม่เคยมี")) is None
+
+
+def test_completed_courses_round_trip(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """ติ๊ก → อ่านกลับ → เอาออก → ล้างหมด ครบวงจรที่หน้า LIFF ใช้จริง"""
+    from .conftest import TEST_HASH_PREFIX
+
+    hash_value = TEST_HASH_PREFIX + "planner"
+    user_id = run(repo.ensure_user(live_db, hash_value))
+    profile = run(
+        repo.set_user_program(
+            live_db, hash_value, program_code="643170151", study_year=3
+        )
+    )
+    assert profile is not None and profile["study_year"] == 3
+
+    added = run(
+        repo.replace_completed_courses(live_db, user_id, ["7071101", "7071102"])
+    )
+    assert added == {"removed": 0, "added": 2}
+
+    rows = run(repo.completed_courses(live_db, user_id))
+    assert [row["course_code"] for row in rows] == ["7071101", "7071102"]
+    assert all(row["source"] == "self_report" for row in rows)
+
+    # ส่งชุดใหม่ที่เอาออกหนึ่งตัว — ต้องลบตัวที่หายไป ไม่ใช่เพิ่มซ้อน
+    changed = run(repo.replace_completed_courses(live_db, user_id, ["7071101"]))
+    assert changed == {"removed": 1, "added": 0}
+
+    seen = run(repo.user_profile(live_db, hash_value))
+    assert seen is not None and seen["completed_courses"] == 1
+
+    # ลิสต์ว่าง = ผู้ใช้เอาติ๊กออกหมด ต้องล้างได้ (ไม่ใช่ no-op)
+    cleared = run(repo.replace_completed_courses(live_db, user_id, []))
+    assert cleared == {"removed": 1, "added": 0}
+    assert run(repo.completed_courses(live_db, user_id)) == []
+
+
+def test_replace_completed_courses_is_idempotent(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """ส่งชุดเดิมซ้ำต้องไม่เพิ่มแถว (ON CONFLICT DO NOTHING) และไม่ลบของเดิม"""
+    from .conftest import TEST_HASH_PREFIX
+
+    hash_value = TEST_HASH_PREFIX + "idempotent"
+    user_id = run(repo.ensure_user(live_db, hash_value))
+    codes = ["7071101", "7071102", "7071102"]  # ส่งซ้ำมาในลิสต์เดียวก็ต้องรอด
+
+    first = run(repo.replace_completed_courses(live_db, user_id, codes))
+    second = run(repo.replace_completed_courses(live_db, user_id, codes))
+
+    assert first == {"removed": 0, "added": 2}
+    assert second == {"removed": 0, "added": 0}
+    assert len(run(repo.completed_courses(live_db, user_id))) == 2
+
+
 # ── ยามเฝ้าความครบถ้วน ───────────────────────────────────────────────────────
 
 COVERED_FUNCTIONS = frozenset(
@@ -1015,6 +1170,12 @@ COVERED_FUNCTIONS = frozenset(
         "sample_courses",
         "offerings_for_course",
         "latest_term",
+        # ทางอ่าน (planner)
+        "curriculum_plan",
+        "prerequisites_for_program",
+        "program_info",
+        "user_profile",
+        "completed_courses",
         # ทางเขียน (บทสนทนา + โหมดปรึกษา AI)
         "ensure_user",
         "insert_chat_log",
@@ -1024,6 +1185,9 @@ COVERED_FUNCTIONS = frozenset(
         "active_ai_session_by_hash",
         "touch_ai_session",
         "end_ai_session",
+        # ทางเขียน (LIFF ติ๊กวิชาที่ผ่าน)
+        "set_user_program",
+        "replace_completed_courses",
     }
 )
 

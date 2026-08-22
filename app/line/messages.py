@@ -131,6 +131,9 @@ def clamp_messages(messages: list[dict]) -> list[dict]:
 
 MAIN_MENU_ACTIONS = [
     postback_action("แผนการเรียน", "action=plan"),
+    # ความก้าวหน้าตามหลักสูตร — ชั้น planner (คำนวณจากวิชาที่ผู้ใช้ติ๊กไว้)
+    # อยู่ในเมนูเพราะเป็นคำถามที่ถามซ้ำทุกเทอม และพิมพ์เองยาว
+    postback_action("ความก้าวหน้า", "action=progress"),
     postback_action("ปฏิทินการศึกษา", "action=calendar"),
     postback_action("เอกสาร/คำร้อง", "action=documents"),
     postback_action("ติดต่ออาจารย์", "action=instructors"),

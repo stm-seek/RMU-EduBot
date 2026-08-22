@@ -533,6 +533,177 @@ async def end_ai_session(db: SupportsExecute, session_id: int, reason: str) -> i
     return await db.execute(SQL_END_AI_SESSION, (reason, session_id))
 
 
+# ── Planner: แผนการเรียน + วิชาที่ผ่านแล้วของผู้ใช้ ──────────────────────────
+#
+# สามคิวรีนี้เป็น input ทั้งหมดของ :mod:`app.planner` (ที่เหลือเป็นการคำนวณล้วน)
+
+# LEFT JOIN LATERAL ไม่ใช่ LEFT JOIN เฉย ๆ โดยจำเป็น:
+# ``courses`` มี PK เป็น course_id และ **course_code ซ้ำได้** (วัดจริง:
+# 7071102 มี 3 แถว, 7071103 มี 3 แถว — ต่างรุ่นหลักสูตร/ต่างที่มา) JOIN ตรง ๆ
+# จะได้ 32 วิชากลายเป็น 50 กว่าแถว แล้วหน่วยกิตรวมบวมทันที
+# เลือกแถวเดียวด้วย ``(name_th IS NULL), course_id`` = เอาแถวที่มีชื่อวิชาก่อน
+# (แถวซ้ำที่เหลือ name_th เป็น NULL) แล้วตัดสินด้วย id ให้ผลคงที่ทุกครั้ง
+SQL_CURRICULUM_PLAN = """
+SELECT cr.course_code, cr.course_code_full, cr.std_year, cr.std_semester,
+       cr.is_fixed_term, cr.note,
+       c.name_th, c.credits, c.credits_text,
+       op.opens_sem1, op.opens_sem2, op.opens_sem3
+FROM curriculum_rules cr
+LEFT JOIN LATERAL (
+    SELECT name_th, credits, credits_text
+    FROM courses
+    WHERE course_code = cr.course_code
+    ORDER BY (name_th IS NULL), course_id
+    LIMIT 1
+) c ON TRUE
+LEFT JOIN offering_patterns op ON op.course_code = cr.course_code
+WHERE cr.program_code = %s
+ORDER BY cr.std_year, cr.std_semester, cr.course_code
+"""
+
+SQL_PREREQUISITES_FOR_PROGRAM = """
+SELECT p.course_code, p.requires_code, p.kind,
+       r.name_th AS requires_name
+FROM prerequisites p
+LEFT JOIN LATERAL (
+    SELECT name_th FROM courses
+    WHERE course_code = p.requires_code
+    ORDER BY (name_th IS NULL), course_id
+    LIMIT 1
+) r ON TRUE
+WHERE p.program_code = %s
+ORDER BY p.course_code, p.requires_code
+"""
+
+SQL_PROGRAM_TOTAL_CREDITS = """
+SELECT program_code, program_name, total_credits
+FROM programs
+WHERE program_code = %s
+ORDER BY program_id
+LIMIT 1
+"""
+
+SQL_USER_PROFILE = """
+SELECT u.id, u.program_code, u.study_year, u.entry_year,
+       u.consent_version, u.consent_at,
+       (SELECT count(*) FROM user_completed_courses uc WHERE uc.user_id = u.id)
+           AS completed_courses
+FROM app_users u
+WHERE u.line_user_hash = %s
+"""
+
+SQL_COMPLETED_COURSES = """
+SELECT course_code, source, reported_at
+FROM user_completed_courses
+WHERE user_id = %s
+ORDER BY course_code
+"""
+
+
+async def curriculum_plan(db: SupportsQuery, program_code: str) -> list[dict]:
+    """แผนการเรียนมาตรฐาน + ชื่อวิชา + เปิดเทอมไหน (input หลักของ planner)"""
+    return await db.fetch_all(SQL_CURRICULUM_PLAN, (program_code,))
+
+
+async def prerequisites_for_program(db: SupportsQuery, program_code: str) -> list[dict]:
+    """
+    วิชาบังคับก่อนทั้งหลักสูตร
+
+    ตอนนี้คืน **ลิสต์ว่าง** เพราะตารางยังไม่มีข้อมูล (ระบบทะเบียนไม่เผยแพร่)
+    planner รับมือได้: ``Progress.prereq_known`` จะเป็น False แล้วคำตอบจะบอก
+    ผู้ใช้ตรง ๆ ว่าลำดับที่เห็นคือ "เทอมที่แผนแนะนำ" ไม่ใช่เงื่อนไขบังคับ
+    """
+    return await db.fetch_all(SQL_PREREQUISITES_FOR_PROGRAM, (program_code,))
+
+
+async def program_info(db: SupportsQuery, program_code: str) -> dict | None:
+    return await db.fetch_one(SQL_PROGRAM_TOTAL_CREDITS, (program_code,))
+
+
+async def user_profile(db: SupportsQuery, line_user_hash: str) -> dict | None:
+    """โปรไฟล์ที่ใช้คำนวณแผน — ไม่มีชื่อ ไม่มีรหัสนักศึกษา (ดู PDPA ใน 001_init)"""
+    return await db.fetch_one(SQL_USER_PROFILE, (line_user_hash,))
+
+
+async def completed_courses(db: SupportsQuery, user_id: int) -> list[dict]:
+    return await db.fetch_all(SQL_COMPLETED_COURSES, (user_id,))
+
+
+# ── Planner: ทางเขียน (LIFF ติ๊กวิชาที่ผ่าน) ─────────────────────────────────
+
+SQL_SET_USER_PROGRAM = """
+UPDATE app_users
+SET program_code = coalesce(%s, program_code),
+    study_year   = coalesce(%s, study_year),
+    entry_year   = coalesce(%s, entry_year),
+    updated_at   = now(),
+    last_seen_at = now()
+WHERE line_user_hash = %s
+RETURNING id, program_code, study_year, entry_year
+"""
+
+# แทนที่ "ชุด" วิชาที่ผ่านทั้งก้อนใน **statement เดียว**
+#
+# ทำไมต้องเดียว: ``Database.execute`` เปิด-ปิด connection แล้ว commit ต่อการ
+# เรียกหนึ่งครั้ง ถ้าแยกเป็น DELETE แล้ว INSERT จะมีช่วงหนึ่งที่ผู้ใช้
+# "ไม่ผ่านวิชาอะไรเลย" ค้างอยู่ใน DB ถ้า INSERT พังต่อจากนั้น ข้อมูลที่ติ๊ก
+# มาทั้งหมดหายจริง — CTE เดียวจึงเป็นทั้ง atomicity และความง่ายในการอ่าน
+#
+# แตะเฉพาะ ``source = 'self_report'``: แถวที่มาจากการอัปโหลดเอกสาร (ถ้ามีวันหน้า)
+# น่าเชื่อถือกว่าการติ๊กเอง ห้ามให้การติ๊กครั้งใหม่ลบทิ้ง
+SQL_REPLACE_COMPLETED_COURSES = """
+WITH incoming AS (
+    SELECT DISTINCT code
+    FROM unnest(%s::text[]) AS code
+    WHERE code IS NOT NULL AND btrim(code) <> ''
+), removed AS (
+    DELETE FROM user_completed_courses uc
+    WHERE uc.user_id = %s
+      AND uc.source = 'self_report'
+      AND NOT EXISTS (SELECT 1 FROM incoming i WHERE i.code = uc.course_code)
+    RETURNING 1
+), added AS (
+    INSERT INTO user_completed_courses (user_id, course_code, source)
+    SELECT %s, i.code, 'self_report' FROM incoming i
+    ON CONFLICT (user_id, course_code) DO NOTHING
+    RETURNING 1
+)
+SELECT (SELECT count(*) FROM removed) AS removed,
+       (SELECT count(*) FROM added) AS added
+"""
+
+
+async def set_user_program(
+    db: SupportsExecute,
+    line_user_hash: str,
+    program_code: str | None = None,
+    study_year: int | None = None,
+    entry_year: int | None = None,
+) -> dict | None:
+    """
+    ตั้งหลักสูตร/ชั้นปีของผู้ใช้ — ``None`` = ไม่แก้ค่าเดิม (coalesce ใน SQL)
+
+    ต้องมีแถว ``app_users`` อยู่ก่อน (เรียก :func:`ensure_user` ให้แล้ว)
+    """
+    return await db.fetch_one(
+        SQL_SET_USER_PROGRAM, (program_code, study_year, entry_year, line_user_hash)
+    )
+
+
+async def replace_completed_courses(
+    db: SupportsExecute, user_id: int, course_codes: list[str]
+) -> dict:
+    """
+    ตั้ง "ชุด" วิชาที่ผ่านให้ตรงกับที่ติ๊กมา แล้วคืนจำนวนที่ลบ/เพิ่ม
+
+    ส่งลิสต์ว่างมาได้ = ล้างทั้งหมด (ผู้ใช้เอาติ๊กออกหมด)
+    """
+    row = await db.fetch_one(
+        SQL_REPLACE_COMPLETED_COURSES, (list(course_codes), user_id, user_id)
+    )
+    return row or {"removed": 0, "added": 0}
+
+
 # ── ทะเบียนรวมของ SQL ทั้งไฟล์ (ใช้ในเทส) ───────────────────────────────────
 
 ALL_QUERIES: dict[str, str] = {
@@ -556,4 +727,11 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_ACTIVE_SESSION_BY_HASH": SQL_ACTIVE_SESSION_BY_HASH,
     "SQL_TOUCH_AI_SESSION": SQL_TOUCH_AI_SESSION,
     "SQL_END_AI_SESSION": SQL_END_AI_SESSION,
+    "SQL_CURRICULUM_PLAN": SQL_CURRICULUM_PLAN,
+    "SQL_PREREQUISITES_FOR_PROGRAM": SQL_PREREQUISITES_FOR_PROGRAM,
+    "SQL_PROGRAM_TOTAL_CREDITS": SQL_PROGRAM_TOTAL_CREDITS,
+    "SQL_USER_PROFILE": SQL_USER_PROFILE,
+    "SQL_COMPLETED_COURSES": SQL_COMPLETED_COURSES,
+    "SQL_SET_USER_PROGRAM": SQL_SET_USER_PROGRAM,
+    "SQL_REPLACE_COMPLETED_COURSES": SQL_REPLACE_COMPLETED_COURSES,
 }
