@@ -18,6 +18,7 @@ import logging
 import re
 from typing import Any
 
+from . import gpa
 from . import planner
 from . import repository as repo
 from .db import SupportsQuery
@@ -108,7 +109,9 @@ def course_line(status: planner.CourseStatus, *, with_term: bool = True) -> str:
 # ── โหลดข้อมูลที่ planner ต้องใช้ ─────────────────────────────────────────────
 
 
-def need_completed_courses(settings: Any | None) -> RouteResult:
+def need_completed_courses(
+    settings: Any | None, topic: str = "ความก้าวหน้า"
+) -> RouteResult:
     """
     ยังไม่รู้ว่าผ่านวิชาอะไร → คำนวณไม่ได้ ต้องบอกวิธีให้ข้อมูล
 
@@ -121,7 +124,7 @@ def need_completed_courses(settings: Any | None) -> RouteResult:
     return RouteResult(
         messages=[
             msg.text_message(
-                "ยังคำนวณความก้าวหน้าให้ไม่ได้ครับ เพราะระบบยังไม่รู้ว่าผ่านวิชาอะไรมาแล้ว\n\n"
+                f"ยังคำนวณ{topic}ให้ไม่ได้ครับ เพราะระบบยังไม่รู้ว่าผ่านวิชาอะไรมาแล้ว\n\n"
                 "ระบบไม่ได้ต่อกับระบบทะเบียน (ไม่ขอรหัสผ่านของนักศึกษา) "
                 "จึงต้องติ๊กวิชาที่ผ่านเองครั้งเดียว หลังจากนั้นถามได้เลยครับ"
                 + extra,
@@ -415,5 +418,214 @@ async def eligibility_answer(
         ],
         answered_by=PLANNER_ANSWER,
         intent_key="eligibility",
+        confidence=1.0,
+    )
+
+
+# ── คำตอบ 4: ให้คำปรึกษาด้านผลการเรียน (Requirement ข้อ 4.4) ─────────────────
+#
+# ต่อกับตัวเลขของ planner โดยตรง — นั่นคือทั้งหมดที่ทำให้คำตอบนี้ต่างจาก
+# เว็บคิดเกรดทั่วไป: ผู้ใช้บอก GPAX มาตัวเดียว ส่วน "เหลืออีกกี่หน่วยกิต"
+# ระบบรู้อยู่แล้วจากวิชาที่ติ๊กไว้ ไม่ต้องกรอกรายวิชาทีละช่อง
+
+GPA_PATTERN = re.compile(r"gpax?|เกรดเฉลี่ย|เกียรตินิยม|เกรด")
+
+# กันชนคำขอ "เอกสาร" ที่ดันมีคำว่าเกรดอยู่ด้วย
+#
+# "ขอใบเกรด" / "ขอใบรายงานผลการเรียน" คือคำขอเอกสาร ต้องไปทางหมวดเอกสาร
+# ถ้าไม่กัน ชั้นนี้จะดูดไปคำนวณเกรดให้ ซึ่งไม่ใช่คำตอบที่ถามเลย
+GPA_NOT_PATTERN = re.compile(
+    r"ใบเกรด|ใบรายงานผล|ใบแสดงผล|ใบ รบ|ทรานสคริป|transcript|ขอเอกสาร|ยื่นคำร้อง"
+)
+
+# เครื่องคิดเกรดแบบใส่รายวิชาเอง — แนบไว้เป็นทางเลือกสำหรับคนที่อยากกรอก
+# ทีละวิชา (ซึ่งโมเดลของเราไม่รับ เพราะไม่เก็บเกรดรายวิชา)
+GPA_CALCULATOR_URL = "https://www.stepupth.com/gpa"
+
+
+def grade_scale_note() -> str:
+    """
+    บอกสเกลที่ใช้คิด เพราะ **ยังไม่ได้ยืนยันกับเล่มข้อบังคับ RMU**
+
+    ถ้าสเกลจริงต่างจากนี้ ตัวเลขทุกตัวในคำตอบเปลี่ยนหมด ผู้ใช้จึงต้องเห็นว่า
+    ระบบคิดด้วยอะไร ไม่ใช่เชื่อตัวเลขลอย ๆ
+    """
+    scale = " / ".join(
+        f"{grade} {point:.2f}" for grade, point in gpa.GRADE_POINTS.items()
+    )
+    return f"คิดด้วยสเกล {scale}"
+
+
+def credits_note(overridden: bool) -> str:
+    """
+    เตือนว่าหน่วยกิตที่ใช้คิดอาจไม่ตรง และบอกวิธีแก้ในประโยคเดียวกัน
+
+    เตือนโดยไม่ให้ทางแก้ = เตือนเปล่า ๆ จึงบอกรูปประโยคที่พิมพ์กลับมาได้เลย
+    """
+    if overridden:
+        return "ใช้จำนวนหน่วยกิตที่คุณบอกมาคิดครับ"
+    return (
+        "หน่วยกิตที่คิดเกรดใช้จากวิชาที่ติ๊กไว้ — ถ้ามีวิชาติด F / เทียบโอน / "
+        "ตัดสินผลเป็น S-U จะไม่ตรง พิมพ์ว่า “เก็บไปแล้ว 72 หน่วยกิต” เพื่อแก้ได้ครับ"
+    )
+
+
+def _target_line(plan: gpa.TargetPlan) -> str:
+    """หนึ่งบรรทัดสรุปเป้าหนึ่งเป้า — สี่สถานะที่ต้องไม่พูดปนกัน"""
+    head = plan.label or f"เป้า GPAX {plan.target:.2f}"
+    if plan.remaining_credits == 0:
+        verdict = "ถึงแล้วครับ" if plan.achievable else "ไม่ถึงแล้วครับ"
+        return f"• {head}: เก็บครบหลักสูตรแล้ว แก้ไม่ได้อีก — {verdict}"
+    if plan.guaranteed:
+        return f"• {head}: ถึงแน่นอนแล้ว แม้ได้ F ทุกวิชาที่เหลือก็ไม่หลุด"
+    if not plan.achievable:
+        return (
+            f"• {head}: ไปไม่ถึงแล้วครับ — ได้ A ทุกวิชาที่เหลือ "
+            f"GPAX สูงสุดคือ {plan.best_possible:.2f}"
+        )
+    return (
+        f"• {head}: ต้องได้เฉลี่ย {plan.required:.2f} ในอีก "
+        f"{plan.remaining_credits} หน่วยกิต (ประมาณ {plan.grade} ทุกวิชา)"
+    )
+
+
+def _scenario_lines(rows: tuple[gpa.Scenario, ...]) -> list[str]:
+    lines = []
+    for row in rows:
+        honors = f" — เกียรตินิยม{row.honors}" if row.honors else ""
+        lines.append(f"• ได้ {row.grade} ทุกวิชา → GPAX {row.final_gpax:.2f}{honors}")
+    return lines
+
+
+def ask_for_gpax(settings: Any | None, remaining_credits: int) -> RouteResult:
+    """
+    ขอเลขตัวเดียวที่ระบบไม่มีทางรู้เอง
+
+    ที่ต้องขอมีแค่ GPAX เพราะ "เหลืออีกกี่หน่วยกิต" planner รู้แล้วจากวิชาที่
+    ติ๊กไว้ — จุดนี้คือความต่างจากเว็บคิดเกรดทั่วไปที่ต้องกรอกทุกช่องเอง
+    """
+    buttons = [
+        *liff_button(settings, "แก้วิชาที่ผ่าน"),
+        msg.uri_action("เครื่องคิดเกรดรายวิชา", GPA_CALCULATOR_URL),
+    ]
+    return RouteResult(
+        messages=[
+            msg.text_message(
+                "บอก GPAX ตอนนี้มาได้เลยครับ แล้วผมคำนวณให้ว่าต้องได้เกรดเท่าไร\n\n"
+                "พิมพ์แบบนี้ได้เลย:\n"
+                "• “เกรดตอนนี้ 2.75 อยากได้ 3.00”\n"
+                "• “GPA 3.4 ยังลุ้นเกียรตินิยมได้ไหม”\n\n"
+                f"ระบบรู้อยู่แล้วว่าคุณเหลืออีก {remaining_credits} หน่วยกิต "
+                "จึงไม่ต้องกรอกรายวิชาเองครับ\n"
+                "(ระบบไม่เก็บเกรดที่พิมพ์มา — ใช้คำนวณแล้วทิ้งทันที)",
+                _menu(*buttons),
+            )
+        ],
+        answered_by=PLANNER_ANSWER,
+        intent_key="gpa_need_gpax",
+        confidence=1.0,
+    )
+
+
+async def gpa_answer(
+    db: SupportsQuery | None,
+    user_hash: str | None,
+    settings: Any | None,
+    text: str,
+) -> RouteResult:
+    """
+    ให้คำปรึกษาด้านผลการเรียน (Requirement ข้อ 4.4)
+
+    ใช้ตัวเลขจาก planner (หน่วยกิตที่เหลือ/ที่ผ่าน) + GPAX ที่ผู้ใช้พิมพ์บอก
+    **GPAX ไม่ถูกเขียนลงตารางใด ๆ** ใช้คำนวณในรอบนี้แล้วทิ้ง — คำเคลมใน
+    ``db/migrations/001_init.sql`` และบทที่ 3 ว่า "ไม่เก็บเกรด" จึงยังเป็นจริง
+    """
+    if db is None:
+        from .router import _no_data
+
+        return _no_data("การคำนวณเกรด", "gpa")
+    if not user_hash:
+        from .router import _fallback
+
+        return _fallback("gpa")
+
+    question = gpa.parse_question(text)
+    loaded = await load_progress(db, user_hash)
+    if loaded is None:
+        return need_completed_courses(settings, "เกรด")
+    progress, _ = loaded
+
+    remaining = progress.credits_left_to_graduate
+    if remaining is None:
+        # ไม่รู้เกณฑ์จบของหลักสูตร → ใช้หน่วยกิตที่เหลือในแผนแทน (ต่ำกว่าความจริง)
+        remaining = progress.remaining_plan_credits
+    # ``or`` ทำให้ 0 ถูกมองว่า "ไม่ได้บอกมา" ซึ่งถูกต้องในที่นี้: หน่วยกิตที่
+    # คิดเกรดแล้วเป็น 0 แปลว่าไม่มีอะไรให้ถ่วง ไม่ใช่ค่าที่ผู้ใช้ตั้งใจส่ง
+    credits_counted = question.credits_counted or progress.passed_credits
+
+    if question.gpax is None:
+        return ask_for_gpax(settings, remaining)
+
+    current = question.gpax
+    blocks: list[str] = []
+    intent = "gpa_scenarios"
+
+    if question.target is not None:
+        intent = "gpa_target"
+        blocks.append(
+            _target_line(
+                gpa.plan_target(current, credits_counted, remaining, question.target)
+            )
+        )
+
+    if question.wants_honors:
+        intent = "gpa_honors"
+        if blocks:
+            blocks.append("")
+        blocks.append("ลุ้นเกียรตินิยม (คิดเฉพาะเกณฑ์ GPAX):")
+        blocks.extend(
+            _target_line(plan)
+            for plan in gpa.honors_outlook(current, credits_counted, remaining)
+        )
+        blocks.append(
+            "เกณฑ์จริงมีเงื่อนไขอื่นที่ระบบยังไม่รู้ (เช่น ต้องไม่เคยได้ F "
+            "และจบในเวลาปกติ) — เช็คกับสำนักส่งเสริมวิชาการฯ ด้วยครับ"
+        )
+
+    rows = gpa.scenarios(current, credits_counted, remaining)
+    if blocks:
+        blocks.append("")
+    if rows:
+        blocks.append("ถ้าเกรดที่เหลือออกมาเท่ากันหมด:")
+        blocks.extend(_scenario_lines(rows))
+    else:
+        rank = gpa.honors_rank(current)
+        blocks.append(
+            f"เก็บครบหลักสูตรแล้ว GPAX {current:.2f} คือผลสุดท้าย"
+            + (f" (ถึงเกณฑ์เกียรตินิยม{rank})" if rank else "")
+        )
+
+    header = (
+        f"คำปรึกษาด้านผลการเรียน\n"
+        f"คิดจาก GPAX {current:.2f} · คิดเกรดแล้ว {credits_counted} หน่วยกิต"
+        f" · เหลืออีก {remaining} หน่วยกิต"
+    )
+    footer = "\n".join(
+        [
+            credits_note(question.credits_counted is not None),
+            grade_scale_note() + " (ยังไม่ได้ยืนยันกับข้อบังคับ RMU)",
+            "ระบบไม่เก็บเกรดที่พิมพ์มา — ใช้คำนวณแล้วทิ้งทันที",
+        ]
+    )
+    buttons = [
+        *liff_button(settings, "แก้วิชาที่ผ่าน"),
+        msg.uri_action("เครื่องคิดเกรดรายวิชา", GPA_CALCULATOR_URL),
+    ]
+    return RouteResult(
+        messages=[
+            msg.text_message(join_lines(header, blocks, footer), _menu(*buttons))
+        ],
+        answered_by=PLANNER_ANSWER,
+        intent_key=intent,
         confidence=1.0,
     )

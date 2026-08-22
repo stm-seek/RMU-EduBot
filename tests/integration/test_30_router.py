@@ -211,3 +211,71 @@ def test_loan_menu_count_matches_loan_answer_count(
     assert "111 ตัวอย่างการทำสัญญา กรอ." in text
     assert "หน้ารวมข้อมูลการกู้ยืมเงินเพื่อการศึกษา" in text
     assert_line_limits(answer.messages)
+
+
+def test_gpa_answer_uses_the_real_credit_numbers(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    ข้อ 4.4 ต่อกับตัวเลขจริงของ planner — จุดที่ integration ต้องยืนยัน
+
+    เทสระดับ unit ป้อนแผนสมมุติ 2 วิชา จึงไม่เคยเจอว่า "หน่วยกิตที่เหลือ"
+    ที่คำตอบพูด มาจาก ``programs.total_credits`` จริงหรือไม่ ถ้าสองชั้นนี้
+    หลุดจากกัน ตัวเลขในคำตอบจะดูสมเหตุสมผลแต่ผิด ซึ่งผู้ใช้จับไม่ได้
+
+    ตัวเลขวันนี้ (23 ส.ค. 2026): ติ๊ก 22 วิชาแรกของแผน = 66 นก.
+    หลักสูตรกำหนด 120 → เหลือ 54
+    """
+    from app import gpa
+    from app import repository as repo
+
+    from .conftest import TEST_HASH_PREFIX, cleanup_test_rows
+
+    hash_value = TEST_HASH_PREFIX + "gpa"
+    program_code = "643170151"
+
+    user_id = run(repo.ensure_user(live_db, hash_value))
+    run(repo.set_user_program(live_db, hash_value, program_code=program_code))
+    plan = run(repo.curriculum_plan(live_db, program_code))
+    ticked = plan[:22]
+    run(
+        repo.replace_completed_courses(
+            live_db, user_id, [row["course_code"] for row in ticked]
+        )
+    )
+
+    try:
+        counted = sum(int(row["credits"] or 0) for row in ticked)
+        program = run(repo.program_info(live_db, program_code))
+        remaining = int(program["total_credits"]) - counted
+        assert (counted, remaining) == (66, 54), "ข้อมูลจริงเปลี่ยนไป ให้แก้ตัวเลขในเทส"
+
+        answer = run(
+            rt.handle_text("เกรดตอนนี้ 2.75 อยากได้ 3.00", live_db, user_hash=hash_value)
+        )
+        text = answer.messages[0]["text"]
+
+        assert answer.answered_by == "planner"
+        assert answer.intent_key == "gpa_target"
+        assert_line_limits(answer.messages)
+
+        # ตัวเลขในคำตอบต้องเป็นชุดเดียวกับที่ repository รายงาน ไม่ใช่ค่าคงที่
+        assert f"คิดเกรดแล้ว {counted} หน่วยกิต" in text
+        assert f"เหลืออีก {remaining} หน่วยกิต" in text
+
+        expected = gpa.plan_target(2.75, counted, remaining, 3.0)
+        assert f"{expected.required:.2f}" in text
+        assert expected.grade is not None and expected.grade in text
+
+        # เป้าที่ไปไม่ถึงต้องบอกเพดานจริง ไม่ใช่ให้กำลังใจแบบผิดข้อมูล
+        hopeless = run(
+            rt.handle_text("เกรด 1.88 อยากได้ 3.00", live_db, user_hash=hash_value)
+        )
+        hopeless_text = hopeless.messages[0]["text"]
+        ceiling = gpa.plan_target(1.88, counted, remaining, 3.0)
+
+        assert ceiling.achievable is False
+        assert "ไปไม่ถึง" in hopeless_text
+        assert f"{ceiling.best_possible:.2f}" in hopeless_text
+    finally:
+        run(cleanup_test_rows(live_db))

@@ -62,9 +62,9 @@ make rich-menu-list       # ดูเมนูที่มีบน LINE (แล
 **Rich Menu ไม่แสดงบน LINE for PC** ต้องทดสอบบนมือถือ และ**แก้ภาพของเมนูที่
 อัปโหลดไปแล้วไม่ได้** ต้องสร้างใบใหม่แล้วลบใบเก่าทิ้ง
 
-เทส: **360 unit + 22 doctests** — ไม่แตะเน็ตเวิร์กจริงและไม่ต้องมี Postgres
+เทส: **512 unit + 46 doctests** — ไม่แตะเน็ตเวิร์กจริงและไม่ต้องมี Postgres
 (mock ด้วย `httpx.MockTransport` + fake connection, ตรวจ SQL ด้วย `sqlglot`)
-อีก **94 integration** ต้องมี Postgres จริงจึงเป็น opt-in ด้วย `RMU_DB_TESTS=1`
+อีก **101 integration** ต้องมี Postgres จริงจึงเป็น opt-in ด้วย `RMU_DB_TESTS=1`
 
 ```powershell
 $env:PYTHONUTF8="1"; python -m pytest -q
@@ -241,7 +241,7 @@ to the server from the LIFF app"*) ไม่ทำ = ใครก็ยิง AP
 | Planner engine | **เขียนแล้ว** (`app/planner.py` + `app/progress.py`) — ตอบความก้าวหน้า/วิชาเทอมถัดไป/ลงวิชานี้ได้ไหม โดยไม่ใช้ LLM ยังขาด prerequisite จริงเท่านั้น |
 | FAQ matching (ชั้น 2) | ยังไม่เขียน — ตาราง `faqs` ยังว่าง |
 | RAG (ชั้น 3) | ยังไม่เขียน — ตาราง `rag_chunks` ยังว่าง, ยังไม่ได้ index |
-| GPA calculator (ข้อ 4.4) | ยังไม่เขียน — ไม่เก็บเกรด จึงต้องให้ผู้ใช้กรอกตอนคำนวณ |
+| GPA calculator (ข้อ 4.4) | **เขียนแล้ว** (`app/gpa.py`) — ผู้ใช้พิมพ์ GPAX มาตัวเดียว หน่วยกิตที่เหลือระบบรู้จาก planner แล้ว ยังต้องยืนยัน **สเกลแต้มเกรดและเกณฑ์เกียรตินิยม** กับเล่มข้อบังคับ RMU (ไม่มีในคลังเอกสาร) และยังไม่รองรับการลงเรียนซ้ำแก้เกรด |
 | Flex Message | ยังใช้ text + Quick Reply ก่อน |
 
 ---
@@ -258,10 +258,11 @@ app/
   llm.py                  LLM client แบบ OpenAI-compatible (chat + embed)
   planner.py              คำนวณความก้าวหน้า/วิชาเทอมถัดไป (ไม่มี LLM ไม่มี I/O)
   progress.py             ประกอบคำตอบของชั้น planner ให้บทสนทนา LINE
+  gpa.py                  คำนวณเกรด/เป้า GPAX/เกียรตินิยม (ไม่มี LLM ไม่มี I/O)
   line/                   signature, message builder, Messaging API client, LIFF auth
 run.py                   ตัวรันเซิร์ฟเวอร์ (จำเป็นบน Windows — ดู Quick start)
 web/liff/index.html      หน้า LIFF ติ๊กวิชาที่ผ่านแล้ว (ไฟล์เดียว ไม่มี build step)
-tests/                   469 tests (+101 integration ที่ต้องมี Postgres จริง)
+tests/                   512 tests (+101 integration ที่ต้องมี Postgres จริง)
 kb/                      scraper + SQLite knowledge base  (ดู kb/README.md)
 db/
   migrations/001_init.sql   Postgres schema (005_planner.sql = คอลัมน์/ป้ายของ planner)

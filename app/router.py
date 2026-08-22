@@ -14,12 +14,13 @@ postback จากปุ่ม, รหัสวิชา 7 หลัก, แล�
 (คำแนะนำการเรียนทั่วไป ตอบจาก ``app/ai_chat.py``) ส่วน RAG/FAQ ยังไม่มี
 เพราะตาราง ``rag_chunks``/``faqs`` ยังว่าง (บล็อกที่เนื้อหาทางการ)
 
-**ค่า ``answered_by`` ที่ไฟล์นี้ผลิตได้จริงตอนนี้มี 9 ค่า**: ``rich_menu``
+**ค่า ``answered_by`` ที่ไฟล์นี้ผลิตได้จริงตอนนี้มี 10 ค่า**: ``rich_menu``
 (กดปุ่มบน Rich Menu — postback มี ``src=rich``), ``quick_reply`` (กดปุ่มใน
 บทสนทนา), ``course`` (พิมพ์รหัสวิชา 7 หลัก), ``follow`` (ทักครั้งแรก),
 ``search`` (พิมพ์คำแล้วค้นจาก DB), ``no_data`` (เข้าใจคำถามแต่ไม่มีข้อมูล),
 ``db_error`` (ถามฐานข้อมูลไม่สำเร็จ), ``fallback`` (ไม่เข้าใจคำถาม),
-``ai_chat`` (LLM ตอบคำถามทั่วไป) — ยังไม่มี ``faq`` / ``planner`` / ``rag``
+``ai_chat`` (LLM ตอบคำถามทั่วไป), ``planner`` (ความก้าวหน้าตามหลักสูตร
+และการคำนวณเกรด — ประกอบคำตอบใน ``app/progress.py``) — ยังไม่มี ``faq`` / ``rag``
 
 **เดิมทุกทางข้างบนถูกป้ายว่า ``rich_menu`` หมด** รวมทั้งการพิมพ์รหัสวิชาและ
 ข้อความต้อนรับ ซึ่งทำให้วัดในธีสิสไม่ได้ว่า Rich Menu รับภาระเท่าไหร่จริง
@@ -80,8 +81,8 @@ class RouteResult:
 
     messages: list[dict]
     # ค่าที่ผลิตได้จริงตอนนี้: rich_menu / quick_reply / course / follow / search
-    # / no_data / db_error / fallback / ai_chat
-    # (faq / planner / rag ยังไม่มีชั้นที่ผลิตค่าเหล่านี้ — อย่าเคลมในเอกสาร)
+    # / no_data / db_error / fallback / ai_chat / planner
+    # (faq / rag ยังไม่มีชั้นที่ผลิตค่าเหล่านี้ — อย่าเคลมในเอกสาร)
     answered_by: str
     intent_key: str | None = None
     confidence: float | None = None
@@ -749,6 +750,12 @@ async def _dispatch_text(
 
     if prog.NEXT_TERM_PATTERN.search(cleaned):
         return await prog.next_term_answer(db, user_hash, settings)
+
+    # เรื่องเกรดต้องดักก่อน PROGRESS_PATTERN เพราะ "GPA 1.88 จบได้ไหม" เข้า
+    # เงื่อนไขทั้งสองอัน ("จบได้ไหม" อยู่ใน PROGRESS_PATTERN) แต่คนถามหมายถึงเกรด
+    # ส่วน GPA_NOT_PATTERN กันคำขอเอกสารที่มีคำว่าเกรดอยู่ ("ขอใบเกรด")
+    if prog.GPA_PATTERN.search(cleaned) and not prog.GPA_NOT_PATTERN.search(cleaned):
+        return await prog.gpa_answer(db, user_hash, settings, cleaned)
 
     if prog.PROGRESS_PATTERN.search(cleaned):
         return await prog.progress_answer(db, user_hash, settings)

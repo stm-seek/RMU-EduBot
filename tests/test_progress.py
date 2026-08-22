@@ -278,3 +278,170 @@ async def test_next_term_lists_only_courses_open_that_semester(settings) -> None
     assert "ภาคเรียนที่ 1" in text
     assert "2000001" in text
     assert f"เพดานที่ใช้คิด {settings.planner_max_credits}" in text
+
+
+# ── ข้อ 4.4 ให้คำปรึกษาด้านผลการเรียน ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text, intent",
+    [
+        ("เกรดตอนนี้ 2.75 อยากได้ 3.00", "gpa_target"),
+        ("GPA 3.4 ยังลุ้นเกียรตินิยมได้ไหม", "gpa_honors"),
+        ("เกรด 2.5 ตอนนี้เป็นยังไง", "gpa_scenarios"),
+        ("เกรดเฉลี่ยต้องได้เท่าไหร่", "gpa_need_gpax"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_grade_questions_reach_the_planner(text: str, intent: str, settings) -> None:
+    """คำถามเรื่องเกรดต้องเข้าชั้นคำนวณ ไม่ใช่ปล่อยให้ LLM เดาเลข"""
+    result = await router.handle_text(
+        text, db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert result.answered_by == "planner"
+    assert result.intent_key == intent
+    assert_line_limits(result.messages)
+
+
+@pytest.mark.parametrize(
+    "text", ["ขอใบเกรด", "ขอใบรายงานผลการเรียน", "ขอ transcript ยื่นที่ไหน"]
+)
+@pytest.mark.asyncio
+async def test_asking_for_a_transcript_is_not_a_gpa_question(text: str, settings) -> None:
+    """
+    "ขอใบเกรด" คือคำขอเอกสาร ไม่ใช่คำถามคำนวณเกรด
+
+    เคสนี้เป็น false positive ที่เกิดง่ายมาก เพราะคำว่า "เกรด" อยู่ในทั้งสอง
+    เรื่อง — ถ้าชั้นเกรดดูดไป ผู้ใช้จะได้ตารางคำนวณแทนวิธีขอเอกสาร
+    """
+    result = await router.handle_text(
+        text, db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert not (result.intent_key or "").startswith("gpa")
+
+
+@pytest.mark.asyncio
+async def test_gpa_prompt_already_knows_the_remaining_credits(settings) -> None:
+    """
+    ขอแค่ GPAX เลขเดียว — "เหลืออีกกี่หน่วยกิต" ระบบรู้เองจากวิชาที่ติ๊กไว้
+
+    นี่คือสิ่งที่ทำให้ต่างจากเว็บคิดเกรดทั่วไป ถ้าคำตอบไม่บอกตัวเลขนี้
+    ผู้ใช้จะไม่เห็นความต่าง แล้วไปกรอกเว็บอื่นเองอยู่ดี
+    """
+    result = await router.handle_text(
+        "เกรดเฉลี่ยคิดยังไง",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+    text = result.messages[0]["text"]
+
+    assert result.intent_key == "gpa_need_gpax"
+    assert "117 หน่วยกิต" in text, "120 - 3 ที่ผ่านแล้ว"
+    assert "ไม่เก็บเกรด" in text
+
+
+@pytest.mark.asyncio
+async def test_reachable_target_reports_the_grade_needed(settings) -> None:
+    """เป้าที่ยังทำได้ ต้องบอกทั้งแต้มเฉลี่ยและเกรดที่เทียบเท่า"""
+    result = await router.handle_text(
+        "เกรดตอนนี้ 2.75 อยากได้ 3.00",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+    text = result.messages[0]["text"]
+
+    assert "3.01" in text, "ต้องปัดขึ้นจาก 3.0064 ไม่ใช่ปัดลงเป็น 3.00"
+    assert "B+" in text
+    assert "117 หน่วยกิต" in text
+    assert_line_limits(result.messages)
+
+
+@pytest.mark.asyncio
+async def test_impossible_target_says_so_and_gives_the_ceiling(settings) -> None:
+    """
+    เป้าที่ไปไม่ถึงต้องบอกตรง ๆ พร้อมเพดานจริง
+
+    ให้กำลังใจแบบผิดข้อมูลแย่กว่าบอกความจริง เพราะนักศึกษาจะวางแผนต่อ
+    บนตัวเลขที่เป็นไปไม่ได้ทั้งปี
+    """
+    result = await router.handle_text(
+        "เกรด 2.75 อยากได้ 4.00",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+    text = result.messages[0]["text"]
+
+    assert "ไปไม่ถึง" in text
+    assert "3.97" in text, "ได้ A ทุกวิชาที่เหลือได้สูงสุดเท่านี้"
+
+
+@pytest.mark.asyncio
+async def test_honors_answer_covers_both_ranks_and_admits_unknown_rules(
+    settings,
+) -> None:
+    result = await router.handle_text(
+        "เกรด 2.0 ยังลุ้นเกียรตินิยมได้ไหม",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+    text = result.messages[0]["text"]
+
+    assert "เกียรตินิยมอันดับ 1" in text and "เกียรตินิยมอันดับ 2" in text
+    assert "เงื่อนไขอื่นที่ระบบยังไม่รู้" in text, "ห้ามเคลมว่ารู้เกณฑ์ครบ"
+    assert_line_limits(result.messages)
+
+
+@pytest.mark.asyncio
+async def test_grade_answer_discloses_the_scale_it_used(settings) -> None:
+    """
+    สเกลแต้มเกรดยังไม่ได้ยืนยันกับข้อบังคับ RMU → ต้องบอกว่าคิดด้วยอะไร
+
+    ถ้าสเกลจริงต่างจากนี้ ตัวเลขทุกตัวเปลี่ยน ผู้ใช้ต้องตรวจได้เอง
+    """
+    result = await router.handle_text(
+        "เกรด 2.75 อยากได้ 3.00",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+    text = result.messages[0]["text"]
+
+    assert "A 4.00" in text and "B+ 3.50" in text
+    assert "ยังไม่ได้ยืนยันกับข้อบังคับ" in text
+
+
+@pytest.mark.asyncio
+async def test_grade_question_without_ticked_courses_asks_for_them(settings) -> None:
+    """ไม่รู้ว่าเหลือกี่หน่วยกิต = คำนวณไม่ได้ ต้องชวนไปติ๊ก ไม่ใช่เดา"""
+    result = await router.handle_text(
+        "เกรด 2.75 อยากได้ 3.00", db_with([]), settings=settings, user_hash=USER_HASH
+    )
+
+    assert result.answered_by == "no_data"
+    assert result.intent_key == "progress_no_profile"
+    assert "เกรด" in result.messages[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_manual_credit_override_is_used_and_acknowledged(settings) -> None:
+    """
+    ผู้ใช้แก้หน่วยกิตที่คิดเกรดได้เอง เพราะของ planner ไม่ตรงเมื่อมีวิชาติด F
+
+    ถ้าเตือนว่า "อาจไม่ตรง" แล้วไม่ให้ทางแก้ คำเตือนนั้นก็ไร้ประโยชน์
+    """
+    result = await router.handle_text(
+        "เกรด 2.75 เก็บไปแล้ว 66 หน่วยกิต อยากได้ 3.00",
+        db_with(["1000001"]),
+        settings=settings,
+        user_hash=USER_HASH,
+    )
+    text = result.messages[0]["text"]
+
+    assert "คิดเกรดแล้ว 66 หน่วยกิต" in text
+    assert "ใช้จำนวนหน่วยกิตที่คุณบอกมาคิด" in text
