@@ -2,8 +2,8 @@
 
 ระบบแชทบอท LINE ให้คำปรึกษาด้านการเรียนด้วย AI สำหรับ มรภ.มหาสารคาม
 
-**สถานะ: Knowledge Base + LINE webhook + ชั้นที่ 1 (ตอบจาก DB) เสร็จแล้ว —
-ยังไม่มี FAQ matching / RAG / planner**
+**สถานะ: Knowledge Base + LINE webhook + ชั้นที่ 1 (ตอบจาก DB) +
+Planner Engine (ความก้าวหน้าตามหลักสูตร) เสร็จแล้ว — ยังไม่มี FAQ matching / RAG**
 
 ---
 
@@ -39,7 +39,10 @@ docker-compose.yml           Postgres 17 + pgvector
 POST /webhook            รับ event จาก LINE — verify HMAC → ตอบ 200 ทันที → BackgroundTask
 GET  /health             บอกว่าอะไรตั้งค่าแล้ว + ต่อ DB ได้จริงไหม
 POST /api/liff/login     verify ID token กับ LINE แล้วคืน user_hash (ไม่คืน userId ดิบ)
-GET  /api/liff/config    LIFF ID + program_code สำหรับหน้า LIFF
+GET  /api/liff/config    LIFF ID + program_code + เพดานหน่วยกิต สำหรับหน้า LIFF
+GET  /liff               หน้าติ๊กวิชาที่ผ่านแล้ว (web/liff/index.html)
+POST /api/liff/state     แผนการเรียน + วิชาที่ติ๊กไว้ + ตัวเลขความก้าวหน้า
+POST /api/liff/completed_courses   บันทึกชุดวิชาที่ผ่าน แล้วคืนสถานะใหม่ทั้งก้อน
 ```
 
 ชั้นที่ 1 ตอบจากฐานข้อมูลแล้ว: เอกสาร/คำร้อง (11 หมวด), ติดต่ออาจารย์
@@ -230,14 +233,15 @@ to the server from the LIFF app"*) ไม่ทำ = ใครก็ยิง AP
 
 | เรื่อง | สถานะ |
 |---|---|
-| `prerequisites` + `curriculum_rules` | **ว่าง** — ระบบทะเบียนไม่มีข้อมูลนี้ (ค้น `บังคับก่อน` ได้ 0 ผลลัพธ์) และไม่มี มคอ.2 เผยแพร่ออนไลน์ → ต้องขอเล่มจากคณะ |
+| `prerequisites` (วิชาบังคับก่อน) | **ว่าง** — ระบบทะเบียนไม่มีข้อมูลนี้ (ค้น `บังคับก่อน` ได้ 0 ผลลัพธ์) และไม่มี มคอ.2 เผยแพร่ออนไลน์ → ต้องขอเล่มจากคณะ ระหว่างนี้ planner ใช้ลำดับจากแผนการเรียนและบอกผู้ใช้ตรง ๆ ว่ายังไม่ใช่เงื่อนไขบังคับ |
+| `curriculum_rules` หลักสูตรอื่น | มีแค่ 643170151 (32 วิชา) — คณะ IT มีอีก 6 หลักสูตรในระบบทะเบียน ต้องดึงเพิ่ม |
 | ข้อมูลกิจกรรม | `e-activity.rmu.ac.th` คืน **HTTP 500 ทุก path** → รอสอบถามเจ้าหน้าที่ |
 | เบอร์โทร/ห้องพัก/เวลาติดต่ออาจารย์ | เว็บคณะไม่มี (0/28) → ต้องกรอกมือ |
 | อาจารย์วิชา GE | สอนจริง 111 คน แต่มีในเว็บคณะ IT แค่ 8 คน |
-| Planner engine | ยังไม่เขียน (รอ prerequisite) |
+| Planner engine | **เขียนแล้ว** (`app/planner.py` + `app/progress.py`) — ตอบความก้าวหน้า/วิชาเทอมถัดไป/ลงวิชานี้ได้ไหม โดยไม่ใช้ LLM ยังขาด prerequisite จริงเท่านั้น |
 | FAQ matching (ชั้น 2) | ยังไม่เขียน — ตาราง `faqs` ยังว่าง |
 | RAG (ชั้น 3) | ยังไม่เขียน — ตาราง `rag_chunks` ยังว่าง, ยังไม่ได้ index |
-| หน้า LIFF (ติ๊กวิชาที่ผ่าน) | ยังไม่เขียน — มีแต่ API ฝั่ง server |
+| GPA calculator (ข้อ 4.4) | ยังไม่เขียน — ไม่เก็บเกรด จึงต้องให้ผู้ใช้กรอกตอนคำนวณ |
 | Flex Message | ยังใช้ text + Quick Reply ก่อน |
 
 ---
@@ -246,19 +250,23 @@ to the server from the LIFF app"*) ไม่ทำ = ใครก็ยิง AP
 
 ```
 app/
-  main.py                 FastAPI — /webhook, /health, /api/liff/*
+  main.py                 FastAPI — /webhook, /health, /liff, /api/liff/*
   config.py               Settings (pydantic-settings) + fail fast บน production
   router.py               router 3 ชั้น (ชั้น 1 เสร็จ, ชั้น 2/3 ยังไม่ทำ)
   db.py                   psycopg async pool + Protocol ให้เทสใช้ fake ได้
   repository.py           SQL ทั้งหมดของชั้นที่ 1
   llm.py                  LLM client แบบ OpenAI-compatible (chat + embed)
+  planner.py              คำนวณความก้าวหน้า/วิชาเทอมถัดไป (ไม่มี LLM ไม่มี I/O)
+  progress.py             ประกอบคำตอบของชั้น planner ให้บทสนทนา LINE
   line/                   signature, message builder, Messaging API client, LIFF auth
 run.py                   ตัวรันเซิร์ฟเวอร์ (จำเป็นบน Windows — ดู Quick start)
-tests/                   244 tests — ไม่ต้องมีเน็ตหรือ Postgres
+web/liff/index.html      หน้า LIFF ติ๊กวิชาที่ผ่านแล้ว (ไฟล์เดียว ไม่มี build step)
+tests/                   469 tests (+101 integration ที่ต้องมี Postgres จริง)
 kb/                      scraper + SQLite knowledge base  (ดู kb/README.md)
 db/
-  migrations/001_init.sql   Postgres schema
+  migrations/001_init.sql   Postgres schema (005_planner.sql = คอลัมน์/ป้ายของ planner)
   seed/002_seed_data.sql    ข้อมูลจริง 1,065 แถว (generated — ห้ามแก้มือ)
+  seed/003_curriculum_rules.sql  แผนการเรียน 643170151 (32 วิชา)
   export_seed.py            SQLite → Postgres SQL
   validate_sql.py           ตรวจ syntax ด้วย sqlglot
   check_integrity.py        ตรวจ FK / constraint / ลำดับ INSERT
