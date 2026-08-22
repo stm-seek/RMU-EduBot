@@ -35,6 +35,10 @@ desktop.ini
 # log ของ uvicorn/cloudflared ที่ Start-Process เขียนไว้ (ชื่อไม่มีจุดนำหน้า)
 server.out.log
 server.err.log
+server.log
+server_err.log
+tunnel.log
+tunnel_err.log
 .claude/
 .funnel.log
 .tslog.txt
