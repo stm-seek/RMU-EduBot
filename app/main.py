@@ -370,8 +370,46 @@ async def process_event(event: dict, settings: Settings) -> None:
         # และเก็บบริบทสนทนาให้ AI Chat ในรอบถัดไป (Requirement ข้อ 9)
         await _log_conversation(event, result, user_hash, status=CHAT_STATUS_DELIVERED)
 
+        # สลับ Rich Menu รายผู้ใช้ตามโหมดปรึกษา — ทำหลังส่ง+บันทึกสำเร็จแล้ว
+        # เพราะเมนูไม่ขึ้นไม่คุ้มกับการทำให้รอบสนทนาพัง/ข้อมูลวัดผลหาย
+        await _switch_rich_menu(client, settings, user_id, result)
+
     except Exception:
         log.exception("ประมวลผล event ล้มเหลว (type=%s)", event_type)
+
+
+async def _switch_rich_menu(client, settings: Settings, user_id: str | None, result) -> None:
+    """
+    ผูก/ถอดใบโหมดปรึกษาให้ผู้ใช้คนนี้ตาม ``result.rich_menu``
+
+    * ``"consult"`` → ผูกใบปรึกษา (กลบเมนูหลักจนกว่าจะถอด)
+    * ``"main"``    → ถอด กลับเมนูหลักของบัญชี
+    * ``None``      → ไม่สลับ (คำตอบธรรมดา / ในโหมดที่ปุ่มไม่ได้จบโหมด)
+
+    เงื่อนไขที่จะข้ามเงียบ ๆ (ไม่ใช่ข้อผิดพลาด):
+
+    * ไม่มี ``userId`` — group chat ไม่มีเมนูรายผู้ใช้
+    * ยังไม่ได้ตั้ง ``RICH_MENU_CONSULT_ID`` — ฟีเจอร์ปิดทั้งระบบ
+      (ผู้ใช้ยังเห็นเมนูหลักตลอด ถือว่าเสื่อมอย่างสุภาพ)
+
+    ความล้มเหลวของ LINE API ถูกกลืนแล้วแค่ log warning — เมนูค้างใบเดิม
+    ดีกว่าทำให้ผู้ใช้เห็นว่าบอทพัง และคำตอบจริงถูกส่งไปแล้ว
+    """
+    consult_id = settings.rich_menu_consult_id
+    if not result.rich_menu or not user_id or not consult_id:
+        return
+
+    try:
+        if result.rich_menu == "consult":
+            await client.link_rich_menu(user_id, consult_id)
+        elif result.rich_menu == "main":
+            await client.unlink_rich_menu(user_id)
+        else:
+            log.warning("ไม่รู้จักค่าสลับเมนู %r — ข้าม", result.rich_menu)
+            return
+        log.info("สลับ Rich Menu: user=...%s → %s", user_id[-6:], result.rich_menu)
+    except LineApiError as exc:
+        log.warning("สลับ Rich Menu ไม่สำเร็จ (ไม่กระทบคำตอบ): %s", exc)
 
 
 async def _log_conversation(

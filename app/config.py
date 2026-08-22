@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # ── LINE Messaging API ──────────────────────────────────────────────────
     line_channel_secret: str = ""
     line_channel_access_token: str = ""
+    # Rich Menu ใบโหมดปรึกษา (2 ปุ่ม: จบการปรึกษา + เมนูหลัก) — สร้างด้วย
+    # ``make rich-menu-apply-consult`` (หรือ ``scripts/rich_menu.py --variant
+    # consult --no-default``) แล้วเอา id ที่ได้มาตั้งตรงนี้
+    #
+    # ว่าง = ปิดฟีเจอร์สลับเมนู (ผู้ใช้เห็นเมนูหลักตลอด) — ไม่ใช่การสลับ
+    # แบบ "ตั้งเป็น default" เพราะใบนี้ต้องผูก/ถอดเป็นรายผู้ใช้ใน ``app/main.py``
+    rich_menu_consult_id: str = ""
 
     # ── LIFF / LINE Login ───────────────────────────────────────────────────
     liff_id: str = ""

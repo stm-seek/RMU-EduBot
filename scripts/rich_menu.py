@@ -4,6 +4,7 @@
     python scripts/rich_menu.py --dry-run                 # ดู JSON + ตรวจภาพ
     python scripts/rich_menu.py                           # ลงจริง (ใช้ภาพใน assets/)
     python scripts/rich_menu.py --image path/to/menu.png   # ลงจริงด้วยภาพอื่น
+    python scripts/rich_menu.py --variant consult --no-default  # ใบโหมดปรึกษา 2 ปุ่ม
     python scripts/rich_menu.py --list
     python scripts/rich_menu.py --delete richmenu-xxxx
 
@@ -12,6 +13,12 @@
 1. ``POST api.line.me/v2/bot/richmenu``                    → ได้ ``richMenuId``
 2. ``POST api-data.line.me/v2/bot/richmenu/{id}/content``   ← **โดเมนต่างกัน**
 3. ``POST api.line.me/v2/bot/user/all/richmenu/{id}``       ตั้งเป็นเมนู default
+
+ขั้นที่ 3 ทำเฉพาะใบหลัก (``--variant main``) — ใบปรึกษา (``--variant consult``)
+ต้อง ``--no-default`` เสมอ แล้วเอา id ที่ได้ไปตั้ง ``RICH_MENU_CONSULT_ID``
+ใน ``.env`` เพราะการสลับใบปรึกษาใช้ per-user link ใน ``app/main.py``
+ถ้าตั้งเป็น default ทั้งบัญชี คนที่ไม่ได้อยู่ในโหมดจะเจอปุ่ม "จบการปรึกษา"
+แทนเมนูจริง
 
 **เปลี่ยนภาพของเมนูที่อัปโหลดแล้วไม่ได้** ต้องสร้างเมนูใหม่ทุกครั้งที่แก้ภาพ
 → สคริปต์นี้จึงมี ``--list`` / ``--delete`` มาให้เก็บกวาดของเก่า
@@ -31,7 +38,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from app.line.rich_menu import build_rich_menu, image_problems  # noqa: E402
+from app.line.rich_menu import (  # noqa: E402
+    build_consult_rich_menu,
+    build_rich_menu,
+    image_problems,
+)
 
 API = "https://api.line.me/v2/bot"
 API_DATA = "https://api-data.line.me/v2/bot"
@@ -39,6 +50,13 @@ API_DATA = "https://api-data.line.me/v2/bot"
 # ภาพต้นฉบับเก็บไว้ใน repo เพราะพิกัดปุ่มใน app/line/rich_menu.py วัดมาจากไฟล์นี้
 # ทำภาพหายแล้วเลขพิกัดจะตรวจย้อนไม่ได้
 DEFAULT_IMAGE = REPO_ROOT / "assets" / "rich_menu.png"
+CONSULT_IMAGE = REPO_ROOT / "assets" / "rich_menu_consult.png"
+
+# variant → (ตัวสร้างเมนู, ภาพเริ่มต้น) — ใบปรึกษาใช้ --no-default เสมอ
+VARIANTS = {
+    "main": (build_rich_menu, DEFAULT_IMAGE),
+    "consult": (build_consult_rich_menu, CONSULT_IMAGE),
+}
 
 
 def check_image(path: Path) -> tuple[bytes, str]:
@@ -129,10 +147,20 @@ def delete_menu(client, menu_id: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--variant",
+        choices=sorted(VARIANTS),
+        default="main",
+        help=(
+            "main = เมนูหลัก 6 ช่อง (ตั้งเป็น default ได้) · "
+            "consult = ใบโหมดปรึกษา 2 ปุ่ม (ต้องใช้ --no-default แล้วเอา id "
+            "ไปตั้ง RICH_MENU_CONSULT_ID ใน .env)"
+        ),
+    )
+    parser.add_argument(
         "--image",
         type=Path,
-        default=DEFAULT_IMAGE,
-        help=f"ไฟล์ภาพเมนู (PNG/JPEG) — ไม่ส่งมาใช้ {DEFAULT_IMAGE.name} ใน assets/",
+        default=None,
+        help="ไฟล์ภาพเมนู (PNG/JPEG) — ไม่ส่งมาใช้ภาพเริ่มต้นของ variant ใน assets/",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="พิมพ์ JSON + ตรวจภาพ ไม่ยิง API"
@@ -146,11 +174,19 @@ def main() -> None:
     parser.add_argument("--delete", metavar="RICHMENU_ID", help="ลบเมนูตาม id")
     args = parser.parse_args()
 
-    menu = build_rich_menu()
+    build_menu, default_image = VARIANTS[args.variant]
+    image = args.image or default_image
+    menu = build_menu()
+
+    if args.variant == "consult" and not args.no_default and not (args.list or args.delete or args.dry_run):
+        raise SystemExit(
+            "ใบ consult ห้ามตั้งเป็น default ทั้งบัญชี — ใช้ --no-default "
+            "แล้วเอา id ไปตั้ง RICH_MENU_CONSULT_ID ใน .env"
+        )
 
     if args.dry_run:
         print(json.dumps(menu, ensure_ascii=False, indent=2))
-        check_image(args.image)
+        check_image(image)
         return
 
     with _client() as client:
@@ -161,11 +197,17 @@ def main() -> None:
             delete_menu(client, args.delete)
             return
 
-        data, mime = check_image(args.image)
+        data, mime = check_image(image)
         menu_id = create_menu(client, menu)
         upload_image(client, menu_id, data, mime)
         if args.no_default:
-            print("ข้ามขั้นที่ 3 ตามที่สั่ง — ตั้ง default ภายหลังด้วย --list แล้วดู id")
+            if args.variant == "consult":
+                print(
+                    "ข้ามขั้นที่ 3 ตามที่สั่ง — เอา id ข้างบนไปตั้ง "
+                    "RICH_MENU_CONSULT_ID ใน .env แล้วรีสตาร์ตเซิร์ฟเวอร์"
+                )
+            else:
+                print("ข้ามขั้นที่ 3 ตามที่สั่ง — ตั้ง default ภายหลังด้วย --list แล้วดู id")
         else:
             set_default(client, menu_id)
             print("เปิดแชทใหม่บนมือถือเพื่อดู (อาจช้าถึง 1 นาที · ไม่ขึ้นบน PC)")

@@ -149,6 +149,72 @@ def build_rich_menu() -> dict:
     }
 
 
+# ── ใบโหมดปรึกษา (สลับแสดงเฉพาะคนที่อยู่ในโหมด) ─────────────────────────────
+#
+# แยกจากใบหลักโดยเจตนา: คนที่อยู่ในโหมดปรึกษาต้องการ "ทางออก" ที่เห็นชัด
+# (จบการปรึกษา) กับ "ทางกลับ" (เมนูหลัก) เท่านั้น — ปุ่มอื่นจะชวนเผลอออก
+# จากโหมดโดยไม่ได้ตั้งใจ (เช่น กด กยศ. แล้ว search รับช่วงต่อทั้งที่ยัง
+# คุยค้างอยู่) การสลับใช้ per-user link ใน ``app/main.py`` ไม่ใช้
+# richmenuswitch action เพราะแบบนั้น **ไม่ส่ง postback กลับ webhook**
+# = บันทึก ``chat_logs`` ไม่ได้ ซึ่งขัดหลักการวัดผลของโปรเจกต์
+
+CONSULT_MENU_NAME = "RMU CS Assistant — โหมดปรึกษา AI"
+CONSULT_CHAT_BAR_TEXT = "ปรึกษา AI"
+
+# 2 ปุ่มแบ่งครึ่งโซนการ์ดของใบหลัก (y=133..758) พอดี — แถบหัว/ท้าย
+# เจตนาปล่อยให้กดไม่ได้เหมือนใบหลัก และปุ่มทั้งสองมี handler ใน
+# ``POSTBACK_HANDLERS`` อยู่แล้ว (ai_end / menu) ไม่ต้องเพิ่มโค้ดฝั่ง router
+CONSULT_SLOTS: tuple[tuple[str, str], ...] = (
+    ("จบการปรึกษา", "ai_end"),
+    ("เมนูหลัก", "menu"),
+)
+
+CONSULT_COLUMN_EDGES: tuple[int, ...] = (0, MENU_WIDTH // 2, MENU_WIDTH)
+
+
+def consult_cell_bounds(index: int) -> dict[str, int]:
+    """
+    พิกัดช่องของใบปรึกษา (0 = ซ้าย, 1 = ขวา) — ครึ่งซ้าย/ขวาของโซนการ์ด
+
+    >>> consult_cell_bounds(0)
+    {'x': 0, 'y': 133, 'width': 600, 'height': 625}
+    >>> consult_cell_bounds(1)
+    {'x': 600, 'y': 133, 'width': 600, 'height': 625}
+    """
+    if not 0 <= index < len(CONSULT_SLOTS):
+        raise ValueError(f"ช่องที่ {index} อยู่นอกตารางใบปรึกษา")
+
+    x, right = CONSULT_COLUMN_EDGES[index], CONSULT_COLUMN_EDGES[index + 1]
+    y, bottom = ROW_EDGES[0], ROW_EDGES[-1]
+    return {"x": x, "y": y, "width": right - x, "height": bottom - y}
+
+
+def build_consult_rich_menu() -> dict:
+    """
+    ใบโหมดปรึกษา — ส่งเข้า ``POST /v2/bot/richmenu`` ได้ตรง ๆ เช่นกัน
+
+    **ห้ามตั้งเป็น default ทั้งบัญชี** (``user/all``) — ไม่งั้นคนที่ไม่ได้
+    อยู่ในโหมดจะเจอปุ่ม "จบการปรึกษา" แทนเมนูจริง
+    """
+    return {
+        "size": {"width": MENU_WIDTH, "height": MENU_HEIGHT},
+        "selected": False,
+        "name": CONSULT_MENU_NAME,
+        "chatBarText": CONSULT_CHAT_BAR_TEXT,
+        "areas": [
+            {
+                "bounds": consult_cell_bounds(index),
+                "action": {
+                    "type": "postback",
+                    "label": label,
+                    "data": postback_data(action),
+                },
+            }
+            for index, (label, action) in enumerate(CONSULT_SLOTS)
+        ],
+    }
+
+
 # ── ตรวจภาพก่อนยิง API ───────────────────────────────────────────────────────
 
 

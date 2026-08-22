@@ -71,13 +71,23 @@ class LineClient:
             "Content-Type": "application/json",
         }
 
-    async def _post(self, path: str, payload: dict) -> dict:
+    async def _post(self, path: str, payload: dict | None) -> dict:
+        # payload=None = POST ตัวเปล่า (เช่น link rich menu ที่ไม่ต้องมี body)
+        body_kwargs = {} if payload is None else {"json": payload}
         response = await self._http.post(
-            f"{API_BASE}{path}", json=payload, headers=self._headers
+            f"{API_BASE}{path}", headers=self._headers, **body_kwargs
         )
         if response.status_code >= 400:
             raise LineApiError(response.status_code, response.text)
         return response.json() if response.content else {}
+
+    async def _delete(self, path: str) -> None:
+        """DELETE ไม่มี body — ใช้แค่ ``_post`` ไม่ได้เพราะบังคับส่ง json"""
+        response = await self._http.delete(
+            f"{API_BASE}{path}", headers=self._headers
+        )
+        if response.status_code >= 400:
+            raise LineApiError(response.status_code, response.text)
 
     # ── ส่งข้อความ ──────────────────────────────────────────────────────────
 
@@ -135,6 +145,32 @@ class LineClient:
             )
         except LineApiError as exc:
             log.debug("แสดง loading ไม่สำเร็จ (ไม่กระทบงานหลัก): %s", exc)
+
+    # ── Rich Menu เฉพาะผู้ใช้ (สลับใบตามโหมดปรึกษา) ─────────────────────────
+
+    async def link_rich_menu(self, user_id: str, menu_id: str) -> None:
+        """
+        ผูก rich menu ให้ผู้ใช้คนเดียว — **กลบเมนู default** ของบัญชีจนกว่า
+        จะ :meth:`unlink_rich_menu`
+
+        ใช้สลับเป็นใบโหมดปรึกษาเฉพาะคนที่อยู่ในโหมด (เรียกจาก
+        ``app/main.py`` หลังส่งคำตอบสำเร็จ) ไม่ใช้ ``richmenuswitch`` action
+        เพราะทางนั้นไม่ส่ง postback กลับ webhook = บันทึก ``chat_logs`` ไม่ได้
+
+        พังแล้วยิง :class:`LineApiError` ออกไป — ผู้เรียกตัดสินใจเองว่าจะกลืน
+        หรือปล่อย (เมนูไม่ขึ้นไม่ควรทำให้งานหลักพัง → ``app/main.py``
+        ห่อ try/except ให้)
+        """
+        await self._post(f"/user/{user_id}/richmenu/{menu_id}", None)
+
+    async def unlink_rich_menu(self, user_id: str) -> None:
+        """
+        เอาเมนูเฉพาะผู้ใช้ออก → ผู้ใช้กลับไปเห็นเมนู default ของบัญชี
+
+        เรียกเมื่อออกจากโหมดปรึกษา (ปิด/timeout/ครบรอบ) — ถ้าผู้ใช้ไม่ได้
+        link อยู่แล้ว การเรียกซ้ำก็ไม่เป็นไร (ฝั่งเราห่อ try/except ไว้)
+        """
+        await self._delete(f"/user/{user_id}/richmenu")
 
     # ── ข้อมูลบอท ───────────────────────────────────────────────────────────
 

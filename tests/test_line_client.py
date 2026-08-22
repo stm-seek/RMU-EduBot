@@ -231,6 +231,57 @@ async def test_show_loading_swallows_errors() -> None:
     assert recorder.count == 1
 
 
+# ── Rich Menu เฉพาะผู้ใช้ (สลับใบตามโหมดปรึกษา) ─────────────────────────────
+
+CONSULT_MENU_ID = "richmenu-testconsult000000000000000000"
+
+
+async def test_link_rich_menu_posts_empty_body() -> None:
+    """
+    LINE รับ ``POST /user/{userId}/richmenu/{richMenuId}`` **ตัวเปล่า** —
+    ส่ง json ไปด้วยก็ 200 เหมือนกัน แต่สัญญาของ API คือไม่มี body
+    """
+    recorder = Recorder((200, {}))
+
+    async with recorder.client() as http:
+        await LineClient(token_settings(), http).link_rich_menu(
+            TEST_USER_ID, CONSULT_MENU_ID
+        )
+
+    request = recorder.requests[0]
+    assert request.method == "POST"
+    assert request.url.path == f"/v2/bot/user/{TEST_USER_ID}/richmenu/{CONSULT_MENU_ID}"
+    assert request.content == b"", "link rich menu ต้องไม่ส่ง body"
+    assert request.headers["authorization"] == f"Bearer {TEST_ACCESS_TOKEN}"
+
+
+async def test_unlink_rich_menu_uses_delete() -> None:
+    recorder = Recorder((200, {}))
+
+    async with recorder.client() as http:
+        await LineClient(token_settings(), http).unlink_rich_menu(TEST_USER_ID)
+
+    request = recorder.requests[0]
+    assert request.method == "DELETE"
+    assert request.url.path == f"/v2/bot/user/{TEST_USER_ID}/richmenu"
+
+
+async def test_link_rich_menu_raises_on_unknown_menu() -> None:
+    """
+    id ผิด (เช่นยังไม่ตั้ง .env หลังลบเมนู) → ต้องโยนให้ ``app/main.py``
+    จับแล้วแค่ log ไม่ใช่พังเงียบ — ผู้ใช้ยังเห็นเมนูเดิมซึ่งยอมรับได้
+    """
+    recorder = Recorder((404, {"message": "The rich menu does not exist."}))
+
+    async with recorder.client() as http:
+        with pytest.raises(LineApiError) as info:
+            await LineClient(token_settings(), http).link_rich_menu(
+                TEST_USER_ID, CONSULT_MENU_ID
+            )
+
+    assert info.value.status_code == 404
+
+
 # ── get_bot_info ────────────────────────────────────────────────────────────
 
 

@@ -15,7 +15,7 @@ IMAGE := assets/rich_menu.png
 .PHONY: help install dev dev-reload db-up db-down db-reset db-shell migrate seed \
         scrape scrape-programs scrape-courses scrape-offerings \
         scrape-documents scrape-instructors export check verify test doctest clean \
-        rich-menu-dry rich-menu-apply rich-menu-list rich-menu-delete
+        rich-menu-dry rich-menu-apply rich-menu-apply-consult rich-menu-list rich-menu-delete
 
 help:
 	@echo.
@@ -50,6 +50,7 @@ help:
 	@echo   -- Rich Menu (LINE) --
 	@echo   rich-menu-dry     ดู JSON + ตรวจภาพ ไม่ยิง API
 	@echo   rich-menu-apply   สร้าง+อัปโหลด+ตั้ง default (ใช้ assets/rich_menu.png)
+	@echo   rich-menu-apply-consult  ใบโหมดปรึกษา 2 ปุ่ม (ไม่ตั้ง default)
 	@echo   rich-menu-list    ดูเมนูที่มีอยู่บน LINE
 	@echo   rich-menu-delete  ลบเมนู (RICHMENU_ID=...)
 	@echo.
@@ -109,6 +110,11 @@ rich-menu-dry:
 
 rich-menu-apply:
 	set PYTHONUTF8=1 && $(PY) scripts/rich_menu.py --image "$(IMAGE)"
+
+# ใบโหมดปรึกษา 2 ปุ่ม (ตอนสลับตามโหมด) — ห้ามตั้งเป็น default ทั้งบัญชี
+# สคริปต์บังคับ --no-default เอง; ได้ id แล้วเอาไปตั้ง RICH_MENU_CONSULT_ID ใน .env
+rich-menu-apply-consult:
+	set PYTHONUTF8=1 && $(PY) scripts/rich_menu.py --variant consult --no-default
 
 rich-menu-list:
 	set PYTHONUTF8=1 && $(PY) scripts/rich_menu.py --list

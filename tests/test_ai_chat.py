@@ -414,6 +414,97 @@ def test_system_prompt_forbids_collecting_personal_data() -> None:
     assert "รหัสนักศึกษา" in ai_chat.SYSTEM_PROMPT
 
 
+# ── สัญญาณสลับ Rich Menu (rich_menu field) ─────────────────────────────────
+
+
+async def test_open_session_links_consult_menu() -> None:
+    result = await ai_chat.dispatch(
+        settings(), make_llm(Recorder((200, chat_ok()))),
+        db_with_session(None), USER_HASH, "ปรึกษา",
+    )
+    assert result is not None
+    assert result.rich_menu == "consult", "เข้าโหมดต้องสลับเป็นใบปรึกษา"
+
+
+async def test_open_with_question_links_consult_menu() -> None:
+    """เข้าโหมดพร้อมคำถาม ("ปรึกษา ...") ได้ใบปรึกษาพร้อมคำตอบในรอบเดียว"""
+    result = await ai_chat.dispatch(
+        settings(), make_llm(Recorder((200, chat_ok()))),
+        db_with_session(None), USER_HASH, "ปรึกษา อ่านหนังสือยังไง",
+    )
+    assert result is not None
+    assert result.rich_menu == "consult"
+
+
+async def test_in_session_answer_keeps_consult_menu() -> None:
+    """LLM ตอบ = ยังอยู่ในโหมด → ผูกใบปรึกษาต่อ (ซ้ำก็ไม่มีผลข้างเคียง)"""
+    result = await ai_chat.dispatch(
+        settings(), make_llm(Recorder((200, chat_ok()))),
+        db_with_session(session_row()), USER_HASH, "ถามต่อ",
+    )
+    assert result is not None
+    assert result.rich_menu == "consult"
+
+
+async def test_end_by_button_unlinks_menu() -> None:
+    result = await ai_chat.dispatch(
+        settings(), make_llm(Recorder((200, chat_ok()))),
+        db_with_session(session_row()), USER_HASH, "",
+        is_end_postback=True,
+    )
+    assert result is not None
+    assert result.rich_menu == "main", "จบโหมดต้องถอดกลับเมนูหลัก"
+
+
+async def test_end_by_keyword_unlinks_menu() -> None:
+    result = await ai_chat.dispatch(
+        settings(), make_llm(Recorder((200, chat_ok()))),
+        db_with_session(session_row()), USER_HASH, "ออก",
+    )
+    assert result is not None
+    assert result.rich_menu == "main"
+
+
+async def test_timeout_unlinks_menu() -> None:
+    result = await ai_chat.dispatch(
+        settings(), make_llm(Recorder((200, chat_ok()))),
+        db_with_session(session_row(age_minutes=31)), USER_HASH, "กลับมา",
+    )
+    assert result is not None
+    assert result.rich_menu == "main"
+
+
+async def test_turn_limit_unlinks_menu() -> None:
+    result = await ai_chat.dispatch(
+        settings(), make_llm(Recorder((200, chat_ok()))),
+        db_with_session(session_row(turn_count=20)), USER_HASH, "ถามอีก",
+    )
+    assert result is not None
+    assert result.rich_menu == "main"
+
+
+async def test_llm_error_does_not_switch_menu() -> None:
+    """
+    LLM พัง → ``LlmError`` ทะลุออกไป และ ``RouteResult`` ของ fallback
+    ที่ router สร้างแทนต้อง **ไม่มี** ค่าสลับเมนู — เพราะ session ยังเปิดอยู่
+    ผู้ใช้ควรเห็นใบปรึกษาต่อ ไม่ใช่โดนดึงกลับเมนูหลักระหว่างคุย
+    """
+    with pytest.raises(LlmError):
+        await ai_chat.dispatch(
+            settings(), make_llm(Recorder((200, chat_ok("")))),
+            db_with_session(session_row()), USER_HASH, "ถามต่อ",
+        )
+
+    # และผลลัพธ์ที่ router สร้างแทน (fallback) ไม่มีสัญญาณสลับเมนู
+    result = await bot_router.handle_text(
+        "ถามต่อในโหมด", db_with_session(session_row()),
+        settings=settings(),
+        llm=make_llm(Recorder((200, chat_ok("")))),
+        user_hash=USER_HASH,
+    )
+    assert result.rich_menu is None
+
+
 # ── กัน context บวม ────────────────────────────────────────────────────────
 
 

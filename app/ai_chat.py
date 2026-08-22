@@ -251,6 +251,8 @@ async def dispatch(
             messages=[msg.session_closed_message()],
             answered_by="ai_chat",
             intent_key="ai_session_close",
+            # ออกจากโหมดแล้ว → ถอดใบปรึกษา กลับเมนูหลัก
+            rich_menu="main",
         )
 
     if not _llm_capable(settings, llm, db, user_hash):
@@ -273,6 +275,7 @@ async def dispatch(
                 answered_by="ai_chat",
                 intent_key="ai_session_close",
                 user_id=user_id,
+                rich_menu="main",
             )
         return None
 
@@ -306,6 +309,7 @@ async def dispatch(
                 answered_by="ai_chat",
                 intent_key="ai_session_open",
                 user_id=user_id,
+                rich_menu="consult",
             )
 
         # เข้าโหมดพร้อมคำถามจริง ("ปรึกษา อ่านหนังสือยังไง") — ตอบเลยในรอบเดียว
@@ -346,6 +350,7 @@ async def _in_session_answer(
             answered_by="ai_chat",
             intent_key="ai_session_timeout",
             user_id=user_id,
+            rich_menu="main",
         )
 
     if int(session.get("turn_count") or 0) >= settings.ai_chat_session_max_turns:
@@ -355,6 +360,7 @@ async def _in_session_answer(
             answered_by="ai_chat",
             intent_key="ai_session_turn_limit",
             user_id=user_id,
+            rich_menu="main",
         )
 
     result = await _llm_answer(settings, llm, db, user_id, question)
@@ -415,4 +421,10 @@ async def _llm_answer(
         # บอก app.main ว่าตัว user ถูก ensure แล้ว — จะได้ไม่ ensure ซ้ำ
         # ตอนเขียน chat_logs
         user_id=user_id,
+        # LLM ตอบได้ = ผู้ใช้อยู่ในโหมด (เปิดใหม่หรือคุยต่อ) → ให้เห็น
+        # ใบปรึกษา; ถ้าเปิดอยู่แล้วการ link ซ้ำก็ไม่มีผลข้างเคียง
+        # (ถ้า LLM พังจะโยน LlmError ออกไปก่อนถึงตรงนี้ — ผลลัพธ์ที่
+        # router สร้างแทนจะไม่มีค่านี้ = ไม่สลับเมนู ถูกต้องเพราะ
+        # session ยังเปิดอยู่)
+        rich_menu="consult",
     )

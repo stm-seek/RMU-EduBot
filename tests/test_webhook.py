@@ -788,3 +788,135 @@ async def test_ai_session_postback_opens_mode(monkeypatch: pytest.MonkeyPatch) -
     assert "โหมดปรึกษาเปิดแล้ว" in recorder.json_body()["messages"][0]["text"]
     inserts = [sql for sql, _ in db.calls if "INSERT INTO ai_sessions" in sql]
     assert inserts, "ต้องเปิดแถว ai_sessions"
+
+
+# ── สลับ Rich Menu ตามโหมดปรึกษา (per-user link/unlink) ─────────────────────
+
+CONSULT_MENU_ID = "richmenu-testconsult000000000000000000"
+
+
+async def test_entering_consult_mode_links_the_consult_menu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    เข้าโหมดสำเร็จ (เปิด + ส่งคำตอบ + บันทึก chat_logs สำเร็จแล้ว)
+    → ยิง ``POST /v2/bot/user/{userId}/richmenu/{consultId}`` ผูกใบปรึกษา
+    """
+    from app.llm import LlmClient
+
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((200, {}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 11}})
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+    monkeypatch.setattr(
+        main, "_llm",
+        LlmClient(sending_settings(llm_api_key="k"), Recorder((200, llm_response())).client()),
+    )
+
+    settings = sending_settings(llm_api_key="k", rich_menu_consult_id=CONSULT_MENU_ID)
+    await main.process_event(postback_event("action=ai_session"), settings)
+
+    assert "โหมดปรึกษาเปิดแล้ว" in recorder.json_body()["messages"][0]["text"]
+    assert recorder.paths()[-1] == (
+        f"/v2/bot/user/{TEST_USER_ID}/richmenu/{CONSULT_MENU_ID}"
+    ), "ตอบสำเร็จแล้วต้องผูกใบปรึกษาต่อท้าย"
+    assert recorder.requests[-1].method == "POST"
+    assert recorder.requests[-1].content == b"", "LINE รับตัวเปล่า ไม่ส่ง body"
+
+
+async def test_leaving_consult_mode_unlinks_the_menu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """พิมพ์ "ออก" ระหว่างอยู่ในโหมด → ``DELETE /v2/bot/user/{userId}/richmenu``"""
+    from datetime import datetime, timezone
+
+    from app.llm import LlmClient
+
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((200, {}))
+    db = FakeWriteDatabase(
+        {
+            "RETURNING id": {"id": 5},
+            "JOIN app_users": {
+                "id": 4,
+                "last_active_at": datetime.now(timezone.utc),
+                "turn_count": 1,
+            },
+        }
+    )
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+    monkeypatch.setattr(
+        main, "_llm",
+        LlmClient(sending_settings(llm_api_key="k"), Recorder((200, llm_response())).client()),
+    )
+
+    settings = sending_settings(llm_api_key="k", rich_menu_consult_id=CONSULT_MENU_ID)
+    await main.process_event(message_event("ออก"), settings)
+
+    assert recorder.paths()[-1] == f"/v2/bot/user/{TEST_USER_ID}/richmenu"
+    assert recorder.requests[-1].method == "DELETE"
+
+
+async def test_no_menu_switch_without_consult_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    ยังไม่ได้ตั้ง ``RICH_MENU_CONSULT_ID`` → ฟีเจอร์ปิดทั้งระบบเงียบ ๆ
+    (ผู้ใช้เห็นเมนูหลักตลอด) ต้องไม่ยิง request เมนูออกไป
+    """
+    from app.llm import LlmClient
+
+    from .helpers import FakeWriteDatabase
+
+    recorder = Recorder((200, {}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 11}})
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+    monkeypatch.setattr(
+        main, "_llm",
+        LlmClient(sending_settings(llm_api_key="k"), Recorder((200, llm_response())).client()),
+    )
+
+    # rich_menu_consult_id ว่าง = ค่าเริ่มต้นของ make_settings
+    await main.process_event(
+        postback_event("action=ai_session"), sending_settings(llm_api_key="k")
+    )
+
+    assert recorder.paths() == [REPLY_PATH], "ฟีเจอร์ปิดอยู่ห้ามยิง request เมนู"
+
+
+async def test_menu_link_failure_does_not_break_the_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    LINE ปฏิเสธการผูกเมนู (เช่นลบเมนูทิ้งไปแล้ว) → คำตอบถึงมือผู้ใช้แล้ว
+    และ ``chat_logs`` ถูกเขียนแล้ว ต้องไม่ยกเว้นหลุด (รอบนี้ไม่พังทั้งรอบ)
+    """
+    from datetime import datetime, timezone
+
+    from app.llm import LlmClient
+
+    from .helpers import FakeWriteDatabase
+
+    # reply สำเร็จ, แล้ว DELETE... ไม่ — ใช้เทสเข้าโหมด: [0]=reply 200,
+    # [1]=link เมนู 404 (ตัวสุดท้ายถูกใช้ซ้ำได้)
+    recorder = Recorder((200, {}), (404, {"message": "The rich menu does not exist."}))
+    db = FakeWriteDatabase({"RETURNING id": {"id": 11}})
+    monkeypatch.setattr(main, "_http", recorder.client())
+    monkeypatch.setattr(main, "_db", db)
+    monkeypatch.setattr(
+        main, "_llm",
+        LlmClient(sending_settings(llm_api_key="k"), Recorder((200, llm_response())).client()),
+    )
+
+    settings = sending_settings(llm_api_key="k", rich_menu_consult_id=CONSULT_MENU_ID)
+    await main.process_event(postback_event("action=ai_session"), settings)
+
+    # คำตอบถูกส่งแล้ว + เมนูพยายามยิงแล้ว (404) แต่ไม่พัง
+    assert recorder.paths()[0] == REPLY_PATH
+    assert recorder.paths()[-1].endswith(CONSULT_MENU_ID)
+    # chat_logs ต้องถูกเขียนด้วยสถานะส่งสำเร็จ — เมนูพังห้ามลบบันทึกวัดผล
+    params = db.executed_for("INSERT INTO chat_logs")
+    assert params is not None

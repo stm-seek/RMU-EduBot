@@ -22,7 +22,9 @@ from app.line import messages as msg
 from app.line import rich_menu as rm
 
 MENU = rm.build_rich_menu()
+CONSULT_MENU = rm.build_consult_rich_menu()
 MENU_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "rich_menu.png"
+CONSULT_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "rich_menu_consult.png"
 
 
 def _png(width: int, height: int, padding: int = 0) -> bytes:
@@ -214,3 +216,74 @@ def test_jpeg_size_is_read_from_the_sof_marker() -> None:
 def test_other_formats_are_rejected_by_magic_bytes_not_extension() -> None:
     with pytest.raises(ValueError, match="PNG กับ JPEG"):
         rm.image_size(b"GIF89a" + b"\x00" * 20)
+
+
+# ── ใบโหมดปรึกษา (สลับตามโหมด) ─────────────────────────────────────────────
+
+
+def test_consult_menu_has_two_slots_with_real_handlers() -> None:
+    """
+    คนในโหมดต้องการแค่ "ทางออก" กับ "ทางกลับ" — ปุ่มอื่นชวนเผลอออกโหมด
+    ทั้งสอง action ต้องมีใน ``POSTBACK_HANDLERS`` อยู่แล้ว (ai_end/menu)
+    """
+    assert len(CONSULT_MENU["areas"]) == len(rm.CONSULT_SLOTS) == 2
+    assert len(CONSULT_MENU["areas"]) <= 20
+    assert len(CONSULT_MENU["name"]) <= 300
+    assert len(CONSULT_MENU["chatBarText"]) <= 14
+    assert CONSULT_MENU["selected"] is False
+    for _, action in rm.CONSULT_SLOTS:
+        assert action in bot_router.POSTBACK_HANDLERS, action
+
+
+def test_consult_slots_match_the_artwork() -> None:
+    """
+    ภาพ ``assets/rich_menu_consult.png`` วาง "จบการปรึกษา" ไว้ซ้าย
+    "เมนูหลัก" ไว้ขวา — สลับสองบรรทัดในโค้ดโดยไม่วาดภาพใหม่
+    = ปุ่มตอบผิดช่องทั้งใบ
+    """
+    assert rm.CONSULT_SLOTS == (
+        ("จบการปรึกษา", "ai_end"),
+        ("เมนูหลัก", "menu"),
+    )
+
+
+def test_consult_slots_are_tagged_rich_menu() -> None:
+    for area in CONSULT_MENU["areas"]:
+        params = bot_router.parse_postback_data(area["action"]["data"])
+        assert params["src"] == "rich", area["action"]["data"]
+        assert bot_router._answer_surface(params) == "rich_menu"
+
+
+def test_consult_slots_split_the_card_zone_in_half() -> None:
+    """
+    แบ่งโซนการ์ด (y=133..758) เป็นสองครึ่งพอดิบพอดี — ไม่มีร่อง
+    ไม่ทับ และไม่ล้ำแถบหัว/ท้ายเหมือนใบหลัก
+    """
+    left, right = (area["bounds"] for area in CONSULT_MENU["areas"])
+    assert left["x"] == 0 and right["x"] == rm.MENU_WIDTH // 2
+    assert left["x"] + left["width"] == right["x"], "ช่องซ้ายต้องชนช่องขวาพอดี"
+    assert right["x"] + right["width"] == rm.MENU_WIDTH
+    for bounds in (left, right):
+        assert bounds["y"] == rm.ROW_EDGES[0]
+        assert bounds["y"] + bounds["height"] == rm.ROW_EDGES[-1]
+
+
+def test_consult_cell_bounds_rejects_bad_index() -> None:
+    with pytest.raises(ValueError):
+        rm.consult_cell_bounds(2)
+
+
+def test_consult_menu_is_not_a_default_menu() -> None:
+    """
+    docstring ของ :func:`build_consult_rich_menu` ห้ามตั้งเป็น ``user/all`` —
+    ตรวจจากนิยาม: ``selected`` ต้อง False เสมอ (การสลับใช้ per-user link)
+    """
+    assert CONSULT_MENU["selected"] is False
+
+
+def test_shipped_consult_image_passes_line_limits() -> None:
+    """ภาพใบปรึกษาต้องอยู่ใน repo + ผ่าน ``image_problems`` ทุกข้อ"""
+    assert CONSULT_IMAGE.exists(), f"ไม่พบภาพ {CONSULT_IMAGE}"
+    mime, problems = rm.image_problems(CONSULT_IMAGE.read_bytes())
+    assert mime == "image/png"
+    assert problems == []

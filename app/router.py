@@ -93,6 +93,12 @@ class RouteResult:
     # id ใน ``app_users`` ถ้า router รู้แล้ว (เช่น ai_chat ที่ต้อง ensure_user
     # อยู่แล้ว) — ``app.main`` จะได้ไม่ต้อง ensure ซ้ำตอนเขียน ``chat_logs``
     user_id: int | None = None
+    # สัญญาณสลับ Rich Menu ของผู้ใช้นี้: ``"consult"`` = ผูกใบโหมดปรึกษา
+    # ``"main"`` = ถอดกลับเมนูหลัก ``None`` = ไม่สลับ — ``app.main``
+    # อ่านค่านี้หลังส่งคำตอบสำเร็จแล้วเรียก ``link_rich_menu``/
+    # ``unlink_rich_menu`` (ไม่เดาจาก ``intent_key`` เพราะบางค่าเช่น
+    # ``ai_chat`` ต้องดูบริบทเพิ่มว่าเปิด session ในรอบนี้หรือไม่)
+    rich_menu: str | None = None
 
 
 def parse_postback_data(data: str) -> dict[str, str]:
