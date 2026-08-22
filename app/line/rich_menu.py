@@ -161,15 +161,18 @@ def build_rich_menu() -> dict:
 CONSULT_MENU_NAME = "RMU CS Assistant — โหมดปรึกษา AI"
 CONSULT_CHAT_BAR_TEXT = "ปรึกษา AI"
 
-# 2 ปุ่มแบ่งครึ่งโซนการ์ดของใบหลัก (y=133..758) พอดี — แถบหัว/ท้าย
-# เจตนาปล่อยให้กดไม่ได้เหมือนใบหลัก และปุ่มทั้งสองมี handler ใน
-# ``POSTBACK_HANDLERS`` อยู่แล้ว (ai_end / menu) ไม่ต้องเพิ่มโค้ดฝั่ง router
+# 2 ปุ่มแบ่งครึ่งโซนการ์ดของใบปรึกษาเอง — ภาพปัจจุบันเป็น artwork จากผู้ใช้
+# (ไม่ใช่ภาพที่สคริปต์ Pillow วาด) พิกัดวัดจากไฟล์ภาพจริงเหมือนใบหลัก:
+# การ์ดซ้าย x=10..595 / การ์ดขวา x=605..1189 และการ์ด y=164..729
+# เส้นแบ่งปุ่มวางกลางร่อง (x=600) แถบหัว/ท้ายเจตนาปล่อยให้กดไม่ได้
+# และปุ่มทั้งสองมี handler ใน ``POSTBACK_HANDLERS`` อยู่แล้ว (ai_end / menu)
 CONSULT_SLOTS: tuple[tuple[str, str], ...] = (
     ("จบการปรึกษา", "ai_end"),
     ("เมนูหลัก", "menu"),
 )
 
 CONSULT_COLUMN_EDGES: tuple[int, ...] = (0, MENU_WIDTH // 2, MENU_WIDTH)
+CONSULT_ROW_EDGES: tuple[int, ...] = (164, 729)
 
 
 def consult_cell_bounds(index: int) -> dict[str, int]:
@@ -177,15 +180,15 @@ def consult_cell_bounds(index: int) -> dict[str, int]:
     พิกัดช่องของใบปรึกษา (0 = ซ้าย, 1 = ขวา) — ครึ่งซ้าย/ขวาของโซนการ์ด
 
     >>> consult_cell_bounds(0)
-    {'x': 0, 'y': 133, 'width': 600, 'height': 625}
+    {'x': 0, 'y': 164, 'width': 600, 'height': 565}
     >>> consult_cell_bounds(1)
-    {'x': 600, 'y': 133, 'width': 600, 'height': 625}
+    {'x': 600, 'y': 164, 'width': 600, 'height': 565}
     """
     if not 0 <= index < len(CONSULT_SLOTS):
         raise ValueError(f"ช่องที่ {index} อยู่นอกตารางใบปรึกษา")
 
     x, right = CONSULT_COLUMN_EDGES[index], CONSULT_COLUMN_EDGES[index + 1]
-    y, bottom = ROW_EDGES[0], ROW_EDGES[-1]
+    y, bottom = CONSULT_ROW_EDGES[0], CONSULT_ROW_EDGES[-1]
     return {"x": x, "y": y, "width": right - x, "height": bottom - y}
 
 

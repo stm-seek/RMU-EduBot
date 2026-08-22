@@ -256,16 +256,16 @@ def test_consult_slots_are_tagged_rich_menu() -> None:
 
 def test_consult_slots_split_the_card_zone_in_half() -> None:
     """
-    แบ่งโซนการ์ด (y=133..758) เป็นสองครึ่งพอดิบพอดี — ไม่มีร่อง
-    ไม่ทับ และไม่ล้ำแถบหัว/ท้ายเหมือนใบหลัก
+    แบ่งโซนการ์ดของใบปรึกษา (y=164..729 วัดจาก artwork) เป็นสองครึ่งพอดี —
+    ไม่ทับ ไม่ล้ำแถบหัว/ท้าย และเส้นแบ่งอยู่กลางร่องระหว่างการ์ด (x=600)
     """
     left, right = (area["bounds"] for area in CONSULT_MENU["areas"])
     assert left["x"] == 0 and right["x"] == rm.MENU_WIDTH // 2
     assert left["x"] + left["width"] == right["x"], "ช่องซ้ายต้องชนช่องขวาพอดี"
     assert right["x"] + right["width"] == rm.MENU_WIDTH
     for bounds in (left, right):
-        assert bounds["y"] == rm.ROW_EDGES[0]
-        assert bounds["y"] + bounds["height"] == rm.ROW_EDGES[-1]
+        assert bounds["y"] == rm.CONSULT_ROW_EDGES[0]
+        assert bounds["y"] + bounds["height"] == rm.CONSULT_ROW_EDGES[-1]
 
 
 def test_consult_cell_bounds_rejects_bad_index() -> None:

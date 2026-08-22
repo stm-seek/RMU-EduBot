@@ -1,10 +1,14 @@
 """
 สร้างภาพ Rich Menu ใบโหมดปรึกษา (assets/rich_menu_consult.png)
 
+**ภาพที่ส่งมอบจริงตั้งแต่ 23 ส.ค. 2026 เป็น artwork จากผู้ใช้** — สคริปต์นี้
+เหลือไว้สำหรับ ``--check`` (ตรวจภาพที่มีอยู่) และเป็นแบบวาดสำรองสไตล์เดิม
+การวาดทับต้องส่ง ``--force`` ด้วยเพื่อไม่ให้เผลอไปทับ artwork ของผู้ใช้
+
 เรียกซ้ำได้:
 
     set PYTHONUTF8=1
-    python scripts/make_consult_image.py            # วาดภาพ
+    python scripts/make_consult_image.py            # วาดภาพ (ต้องมี --force ถ้ามีภาพอยู่)
     python scripts/make_consult_image.py --check    # ตรวจว่าภาพที่มียังใช้ได้
 
 โทนสี/โครงยึดจาก ``assets/rich_menu.png`` ใบหลัก (navy #012D71 + การ์ดเด่น)
@@ -129,6 +133,12 @@ def main() -> None:
                 print("  -", problem)
             sys.exit(1)
         return
+
+    if OUT_PATH.exists() and "--force" not in sys.argv:
+        raise SystemExit(
+            f"{OUT_PATH.name} มีอยู่แล้ว (เป็น artwork จากผู้ใช้) — "
+            "ถ้าตั้งใจวาดทับจริง ๆ เพิ่ม --force"
+        )
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     image = build()
