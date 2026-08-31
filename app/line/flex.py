@@ -1,9 +1,19 @@
 """
-สร้าง Flex Message — รายการเอกสารของหนึ่งหมวดใน **ฟองเดียว** (แถวเรียงลง)
+สร้าง Flex Message — รายการต่าง ๆ ใน **ฟองเดียว** (แถวเรียงลง)
 
 ออกแบบตามแบบที่ผู้ใช้เลือกเอง (23 ส.ค. 2026): หัวฟองน้ำเงินบอกชื่อหมวด
 ตัวฟองเป็นแถวเอกสาร แถวละฉบับ (ไอคอน · ชื่อ · ชนิดไฟล์ · ปุ่ม ›)
 แตะแถวไหนเปิดเอกสารนั้นทั้งแถว — ไม่ต้องเลื่อนดูทีละการ์ด
+
+ตอนนี้ใช้แบบเดียวกันกับห้าเรื่อง (31 ส.ค. 2026) — เอกสารในหมวด, ผลค้นเอกสาร,
+รายชื่ออาจารย์, ผลค้นอาจารย์, ความก้าวหน้า/วิชาเทอมถัดไป
+
+**ทุกอย่างเป็นฟองเดียว ไม่ใช้ carousel** (ผู้ใช้สั่งไว้): ฟองเดียวอ่านจบใน
+หน้าจอเดียว ไม่ต้องปัดข้าง และไม่ต้องกังวลเพดานจำนวนฟองของ LINE
+
+ไฟล์นี้**รู้จักแค่การจัดหน้า** ไม่รู้จัก DB หรือ router — ``action`` ของแถว
+ผู้เรียกส่งเข้ามาเอง (คีย์ ``action`` ในแต่ละ row) เพื่อไม่ให้ layer นี้
+ต้องรู้รูปแบบ postback ของ router
 
 ข้อจำกัดที่ยืนยันจากเอกสาร LINE:
 
@@ -33,6 +43,7 @@ FLEX_COLOR_ROW_BG = "#F4F7FC"      # พื้นแถวเอกสาร
 FLEX_COLOR_INK = "#12345B"         # น้ำเงินเข้ม — ชื่อเอกสาร
 FLEX_COLOR_STEEL = "#667085"       # เทาเหล็ก — คำอธิบาย + เท้าฟอง
 FLEX_COLOR_FOOTER_BG = "#F8FAFC"   # พื้นเท้าฟอง
+FLEX_COLOR_TRACK = "#DCE4F2"       # รางของแถบความก้าวหน้า (ส่วนที่ยังไม่ผ่าน)
 FLEX_COLOR_WHITE = "#FFFFFF"
 
 # ── ไอคอน (ตัวอักษรเดียว ไม่เอาจากข้างนอก — ใช้ซ้ำได้ทั้งเครื่อง) ─────────────
@@ -146,6 +157,20 @@ def _alt_text(category_label: str, rows: list[dict]) -> str:
 
 
 def _header(category_label: str, total: int, category_key: str) -> dict:
+    return bubble_header(
+        category_icon(category_key),
+        category_label,
+        f"{total} ฉบับ · เลือกเอกสารที่ต้องการ",
+    )
+
+
+def bubble_header(icon: str, title: str, subtitle: str) -> dict:
+    """
+    หัวฟองน้ำเงิน — ไอคอน+ชื่อเรื่องบรรทัดแรก คำอธิบายสั้นบรรทัดที่สอง
+
+    แยกออกมาเพื่อให้ฟองทุกชนิด (เอกสาร/อาจารย์/ความก้าวหน้า) ใช้หัวเดียวกัน
+    ไม่ใช่ต่างคนต่างจัด แล้วสีกับระยะเพี้ยนกันทีละฟอง
+    """
     return {
         "type": "box",
         "layout": "vertical",
@@ -154,28 +179,33 @@ def _header(category_label: str, total: int, category_key: str) -> dict:
         "contents": [
             {
                 "type": "text",
-                "text": f"{category_icon(category_key)}  {category_label}",
+                "text": f"{icon}  {title}" if icon else title,
                 "color": FLEX_COLOR_WHITE,
                 "weight": "bold",
                 "size": "xl",
+                "wrap": True,
             },
             {
                 "type": "text",
-                "text": f"{total} ฉบับ · เลือกเอกสารที่ต้องการ",
+                "text": subtitle,
                 "color": FLEX_COLOR_HEADER_SUB,
                 "size": "sm",
                 "margin": "4px",
+                "wrap": True,
             },
         ],
     }
 
 
-def document_row(row: dict) -> dict:
+def document_row(row: dict, *, subtitle: str = "") -> dict:
     """
     แถวเอกสาร 1 แถว: ไอคอน · ชื่อ + ชนิดไฟล์ · วงปุ่ม ›
 
     ``action`` ตั้งบนกล่องแถวเลย → แตะตรงไหนของแถวก็เปิดเอกสาร
     ปุ่ม › ด้านขวาเป็นแค่สัญญาณว่าแถวนี้กดได้
+
+    ``subtitle`` เขียนทับบรรทัดล่าง (ปกติเป็นชนิดไฟล์) — ผลค้นหาใช้ช่องนี้
+    บอกหมวดด้วย เพราะผลค้นคาบหลายหมวด ต่างจากรายการในหมวดเดียว
     """
     return {
         "type": "box",
@@ -207,7 +237,7 @@ def document_row(row: dict) -> dict:
                     },
                     {
                         "type": "text",
-                        "text": document_kind(row["url"]),
+                        "text": subtitle or document_kind(row["url"]),
                         "color": FLEX_COLOR_STEEL,
                         "size": "xs",
                         "margin": "3px",
@@ -251,6 +281,11 @@ def _hidden_notice(shown_count: int, total: int) -> dict:
 
 
 def _footer() -> dict:
+    return bubble_footer("💡 แตะที่รายการเพื่อเปิดเอกสาร")
+
+
+def bubble_footer(text: str) -> dict:
+    """เท้าฟอง — คำใบ้หนึ่งบรรทัดว่าทำอะไรกับฟองนี้ได้"""
     return {
         "type": "box",
         "layout": "horizontal",
@@ -259,10 +294,11 @@ def _footer() -> dict:
         "contents": [
             {
                 "type": "text",
-                "text": "💡 แตะที่รายการเพื่อเปิดเอกสาร",
+                "text": text,
                 "color": FLEX_COLOR_STEEL,
                 "size": "xs",
                 "align": "center",
+                "wrap": True,
                 "flex": 1,
             }
         ],
@@ -318,3 +354,433 @@ def uri_action(label: str, uri: str) -> dict:
         "label": truncate(label, 20),
         "uri": encoded,
     }
+
+
+# ── ชิ้นส่วนแถวที่ฟองชนิดใหม่ใช้ร่วมกัน ────────────────────────────────────────
+#
+# แถวของทุกฟองหน้าตาเหมือนแถวเอกสาร (พื้นอ่อน มุมโค้ง) ต่างกันแค่ข้างใน
+# เขียนเป็นชิ้นเล็กแล้วประกอบ ดีกว่าก๊อป dict ยาว ๆ ไปทีละฟอง
+
+
+def _row_shell(contents: list[dict], action: dict | None = None) -> dict:
+    """กล่องแถว — พื้นอ่อน มุมโค้ง กดได้ทั้งแถวถ้ามี ``action``"""
+    row: dict = {
+        "type": "box",
+        "layout": "horizontal",
+        "backgroundColor": FLEX_COLOR_ROW_BG,
+        "cornerRadius": "10px",
+        "paddingAll": "13px",
+        "contents": contents,
+    }
+    if action:
+        row["action"] = action
+    return row
+
+
+def _row_number(index: int) -> dict:
+    """เลขลำดับหน้าแถว — แทนที่ ``1.`` ``2.`` ของคำตอบแบบข้อความเดิม"""
+    return {
+        "type": "text",
+        "text": str(index),
+        "color": FLEX_COLOR_BRAND,
+        "weight": "bold",
+        "size": "sm",
+        "flex": 0,
+        "align": "center",
+    }
+
+
+def _row_title(text: str) -> dict:
+    return {
+        "type": "text",
+        "text": text,
+        "color": FLEX_COLOR_INK,
+        "weight": "bold",
+        "size": "md",
+        "wrap": True,
+    }
+
+
+def _row_detail(text: str) -> dict:
+    """บรรทัดรายละเอียดใต้ชื่อแถว (อีเมล/ห้อง/หน่วยกิต ฯลฯ)"""
+    return {
+        "type": "text",
+        "text": text,
+        "color": FLEX_COLOR_STEEL,
+        "size": "xs",
+        "wrap": True,
+        "margin": "3px",
+    }
+
+
+def _badge(text: str) -> dict:
+    """ป้ายมุมขวาของแถว — ใช้บอกหน่วยกิต (ไม่ใช่ปุ่ม ไม่กดได้)"""
+    return {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": FLEX_COLOR_BRAND,
+        "cornerRadius": "14px",
+        "paddingAll": "6px",
+        "width": "56px",
+        "justifyContent": "center",
+        "alignItems": "center",
+        "flex": 0,
+        "contents": [
+            {
+                "type": "text",
+                "text": text,
+                "color": FLEX_COLOR_WHITE,
+                "size": "xs",
+                "weight": "bold",
+                "align": "center",
+            }
+        ],
+    }
+
+
+def _note(text: str) -> dict:
+    """
+    บรรทัดหมายเหตุท้ายตัวฟอง — คำเตือนที่ **ห้ามหาย** ตอนย้ายมาเป็น Flex
+
+    เช่น "ยังไม่มีข้อมูลวิชาบังคับก่อน" หรือ "เว็บคณะไม่เผยแพร่เบอร์โทร"
+    ถ้าตัดออกเพราะอยากให้การ์ดสวย นักศึกษาจะเข้าใจผิดว่าข้อมูลครบแล้ว
+    """
+    return {
+        "type": "text",
+        "text": text,
+        "color": FLEX_COLOR_STEEL,
+        "size": "xs",
+        "wrap": True,
+        "margin": "10px",
+    }
+
+
+def _bubble(
+    *,
+    alt_text: str,
+    header: dict,
+    body_contents: list[dict],
+    footer_text: str,
+    quick_reply: dict | None = None,
+) -> dict:
+    """ประกอบฟองมาตรฐาน — หัวน้ำเงิน · ตัวเป็นแถว · เท้าเป็นคำใบ้หนึ่งบรรทัด"""
+    message: dict = {
+        "type": "flex",
+        "altText": truncate(alt_text, MAX_ALT_TEXT_LENGTH),
+        "contents": {
+            "type": "bubble",
+            "size": "mega",
+            "header": header,
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "paddingAll": "14px",
+                "spacing": "sm",
+                "contents": body_contents,
+            },
+            "footer": bubble_footer(footer_text),
+        },
+    }
+    if quick_reply:
+        message["quickReply"] = quick_reply
+    return message
+
+
+def _rows_and_notes(
+    rows: list[dict], total: int, notes: tuple[str, ...] | list[str] = ()
+) -> list[dict]:
+    """แถวที่แสดง + บรรทัดบอกจำนวนที่ถูกตัด + หมายเหตุ (ตัดว่างออกให้)"""
+    contents = list(rows)
+    if total > len(rows):
+        contents.append(_hidden_notice(len(rows), total))
+    contents.extend(_note(text) for text in notes if text)
+    return contents
+
+
+# ── ฟอง 2: ผลค้นหาเอกสาร ────────────────────────────────────────────────────
+
+
+def document_search_flex_message(
+    keyword: str, rows: list[dict], quick_reply: dict | None = None
+) -> dict:
+    """
+    ผลค้นเอกสาร — ข้อมูลชนิดเดียวกับรายการในหมวด จึงใช้ :func:`document_row` ซ้ำ
+
+    ต่างกันที่บรรทัดล่างของแถว: ผลค้นคาบหลายหมวด จึงบอกหมวดต่อท้ายชนิดไฟล์
+    (ผู้เรียกใส่ชื่อหมวดไทยมาในคีย์ ``category_label`` — ไฟล์นี้ไม่รู้จักแมป
+    ชื่อหมวด นั่นเป็นเรื่องของ router)
+    """
+    shown, total = rows[:MAX_ROWS], len(rows)
+    body = [document_row(row, subtitle=_search_row_subtitle(row)) for row in shown]
+
+    return _bubble(
+        alt_text=_search_alt_text(keyword, f"เอกสาร {total} ฉบับ", rows, "title"),
+        header=bubble_header(
+            "🔎",
+            f"ผลค้น “{truncate(keyword, 30)}”",
+            f"เจอเอกสาร {total} ฉบับ",
+        ),
+        body_contents=_rows_and_notes(body, total),
+        footer_text="💡 แตะที่รายการเพื่อเปิดเอกสาร · ปุ่มล่างดูทั้งหมดในหมวดนั้น",
+        quick_reply=quick_reply,
+    )
+
+
+def _search_row_subtitle(row: dict) -> str:
+    """ชนิดไฟล์ · หมวด — ข้ามส่วนที่ไม่มีข้อมูล ไม่เว้น ` · ` ค้างไว้"""
+    parts = [document_kind(row["url"]), row.get("category_label") or ""]
+    return " · ".join(part for part in parts if part)
+
+
+def _search_alt_text(keyword: str, found: str, rows: list[dict], key: str) -> str:
+    """altText ของผลค้น — บอกคำค้น จำนวนที่เจอ และรายการแรก"""
+    parts = [f"ผลค้น “{keyword}” {found}"]
+    if rows:
+        parts.append(f"เริ่มจาก {rows[0].get(key) or ''}".strip())
+    return " · ".join(parts)
+
+
+# ── ฟอง 3: รายชื่ออาจารย์ (ทั้งกลุ่ม / ผลค้น) ────────────────────────────────
+#
+# **ไม่มี action บนแถว** ต่างจากแถวเอกสาร เพราะยังไม่มีลิงก์ต่อคนให้กด และ
+# ``uri`` ของ LINE รับเฉพาะ http/https/tel/line — ``mailto:`` ไม่อยู่ในนั้น
+# ปุ่มอีเมลจึงเสี่ยงถูกปฏิเสธ 400 ทั้งข้อความแบบเดียวกับบั๊กชื่อไฟล์ไทย
+# (ดู :func:`_encode_uri`) เอาอีเมลขึ้นเป็นข้อความในแถวปลอดภัยกว่า
+
+
+def instructor_row(index: int, row: dict) -> dict:
+    """
+    แถวอาจารย์: เลขลำดับ · ชื่อ · ตำแหน่ง/อีเมล/ห้อง/เวลาเข้าพบ
+
+    ``email`` ที่ว่างต้องเขียนว่า "ไม่มีข้อมูลในระบบ" ไม่ใช่เว้นบรรทัดหาย —
+    เหตุผลเดียวกับคำตอบแบบข้อความเดิม (เว้นว่างแล้วดูเหมือนระบบโหลดไม่ครบ)
+    """
+    details = [f"อีเมล: {row.get('email') or 'ไม่มีข้อมูลในระบบ'}"]
+    if row.get("position"):
+        details.insert(0, str(row["position"]))
+    if row.get("room"):
+        details.append(f"ห้อง: {row['room']}")
+    if row.get("office_hours"):
+        details.append(f"เวลาเข้าพบ: {row['office_hours']}")
+
+    return _row_shell(
+        [
+            _row_number(index),
+            {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 1,
+                "margin": "10px",
+                "contents": [
+                    _row_title(row.get("name") or "(ไม่มีชื่อในคลังข้อมูล)"),
+                    *[_row_detail(text) for text in details],
+                ],
+            },
+        ]
+    )
+
+
+def instructors_flex_message(
+    group_label: str,
+    rows: list[dict],
+    quick_reply: dict | None = None,
+    *,
+    notes: tuple[str, ...] | list[str] = (),
+) -> dict:
+    """รายชื่ออาจารย์ของหนึ่งกลุ่มวิชา — ฟองเดียว แถวละคน"""
+    shown, total = rows[:MAX_ROWS], len(rows)
+    body = [instructor_row(i, row) for i, row in enumerate(shown, start=1)]
+
+    parts = [f"อาจารย์กลุ่ม{group_label} {total} คน"]
+    if rows:
+        parts.append(f"เริ่มจาก {rows[0].get('name') or ''}".strip())
+
+    return _bubble(
+        alt_text=" · ".join(parts),
+        header=bubble_header("👥", f"อาจารย์กลุ่ม{group_label}", f"{total} คน"),
+        body_contents=_rows_and_notes(body, total, notes),
+        footer_text="💡 กดปุ่มด้านล่างเพื่อดูกลุ่มอื่น",
+        quick_reply=quick_reply,
+    )
+
+
+def instructor_search_flex_message(
+    keyword: str,
+    rows: list[dict],
+    quick_reply: dict | None = None,
+    *,
+    notes: tuple[str, ...] | list[str] = (),
+) -> dict:
+    """ผลค้นอาจารย์ — แถวเดียวกับรายชื่อทั้งกลุ่ม ต่างแค่หัวฟองบอกคำค้น"""
+    shown, total = rows[:MAX_ROWS], len(rows)
+    body = [instructor_row(i, row) for i, row in enumerate(shown, start=1)]
+
+    return _bubble(
+        alt_text=_search_alt_text(keyword, f"อาจารย์ {total} คน", rows, "name"),
+        header=bubble_header(
+            "🔎", f"ผลค้น “{truncate(keyword, 30)}”", f"เจออาจารย์ {total} คน"
+        ),
+        body_contents=_rows_and_notes(body, total, notes),
+        footer_text="💡 ดูรายชื่อทั้งกลุ่มได้จากปุ่มด้านล่าง",
+        quick_reply=quick_reply,
+    )
+
+
+# ── ฟอง 4-5: ความก้าวหน้า / วิชาเทอมถัดไป ───────────────────────────────────
+
+
+def progress_bar(percent: int) -> dict:
+    """
+    แถบความก้าวหน้า — สิ่งที่คำตอบแบบข้อความทำไม่ได้ (เห็นทีเดียวว่าไปถึงไหน)
+
+    ``percent`` ถูกบีบให้อยู่ 0-100 ก่อนใช้ เพราะ ``width`` ของ box รับเป็น
+    เปอร์เซ็นต์ — ค่าเกิน 100% หรือค่าลบทำให้ LINE ปฏิเสธทั้งข้อความ
+    และที่ 0% ไม่ใส่แท่งเลย (แท่งกว้าง 0 ขึ้นเป็นเส้นทึบบางรุ่น)
+    """
+    filled = max(0, min(100, int(percent)))
+    track: dict = {
+        "type": "box",
+        "layout": "horizontal",
+        "backgroundColor": FLEX_COLOR_TRACK,
+        "cornerRadius": "6px",
+        "height": "12px",
+        "contents": [{"type": "filler"}],
+    }
+    if filled:
+        track["contents"] = [
+            {
+                "type": "box",
+                "layout": "vertical",
+                "backgroundColor": FLEX_COLOR_BRAND,
+                "cornerRadius": "6px",
+                "width": f"{filled}%",
+                "contents": [{"type": "filler"}],
+            },
+            {"type": "filler"},
+        ]
+    return track
+
+
+def course_row(row: dict) -> dict:
+    """
+    แถวรายวิชา: ชื่อวิชา · รหัส+เทอมที่แผนแนะนำ · ป้ายหน่วยกิตมุมขวา
+
+    ``row`` เป็น dict ล้วน (``code`` / ``name`` / ``credits`` / ``term`` /
+    ``note`` / ``action``) ไม่ใช่ ``planner.CourseStatus`` — ไฟล์นี้ไม่ควรรู้จัก
+    ชนิดข้อมูลของ planner และ ``action`` ผู้เรียกส่งมาเอง (ดู docstring หัวไฟล์)
+    """
+    details = [text for text in [row.get("code"), row.get("term")] if text]
+    lines = [_row_title(row.get("name") or "(ยังไม่มีชื่อวิชาในคลังข้อมูล)")]
+    if details:
+        lines.append(_row_detail(" · ".join(str(text) for text in details)))
+    if row.get("note"):
+        lines.append(_row_detail(str(row["note"])))
+
+    contents: list[dict] = [
+        {
+            "type": "box",
+            "layout": "vertical",
+            "flex": 1,
+            "contents": lines,
+        }
+    ]
+    if row.get("credits"):
+        contents.append(_badge(f"{row['credits']} นก."))
+
+    return _row_shell(contents, row.get("action"))
+
+
+def progress_flex_message(
+    *,
+    program_code: str,
+    percent: int,
+    passed_courses: int,
+    plan_courses: int,
+    passed_credits: int,
+    remaining_headline: str,
+    stats: tuple[str, ...] | list[str] = (),
+    course_rows: list[dict],
+    notes: tuple[str, ...] | list[str] = (),
+    quick_reply: dict | None = None,
+) -> dict:
+    """
+    ภาพรวมความก้าวหน้าตามหลักสูตร — แถบ % ด้านบน แล้วรายการวิชาที่เหลือ
+
+    ตัวเลขทั้งหมดผู้เรียกคำนวณมาแล้ว (``app/planner.py``) ไฟล์นี้ไม่คิดเลขเอง
+    """
+    shown, total = course_rows[:MAX_ROWS], len(course_rows)
+    summary: list[dict] = [
+        {
+            "type": "text",
+            "text": f"{int(percent)}%",
+            "color": FLEX_COLOR_BRAND,
+            "weight": "bold",
+            "size": "xxl",
+        },
+        progress_bar(percent),
+        _row_detail(
+            f"ผ่านแล้ว {passed_courses}/{plan_courses} วิชา"
+            f" · {passed_credits} หน่วยกิต"
+        ),
+    ]
+    summary.extend(_row_detail(text) for text in stats if text)
+
+    body: list[dict] = [
+        {
+            "type": "box",
+            "layout": "vertical",
+            "paddingAll": "13px",
+            "backgroundColor": FLEX_COLOR_ROW_BG,
+            "cornerRadius": "10px",
+            "contents": summary,
+        },
+        _row_detail(remaining_headline),
+    ]
+    body.extend(
+        _rows_and_notes([course_row(row) for row in shown], total, notes)
+    )
+
+    return _bubble(
+        alt_text=(
+            f"ความก้าวหน้า {program_code} ผ่านแล้ว {passed_courses}/{plan_courses}"
+            f" วิชา ({int(percent)}%) · {remaining_headline}"
+        ),
+        header=bubble_header(
+            "📈",
+            "ความก้าวหน้าตามหลักสูตร",
+            f"หลักสูตร {program_code}",
+        ),
+        body_contents=body,
+        footer_text="💡 กด “เทอมหน้าลงอะไรดี” เพื่อดูวิชาที่ควรลงต่อ",
+        quick_reply=quick_reply,
+    )
+
+
+def next_term_flex_message(
+    *,
+    semester: int,
+    course_count: int,
+    credits: int,
+    max_credits: int,
+    course_rows: list[dict],
+    notes: tuple[str, ...] | list[str] = (),
+    quick_reply: dict | None = None,
+) -> dict:
+    """ตะกร้าวิชาที่เสนอให้ลงเทอมถัดไป — แถวละวิชา ป้ายหน่วยกิตมุมขวา"""
+    shown, total = course_rows[:MAX_ROWS], len(course_rows)
+    body = [course_row(row) for row in shown]
+
+    return _bubble(
+        alt_text=(
+            f"วิชาแนะนำภาคเรียนที่ {semester} {course_count} วิชา"
+            f" {credits} หน่วยกิต"
+        ),
+        header=bubble_header(
+            "🗓️",
+            f"วิชาแนะนำ ภาคเรียนที่ {semester}",
+            f"{course_count} วิชา {credits} หน่วยกิต · เพดานที่ใช้คิด {max_credits}",
+        ),
+        body_contents=_rows_and_notes(body, total, notes),
+        footer_text="💡 ตัวเลขคำนวณจากแผนการเรียน ไม่ใช่การลงทะเบียนจริง",
+        quick_reply=quick_reply,
+    )

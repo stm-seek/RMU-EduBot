@@ -16,7 +16,7 @@ import pytest
 from app import progress as prog
 from app import router
 
-from .helpers import FakeDatabase, assert_line_limits, make_settings
+from .helpers import FakeDatabase, assert_line_limits, flex_body_text, make_settings
 
 USER_HASH = "hash-for-test"
 
@@ -214,7 +214,7 @@ async def test_overview_reports_numbers_from_the_database(settings) -> None:
     result = await router.handle_postback(
         "action=progress", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
     )
-    text = result.messages[0]["text"]
+    text = flex_body_text(result.messages[0])
 
     assert "ผ่านแล้ว 1/2 วิชา" in text
     assert "3 หน่วยกิต" in text
@@ -232,7 +232,7 @@ async def test_answer_warns_that_prerequisites_are_unknown(settings) -> None:
         "action=progress", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
     )
 
-    assert "แผนการเรียนแนะนำ" in result.messages[0]["text"]
+    assert "แผนการเรียนแนะนำ" in flex_body_text(result.messages[0])
 
 
 @pytest.mark.asyncio
@@ -283,7 +283,7 @@ async def test_next_term_lists_only_courses_open_that_semester(settings) -> None
         settings=settings,
         user_hash=USER_HASH,
     )
-    text = result.messages[0]["text"]
+    text = flex_body_text(result.messages[0])
 
     assert "ภาคเรียนที่ 1" in text
     assert "2000001" in text

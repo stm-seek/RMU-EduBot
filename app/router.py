@@ -621,22 +621,14 @@ async def _instructors_answer(db: SupportsQuery | None, group: str) -> RouteResu
     if not rows:
         return _no_data(f"อาจารย์กลุ่ม{group}", intent)
 
-    lines: list[str] = []
-    for index, row in enumerate(rows, start=1):
-        lines.append(f"{index}. {_instructor_name(row)}")
-        if row.get("position"):
-            lines.append(f"   ตำแหน่ง: {row['position']}")
-        # บอกตรง ๆ เมื่อไม่มีอีเมล ห้ามเว้นว่างให้เข้าใจผิดว่าระบบโหลดไม่ครบ
-        lines.append(f"   อีเมล: {row.get('email') or 'ไม่มีข้อมูลในระบบ'}")
-        if row.get("room"):
-            lines.append(f"   ห้อง: {row['room']}")
-        if row.get("office_hours"):
-            lines.append(f"   เวลาเข้าพบ: {row['office_hours']}")
-
+    # แถวละคนในฟองเดียว (Flex) — ``name`` ต้องผ่าน ``_instructor_name`` ก่อน
+    # ไม่ใช่ส่ง ``full_name`` ดิบ (เหตุผลเรื่องคำนำหน้าซ้ำอยู่ใน docstring ของมัน)
+    # แถวอาจารย์ **ไม่กดได้** เพราะยังไม่มีลิงก์ต่อคน (ดูคอมเมนต์ใน flex.py)
     return RouteResult(
         messages=[
-            msg.text_message(
-                join_lines(f"อาจารย์กลุ่ม{group} ({len(rows)} คน)", lines),
+            flex.instructors_flex_message(
+                group,
+                [{**row, "name": _instructor_name(row)} for row in rows],
                 _menu_quick_reply(msg.postback_action("กลุ่มอื่น", "action=instructors")),
             )
         ],
@@ -1024,26 +1016,22 @@ def _document_search_result(keyword: str, rows: list[dict]) -> RouteResult:
     ``chat_logs`` วัดได้ภายหลังว่าคำถามที่ตอบด้วยชั้นนี้มั่นใจแค่ไหนจริง
     (1.0 = คำค้นอยู่ใน ``keywords``/``title`` แบบตรงตัว)
     """
-    lines: list[str] = []
-    for index, row in enumerate(rows, start=1):
-        lines.append(f"{index}. {row['title']}")
-        lines.append(f"   {row['url']}")
-        lines.append(f"   หมวด: {category_label(row['category'])}")
-
     # dict.fromkeys = unique แบบรักษาลำดับ (เรียงตามคะแนนที่ SQL จัดมาให้แล้ว)
     buttons = [
         msg.postback_action(category_label(category), f"action=documents&cat={category}")
         for category in dict.fromkeys(row["category"] for row in rows)
     ]
 
+    # ฟองเดียว แถวละฉบับ — แตะแถวเปิดเอกสารนั้น (แถวเดียวกับรายการในหมวด)
+    # ``category_label`` ใส่มาให้ flex เพราะไฟล์นั้นไม่รู้จักแมปชื่อหมวดไทย
     return RouteResult(
         messages=[
-            msg.text_message(
-                join_lines(
-                    f"ค้น “{msg.truncate(keyword, 40)}” เจอเอกสาร {len(rows)} ฉบับ",
-                    lines,
-                    "กดลิงก์เพื่อดาวน์โหลด หรือกดปุ่มเพื่อดูทั้งหมดในหมวดนั้นครับ",
-                ),
+            flex.document_search_flex_message(
+                keyword,
+                [
+                    {**row, "category_label": category_label(row["category"])}
+                    for row in rows
+                ],
                 _list_quick_reply(buttons),
             )
         ],
@@ -1061,23 +1049,11 @@ def _instructor_search_result(keyword: str, rows: list[dict]) -> RouteResult:
     ไม่ใส่เบอร์โทรเพราะทั้ง 28 แถวไม่มีข้อมูลเบอร์เลย (ห้ามเว้นบรรทัดว่างไว้
     ให้เข้าใจผิดว่าระบบโหลดไม่ครบ — ดู :func:`_contact_caveat`)
     """
-    lines: list[str] = []
-    for index, row in enumerate(rows, start=1):
-        lines.append(f"{index}. {_instructor_name(row)}")
-        lines.append(f"   อีเมล: {row.get('email') or 'ไม่มีข้อมูลในระบบ'}")
-        if row.get("room"):
-            lines.append(f"   ห้อง: {row['room']}")
-        if row.get("office_hours"):
-            lines.append(f"   เวลาเข้าพบ: {row['office_hours']}")
-
     return RouteResult(
         messages=[
-            msg.text_message(
-                join_lines(
-                    f"ค้น “{msg.truncate(keyword, 40)}” เจออาจารย์ {len(rows)} คน",
-                    lines,
-                    "ดูรายชื่อทั้งกลุ่มได้จากปุ่มด้านล่างครับ",
-                ),
+            flex.instructor_search_flex_message(
+                keyword,
+                [{**row, "name": _instructor_name(row)} for row in rows],
                 _menu_quick_reply(
                     msg.postback_action("อาจารย์ทั้งหมด", "action=instructors")
                 ),

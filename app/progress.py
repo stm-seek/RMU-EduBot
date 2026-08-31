@@ -22,6 +22,7 @@ from . import gpa
 from . import planner
 from . import repository as repo
 from .db import SupportsQuery
+from .line import flex
 from .line import messages as msg
 from .router import RouteResult, join_lines
 
@@ -114,6 +115,39 @@ def course_line(status: planner.CourseStatus, *, with_term: bool = True) -> str:
     return f"  • {term}{course.course_code} {name}{credits}{blocked}"
 
 
+def course_row_data(status: planner.CourseStatus, *, with_term: bool = True) -> dict:
+    """
+    รายวิชาหนึ่งแถวสำหรับ Flex — ฝาแฝดของ :func:`course_line` ฝั่งการ์ด
+
+    ต้องให้ข้อมูลเท่ากับแบบข้อความทุกช่อง (รหัส/ชื่อ/หน่วยกิต/เทอมที่แผนแนะนำ/
+    วิชาที่ต้องผ่านก่อน) ไม่ใช่ตัดทิ้งเพราะการ์ดแคบ
+
+    ``action`` ทำให้แตะแถวแล้วได้รายละเอียดวิชานั้นเลย — เส้นทางเดียวกับที่
+    ผู้ใช้พิมพ์รหัส 7 หลักมาเอง (``action=course&code=...`` ใน router)
+
+    >>> c = planner.PlannedCourse('7071201', 2, 1, name='ระบบฐานข้อมูลเบื้องต้น', credits=3)
+    >>> row = course_row_data(planner.CourseStatus(course=c))
+    >>> row['code'], row['credits'], row['term']
+    ('7071201', 3, 'ปี 2 เทอม 1')
+    >>> row['action']['data']
+    'action=course&code=7071201'
+    """
+    course = status.course
+    row: dict = {
+        "code": course.course_code,
+        "name": msg.truncate(course.name or "(ยังไม่มีชื่อวิชาในคลังข้อมูล)", 60),
+        "credits": course.credits or 0,
+        "term": course.term_label if with_term else "",
+        "action": msg.postback_action(
+            course.course_code, f"action=course&code={course.course_code}"
+        ),
+    }
+    if status.blockers:
+        codes = ", ".join(req.requires_code for req in status.blockers)
+        row["note"] = f"ต้องผ่าน {codes} ก่อน"
+    return row
+
+
 # ── โหลดข้อมูลที่ planner ต้องใช้ ─────────────────────────────────────────────
 
 
@@ -204,32 +238,43 @@ async def progress_answer(
         return need_completed_courses(settings)
     progress, _ = loaded
 
-    header = (
-        f"ความก้าวหน้าตามหลักสูตร {progress.program_code}\n"
-        f"ผ่านแล้ว {len(progress.passed_statuses)}/{progress.plan_courses} วิชา"
-        f" ({progress.percent_complete}%) รวม {progress.passed_credits} หน่วยกิต\n"
-        f"เหลือในแผน {len(progress.remaining)} วิชา"
-        f" {progress.remaining_plan_credits} หน่วยกิต"
-    )
+    # ตัวเลขทั้งชุดไปอยู่บนการ์ด (แถบ % + รายการวิชาที่เหลือ) — ค่าที่เคยอยู่ใน
+    # header ข้อความเดิมต้องไปครบทุกตัว ไม่ใช่เหลือแค่ที่การ์ดใส่สวย
+    stats: list[str] = []
     if progress.total_credits_required:
-        header += (
-            f"\nหลักสูตรกำหนด {progress.total_credits_required} หน่วยกิต"
+        stats.append(
+            f"หลักสูตรกำหนด {progress.total_credits_required} หน่วยกิต"
             f" → ยังต้องเก็บอีกไม่เกิน {progress.credits_left_to_graduate} หน่วยกิต"
         )
     if progress.passed_outside_plan:
-        header += f"\n(มีวิชานอกแผนที่ติ๊กไว้ {len(progress.passed_outside_plan)} วิชา)"
+        stats.append(f"มีวิชานอกแผนที่ติ๊กไว้ {len(progress.passed_outside_plan)} วิชา")
 
-    lines = [course_line(status) for status in progress.remaining]
-    footer = prereq_caveat(progress)
-    if not lines:
-        footer = "เก็บครบทุกวิชาในแผนแล้วครับ 🎉 เหลือตรวจสอบจบกับสำนักส่งเสริมวิชาการฯ"
+    notes = [prereq_caveat(progress)]
+    if not progress.remaining:
+        notes = ["เก็บครบทุกวิชาในแผนแล้วครับ 🎉 เหลือตรวจสอบจบกับสำนักส่งเสริมวิชาการฯ"]
 
     buttons = [
         msg.postback_action("เทอมหน้าลงอะไรดี", "action=progress&next=1"),
         *liff_button(settings, "แก้วิชาที่ผ่าน"),
     ]
     return RouteResult(
-        messages=[msg.text_message(join_lines(header, lines, footer), _menu(*buttons))],
+        messages=[
+            flex.progress_flex_message(
+                program_code=progress.program_code,
+                percent=progress.percent_complete,
+                passed_courses=len(progress.passed_statuses),
+                plan_courses=progress.plan_courses,
+                passed_credits=progress.passed_credits,
+                remaining_headline=(
+                    f"เหลือในแผน {len(progress.remaining)} วิชา"
+                    f" {progress.remaining_plan_credits} หน่วยกิต"
+                ),
+                stats=stats,
+                course_rows=[course_row_data(s) for s in progress.remaining],
+                notes=notes,
+                quick_reply=_menu(*buttons),
+            )
+        ],
         answered_by=PLANNER_ANSWER,
         intent_key="progress",
         confidence=1.0,
@@ -294,32 +339,35 @@ async def next_term_answer(
     if not suggestion.picks:
         return _nothing_to_take(progress, suggestion, semester, settings)
 
-    header = (
-        f"วิชาที่แนะนำให้ลงภาคเรียนที่ {semester}\n"
-        f"{len(suggestion.picks)} วิชา {suggestion.credits} หน่วยกิต"
-        f" (เพดานที่ใช้คิด {max_credits} หน่วยกิต)"
-    )
-    lines = [course_line(status) for status in suggestion.picks]
+    # หมายเหตุทุกบรรทัดต้องยังอยู่ — วิชาที่ค้าง/ไม่เปิด/เกินเพดาน คือเหตุผลว่า
+    # ทำไมตะกร้าถึงหน้าตาแบบนี้ ตัดออกแล้วนักศึกษาจะคิดว่าระบบลืมวิชาไป
+    notes: list[str] = []
     if suggestion.overdue:
         codes = ", ".join(s.course.course_code for s in suggestion.overdue)
-        lines.append(f"\nค้างจากเทอมก่อนตามแผน (ควรเก็บให้ทัน): {codes}")
+        notes.append(f"ค้างจากเทอมก่อนตามแผน (ควรเก็บให้ทัน): {codes}")
     if suggestion.not_offered:
         codes = ", ".join(s.course.course_code for s in suggestion.not_offered)
-        lines.append(f"ภาคเรียนนี้ไม่เปิด ต้องรอเทอมถัดไป: {codes}")
+        notes.append(f"ภาคเรียนนี้ไม่เปิด ต้องรอเทอมถัดไป: {codes}")
     if suggestion.deferred:
-        lines.append(f"เกินเพดานหน่วยกิต เลื่อนไปเทอมหลัง {len(suggestion.deferred)} วิชา")
+        notes.append(f"เกินเพดานหน่วยกิต เลื่อนไปเทอมหลัง {len(suggestion.deferred)} วิชา")
     if suggestion.block_only:
-        lines.append("วิชานี้เป็นการฝึกประสบการณ์เต็มเวลา ลงร่วมกับวิชาอื่นไม่ได้")
+        notes.append("วิชานี้เป็นการฝึกประสบการณ์เต็มเวลา ลงร่วมกับวิชาอื่นไม่ได้")
     if suggestion.unknown_offering:
         codes = ", ".join(suggestion.unknown_offering)
-        lines.append(f"ไม่มีข้อมูลว่าเปิดภาคเรียนไหน ต้องเช็คเอง: {codes}")
+        notes.append(f"ไม่มีข้อมูลว่าเปิดภาคเรียนไหน ต้องเช็คเอง: {codes}")
+    notes.append(prereq_caveat(progress))
 
     return RouteResult(
         messages=[
-            msg.text_message(
-                join_lines(header, lines, prereq_caveat(progress)),
+            flex.next_term_flex_message(
+                semester=semester,
+                course_count=len(suggestion.picks),
+                credits=suggestion.credits,
+                max_credits=max_credits,
+                course_rows=[course_row_data(s) for s in suggestion.picks],
+                notes=notes,
                 # ปุ่ม "ความก้าวหน้า" อยู่ใน MAIN_MENU_ACTIONS แล้ว ไม่ใส่ซ้ำ
-                _menu(*liff_button(settings, "แก้วิชาที่ผ่าน")),
+                quick_reply=_menu(*liff_button(settings, "แก้วิชาที่ผ่าน")),
             )
         ],
         answered_by=PLANNER_ANSWER,

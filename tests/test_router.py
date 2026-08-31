@@ -23,7 +23,13 @@ from app import router as bot_router
 from app.config import REPO_ROOT
 from app.line import messages as msg
 
-from .helpers import FakeDatabase, assert_line_limits, make_settings
+from .helpers import (
+    FakeDatabase,
+    assert_line_limits,
+    flex_body_text,
+    flex_uris,
+    make_settings,
+)
 
 # ── ข้อมูลตัวอย่างที่สะท้อนของจริงใน knowledge base ──────────────────────────
 
@@ -472,7 +478,7 @@ async def test_instructors_list_marks_missing_email_explicitly() -> None:
     result = await bot_router._instructors_answer(instructors_db(), "สาขาวิชาทดสอบ")
 
     assert_line_limits(result.messages)
-    text = result.messages[0]["text"]
+    text = flex_body_text(result.messages[0])
     assert "ผศ.ดร.สมชาย ใจดี" in text
     assert "somchai@rmu.ac.th" in text
     assert "ไม่มีข้อมูลในระบบ" in text, "คนที่ไม่มีอีเมลต้องบอกตรง ๆ"
@@ -892,10 +898,13 @@ async def test_free_text_finds_documents() -> None:
     assert result.intent_key == "search:documents"
     # ``confidence`` ต้องเป็นคะแนนจริงจาก pg_trgm ไม่ใช่ 1.0 แปะไว้เฉย ๆ
     assert result.confidence == 1.0
-    text = result.messages[0]["text"]
+    text = flex_body_text(result.messages[0])
     assert "101 แบบคำขอกู้ยืมเงิน" in text
-    assert "https://sci.rmu.ac.th/wp-content/uploads/2016/07/101.pdf" in text
     assert "กู้ยืม กยศ." in text, "ต้องบอกหมวดเพื่อให้กดดูทั้งหมดต่อได้"
+    assert (
+        "https://sci.rmu.ac.th/wp-content/uploads/2016/07/101.pdf"
+        in flex_uris(result.messages[0])
+    ), "แถวเอกสารต้องแตะเปิดไฟล์จริงได้"
 
 
 async def test_free_text_attaches_citations_for_every_document() -> None:
@@ -915,7 +924,7 @@ async def test_free_text_finds_instructors_when_no_document_matches() -> None:
 
     assert result.answered_by == "search"
     assert result.intent_key == "search:instructors"
-    text = result.messages[0]["text"]
+    text = flex_body_text(result.messages[0])
     assert "ผศ.ดร.ธรัช อารีราษฎร์" in text
     assert "dr.tharach@rmu.ac.th" in text
     assert "ผศ.ดรผศ.ดร." not in text, "คำนำหน้าซ้ำสองรอบ"

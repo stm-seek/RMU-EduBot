@@ -1,10 +1,13 @@
-# Postgres + pgvector สำหรับรันในเครื่อง (local dev)
+# แอป (FastAPI) + Postgres/pgvector สำหรับรันในเครื่อง (local dev)
 #
 # ใช้ image pgvector/pgvector ที่มี extension vector มาให้แล้ว
-# ไม่ต้อง compile เอง
+# ไม่ต้อง compile เอง ส่วนแอปสร้างจาก Dockerfile ในโปรเจกต์นี้
 #
-#   docker compose up -d
+#   docker compose up -d --build   # ขึ้นทั้ง DB และแอป (ไม่ต้องรัน run.py แยก)
+#   docker compose logs -f app     # ดู log ของแอป
 #   docker compose logs -f db      # ดูว่า migration รันผ่าน
+#
+# แก้โค้ดใน app/ หรือ web/ แล้วต้อง build ใหม่: docker compose up -d --build app
 #
 # migration ใน db/migrations/ จะรัน *อัตโนมัติครั้งแรกที่สร้าง volume*
 # ถ้าแก้ไฟล์ SQL แล้วอยากรันใหม่: docker compose down -v && docker compose up -d
@@ -34,6 +37,48 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 20s
+
+  # แอป FastAPI — ขึ้นพร้อม DB ด้วยคำสั่งเดียว
+  #
+  # **ไม่ได้เรียก run.py** เพราะข้างในคอนเทนเนอร์เป็น Linux ซึ่งไม่มีปัญหา
+  # ProactorEventLoop ของ Windows (เหตุผลเต็ม ๆ อยู่ใน docstring ของ run.py)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rmu_bot_app
+    container_name: rmu_bot_app
+    restart: unless-stopped
+    # env_file เอาค่าจริงทั้งชุดจาก .env (LINE token, LLM key, pepper, ฯลฯ)
+    # ค่าใน environment ด้านล่างเขียนทับเฉพาะสองตัวที่ต่างจากตอนรันบน host
+    env_file:
+      - .env
+    environment:
+      # ในเครือข่ายของ compose ชื่อ host ของฐานข้อมูลคือชื่อ service = ``db``
+      # ไม่ใช่ 127.0.0.1 (นั่นคือตัวคอนเทนเนอร์แอปเอง — จะได้ connection refused)
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rmubot}:${POSTGRES_PASSWORD:-rmubot_dev_password}@db:5432/${POSTGRES_DB:-rmu_bot}
+      # พอร์ตในคอนเทนเนอร์ยึด 8000 เสมอ แล้วไป map ที่ ports ด้านล่าง
+      PORT: "8000"
+      PYTHONUTF8: "1"
+      TZ: Asia/Bangkok
+    ports:
+      # ซ้าย = พอร์ตบนเครื่อง (8001 เพราะ 8000 มีโปรเจกต์อื่นยึดอยู่)
+      # cloudflared และ .env:PUBLIC_BASE_URL ยังชี้ที่ localhost:8001 เหมือนเดิม
+      - "127.0.0.1:${APP_PORT:-8001}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # ใช้ urllib ของ python เพราะ image slim ไม่มี curl มาให้
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status==200 else 1)\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
       start_period: 20s
 
   # pgAdmin — ไม่จำเป็น แต่สะดวกตอน dev

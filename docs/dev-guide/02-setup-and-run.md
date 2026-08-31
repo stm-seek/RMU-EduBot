@@ -65,6 +65,34 @@ $p = Start-Process python -ArgumentList 'run.py' -WorkingDirectory D:\repo\line-
 > `SelectorEventLoop` ให้ก่อน ผลข้างเคียงคือ `--reload` ใช้กับฐานข้อมูลไม่ได้
 > (บน Linux/macOS ไม่มีปัญหานี้)
 
+### ทางเลือก: รวบขั้น 1+2 ด้วย docker compose (ไม่ต้องรัน `run.py`)
+
+โปรเจกต์มี `Dockerfile` ของแอปแล้ว ทำให้สั่งครั้งเดียวขึ้นทั้งฐานข้อมูลและ
+เซิร์ฟเวอร์ได้ (compose รอ DB `healthy` ก่อนค่อยสตาร์ตแอปให้เอง):
+
+```powershell
+docker compose up -d --build
+docker compose ps
+# ต้องเห็นทั้ง rmu_bot_db และ rmu_bot_app เป็น Up (healthy)
+docker compose logs -f app     # log ของแอป (แทนไฟล์ .server.*.log)
+```
+
+จากนั้นข้ามไปทำขั้น 3 ต่อได้เลย พอร์ตบนเครื่องยังเป็น **8001** เหมือนเดิม
+(ตั้งได้ที่ `APP_PORT` ใน `.env`) ปิดด้วย `docker compose down`
+
+สิ่งที่ต้องรู้เมื่อใช้ทางนี้:
+
+* **แก้โค้ดแล้วต้อง build ใหม่** — `docker compose up -d --build app`
+  ไม่มี `--reload` ให้ (image คัดลอกโค้ดเข้าไปตอน build)
+* ในคอนเทนเนอร์**ไม่ได้ใช้ `run.py`** เพราะข้างในเป็น Linux ซึ่งไม่มีปัญหา
+  `ProactorEventLoop` ของ Windows — เรียก `uvicorn app.main:app` ตรง ๆ ได้
+* `DATABASE_URL` ถูกเขียนทับใน `docker-compose.yml` ให้ชี้ host `db`
+  (ชื่อ service) ไม่ใช่ `127.0.0.1` — ค่าใน `.env` ไม่ต้องแก้
+* ค่าอื่นทั้งหมด (LINE token, LLM key, pepper) อ่านจาก `.env` ผ่าน `env_file`
+  ดังนั้น `.env` ยังเป็นแหล่งเดียวเหมือนเดิม
+* รันสองทางพร้อมกันไม่ได้ ถ้า `python run.py` ยังค้างอยู่ compose จะขึ้น
+  `ports are not available ... 8001` — ปิดตัวเดิมก่อน
+
 ### 3) tunnel — LINE ต้องเรียกเข้ามาทาง HTTPS
 
 ```powershell

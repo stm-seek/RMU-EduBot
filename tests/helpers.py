@@ -244,22 +244,67 @@ def _assert_flex_limits(message: dict) -> None:
     ข้อจำกัดของ Flex Message ที่ถ้าผิด LINE จะ reject ทั้ง request
 
     * ``altText`` ต้องมีและยาวไม่เกิน 400 ตัวอักษร
-    * ``action`` ในแถวเอกสาร — ``uri`` ยาวไม่เกิน 1,000 ตัวอักษร และต้องเป็น
-      ``https`` (แตะแล้วเปิดไม่ได้ = จุดประสงค์ของแถวเสียทั้งแถว)
+    * ``action`` แบบ ``uri`` — ยาวไม่เกิน 1,000 ตัวอักษร และต้องเป็น ``https``
+      (แตะแล้วเปิดไม่ได้ = จุดประสงค์ของแถวเสียทั้งแถว)
+    * ``action`` แบบ ``postback`` — ``data`` ยาวไม่เกินเพดานเดียวกับ Quick Reply
+
+    ไม่บังคับว่าทุกฟองต้องมี action เพราะฟองรายชื่ออาจารย์ตั้งใจไม่ให้กดได้
+    (ยังไม่มีลิงก์ต่อคน และ ``mailto:`` ไม่อยู่ใน scheme ที่ LINE รับ)
     """
     alt_text = message.get("altText")
     assert alt_text, "flex message ต้องมี altText (ข้อความในรายการแชท)"
     assert len(alt_text) <= flex.MAX_ALT_TEXT_LENGTH
 
     contents = message.get("contents") or {}
-    actions = _iter_actions(contents)
-    assert actions, "flex ของเอกสารต้องมีอย่างน้อย 1 ปุ่มเปิดลิงก์"
-    for action in actions:
-        assert action["type"] == "uri"
-        assert len(action["uri"]) <= flex.MAX_URI_LENGTH
-        assert action["uri"].startswith("https://"), (
-            f"ลิงก์เอกสารต้องเป็น https: {action['uri'][:60]}"
+    for action in _iter_actions(contents):
+        assert action["type"] in ("uri", "postback"), (
+            f"action ชนิด {action['type']!r} ยังไม่ได้ตรวจในเทส"
         )
+        assert len(action["label"]) <= msg.MAX_LABEL_LENGTH
+        if action["type"] == "uri":
+            assert len(action["uri"]) <= flex.MAX_URI_LENGTH
+            assert action["uri"].startswith("https://"), (
+                f"ลิงก์ในฟองต้องเป็น https: {action['uri'][:60]}"
+            )
+        else:
+            assert len(action["data"]) <= msg.MAX_POSTBACK_DATA_LENGTH
+
+
+def flex_texts(message: dict) -> list[str]:
+    """
+    ข้อความทุกชิ้นในฟอง เรียงตามที่ผู้ใช้เห็นจากบนลงล่าง
+
+    เทสของคำตอบที่ย้ายจากข้อความมาเป็น Flex ใช้ตัวนี้แทนการอ่าน
+    ``message["text"]`` — เนื้อหาที่ต้องมีก็ยังตรวจได้เหมือนเดิม
+    """
+    return _iter_texts(message.get("contents") or {})
+
+
+def flex_body_text(message: dict) -> str:
+    """รวมข้อความทั้งฟองเป็นก้อนเดียว — สะดวกกับการเช็ค ``in``"""
+    return chr(10).join(flex_texts(message))
+
+
+def flex_uris(message: dict) -> list[str]:
+    """ลิงก์ทุกเส้นในฟอง — URL ย้ายไปอยู่ใน action แล้ว ไม่ได้พิมพ์เป็นข้อความ"""
+    return [
+        action["uri"]
+        for action in _iter_actions(message.get("contents") or {})
+        if action["type"] == "uri"
+    ]
+
+
+def _iter_texts(node: dict) -> list[str]:
+    texts: list[str] = []
+    if node.get("type") == "text" and node.get("text"):
+        texts.append(str(node["text"]))
+    for child in node.get("contents", []) or []:
+        texts.extend(_iter_texts(child))
+    for part in ("header", "hero", "body", "footer"):
+        if node.get(part):
+            texts.extend(_iter_texts(node[part]))
+    return texts
+
 
 
 def _iter_actions(node: dict) -> list[dict]:
