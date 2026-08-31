@@ -28,6 +28,31 @@ def _quick_reply_data(result: rt.RouteResult) -> list[str]:
     return [item["action"]["data"] for item in items if item["action"].get("data")]
 
 
+def _flex_documents_parts(message: dict) -> tuple[str, list[str], list[str]]:
+    """
+    ผ่า flex message ของรายการเอกสาร — คืน ``(altText, URL ทุกปุ่ม, ข้อความ
+    ทุกกล่อง)`` เพราะข้อมูลที่เคยอยู่ใน ``text`` เดียวตอนนี้กระจายอยู่ใน
+    กล่องของฟอง (แถวละฉบับ แตะเปิดทั้งแถว)
+    """
+    assert message.get("type") == "flex", message
+    texts: list[str] = []
+    urls: list[str] = []
+
+    def walk(node: dict) -> None:
+        if node.get("text"):
+            texts.append(node["text"])
+        if node.get("type") in ("button", "box") and node.get("action"):
+            urls.append(node["action"]["uri"])
+        for child in node.get("contents", []) or []:
+            walk(child)
+        for part in ("header", "hero", "body", "footer"):
+            if node.get(part):
+                walk(node[part])
+
+    walk(message["contents"])
+    return message["altText"], urls, texts
+
+
 def test_document_menu_buttons_all_lead_to_real_answers(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
@@ -36,6 +61,9 @@ def test_document_menu_buttons_all_lead_to_real_answers(
 
     ถ้าหมวดใดสะกดไม่ตรงกับที่ ``documents_in_category`` ใช้ค้น จะได้
     ``answered_by == "no_data"`` ซึ่งเป็นทางที่ผู้ใช้เจอบั๊กจริง ๆ
+
+    คำตอบรายหมวดเป็น **Flex Message** (ฟองเดียว แถวละฉบับ) — ตรวจว่าทุก
+    หมวดมีแถวแตะเปิดลิงก์และทุกแถวเป็น ``https://`` (ลิงก์ขาด = แถวเสีย)
     """
     menu = run(rt.handle_postback("action=documents", live_db))
     assert_line_limits(menu.messages)
@@ -50,7 +78,14 @@ def test_document_menu_buttons_all_lead_to_real_answers(
         answer = run(rt.handle_postback(data, live_db))
         assert answer.answered_by == "quick_reply", data
         assert_line_limits(answer.messages)
-        assert "https://" in answer.messages[0]["text"], data
+        assert answer.messages[0]["type"] == "flex", data
+        _, urls, _ = _flex_documents_parts(answer.messages[0])
+        assert urls, f"ทุกหมวดต้องมีแถวแตะเปิดเอกสาร: {data}"
+        assert all(url.startswith("https://") for url in urls), data
+        assert all(url.isascii() for url in urls), (
+            f"URL ภาษาไทยต้อง encode ก่อนส่ง: {data}"
+        )
+        assert answer.citations, "citations ต้องตามมาด้วยสำหรับ chat_logs"
 
 
 def test_instructor_group_buttons_survive_postback_round_trip(
@@ -194,23 +229,35 @@ def test_loan_menu_count_matches_loan_answer_count(
     เมนูบอกกี่ฉบับ กดเข้าไปต้องได้เท่านั้น — **เคยเป็นบั๊กที่แก้แล้ว**
 
     เดิม ``_documents_answer`` ไม่ส่ง ``limit`` → ใช้ default 10 ของ
-    ``documents_in_category`` ทำให้เมนูเขียน "(12 ฉบับ)" แต่คำตอบเขียน
-    "(10 ฉบับ)" และเอกสาร 2 ฉบับท้ายหมวดเข้าถึงไม่ได้เลยจากบอท
+    ``documents_in_category`` ทำให้เมนูเขียน "(12 ฉบับ)" แต่คำตอบแสดง
+    แค่ 10 และเอกสาร 2 ฉบับท้ายหมวดเข้าถึงไม่ได้เลยจากบอท
 
     หมายเหตุ: ค่า default ของ ``documents_in_category`` **ยังเป็น 10**
     (ดู ``test_10_repository.py::test_default_limit_hides_two_loan_documents``)
-    ที่แก้คือ router ส่ง limit เอง
+    ที่แก้คือ router ส่ง limit เอง — ตอนย้ายเป็นฟองเดียวก็ต้องไม่ตัดแถวสั้น
     """
     menu = run(rt.handle_postback("action=documents", live_db))
     answer = run(rt.handle_postback("action=documents&cat=loan", live_db))
-    text = answer.messages[0]["text"]
+    message = answer.messages[0]
 
     assert "(12 ฉบับ)" in menu.messages[0]["text"]
-    assert "(12 ฉบับ)" in text
-    # สองฉบับที่เคยหายไปต้องอยู่ในคำตอบแล้ว
-    assert "111 ตัวอย่างการทำสัญญา กรอ." in text
-    assert "หน้ารวมข้อมูลการกู้ยืมเงินเพื่อการศึกษา" in text
     assert_line_limits(answer.messages)
+    assert message["type"] == "flex"
+
+    alt_text, urls, texts = _flex_documents_parts(message)
+    # altText (ข้อความในรายการแชท) ต้องบอกจำนวนจริง และฟองเดียวต้องมีแถวครบ 12 แถว
+    assert "12 ฉบับ" in alt_text
+    rows = [
+        content
+        for content in message["contents"]["body"]["contents"]
+        if content.get("type") == "box" and content.get("action")
+    ]
+    assert len(rows) == 12
+    assert len(urls) == 12
+    joined = "\n".join(texts)
+    # สองฉบับที่เคยหายไปต้องอยู่ในแถวแล้ว
+    assert "111 ตัวอย่างการทำสัญญา กรอ." in joined
+    assert "หน้ารวมข้อมูลการกู้ยืมเงินเพื่อการศึกษา" in joined
 
 
 def test_gpa_answer_uses_the_real_credit_numbers(

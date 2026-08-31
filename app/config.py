@@ -58,6 +58,28 @@ class Settings(BaseSettings):
     liff_id: str = ""
     line_login_channel_id: str = ""
 
+    # ── หน้า admin (แก้ FAQ / เบอร์อาจารย์ / วิชาบังคับก่อน) ──────────────────
+    # หน้า /admin ยืนยันตัวตนด้วย **username + password ของระบบเราเอง**
+    # (ไม่ใช่ LINE Login แล้ว) — รายชื่อผู้ดูแลอยู่ในตาราง ``admin_accounts``
+    # ไม่ได้อยู่ในไฟล์นี้ เพิ่ม/ถอน/รีเซ็ตรหัสด้วย::
+    #
+    #     python scripts/admin_user.py --username <ชื่อ>
+    #
+    # ตัวแปรเดียวที่ต้องตั้งข้างนี้คือกุญแจเซ็น cookie ของเซสชัน:
+    #
+    # * **ว่าง = ล็อกอินไม่ได้เลย** (endpoint คืน 503 พร้อมบอกชื่อตัวแปร) —
+    #   fail closed เหมือนเดิม ไม่ใช่ปล่อยให้ใช้ค่า default ที่เดาได้
+    # * เปลี่ยนค่านี้แล้วรีสตาร์ต = **เตะทุกคนออกพร้อมกัน** (cookie ที่ออกไป
+    #   แล้วเซ็นด้วยกุญแจเก่า verify ไม่ผ่าน) นี่คือทางเดียวที่ยกเลิกเซสชัน
+    #   กลางทางได้ เพราะ token เป็น stateless ไม่มีตารางเซสชันให้ลบ
+    #
+    # สร้างค่า: python -c "import secrets; print(secrets.token_urlsafe(48))"
+    admin_session_secret: str = ""
+    # อายุ cookie ของเซสชัน admin (วินาที) — 8 ชั่วโมง = หนึ่งวันทำงาน
+    # สั้นกว่านี้แล้วคนพิมพ์คำตอบ FAQ ยาว ๆ อยู่จะถูกเตะออกกลางทาง ยาวกว่านี้
+    # แล้ว cookie ที่หลุดไปจะมีอายุใช้งานนานเกินไป (ยกเลิกกลางทางไม่ได้)
+    admin_session_max_age_seconds: int = Field(default=8 * 60 * 60, ge=60, le=7 * 86_400)
+
     # ── LLM (OpenAI-compatible) ─────────────────────────────────────────────
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
     llm_api_key: str = ""
@@ -106,6 +128,10 @@ class Settings(BaseSettings):
     user_id_pepper: str = ""
 
     # ── Retrieval ───────────────────────────────────────────────────────────
+    # เกณฑ์แมตช์ FAQ (ชั้นที่ 2) — สูงกว่าเกณฑ์ค้นเอกสาร (0.6) โดยเจตนา
+    # เพราะ FAQ ส่ง "คำตอบสำเร็จ" ออกไป แมตช์ผิดแล้วนักศึกษาไม่มีสัญญาณให้
+    # เอะใจเลย ต่ำกว่าเกณฑ์ = ตกไปให้ชั้นถัดไปทำต่อ ไม่ใช่ตอบใบที่ใกล้สุด
+    # ต้องตรงกับ ``app.repository.FAQ_MIN_SCORE`` (ค่า default ของชั้นข้อมูล)
     faq_match_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
     rag_similarity_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     rag_top_k: int = Field(default=5, ge=1, le=50)
@@ -188,6 +214,46 @@ class Settings(BaseSettings):
                 "USER_ID_PEPPER สั้นเกินไป (ต้อง >= 32 ตัว) "
                 'สร้างด้วย: python -c "import secrets; print(secrets.token_urlsafe(48))"'
             )
+        return self
+
+    @model_validator(mode="after")
+    def _liff_belongs_to_login_channel(self) -> "Settings":
+        """
+        ``LIFF_ID`` ต้องสังกัด ``LINE_LOGIN_CHANNEL_ID`` เดียวกัน
+
+        LIFF app สร้างได้แต่ใน channel ประเภท **LINE Login** (Messaging API
+        channel ไม่มีแท็บ LIFF) จึงเป็นสอง channel แยกกันในโปรเจกต์เดียว และ
+        คนมักหยิบ Messaging API channel ID มาใส่ช่องนี้เพราะเป็นเลขที่คุ้นตา
+
+        ใส่ผิดแล้วอาการเงียบมาก: หน้า LIFF เปิดได้ปกติ แต่ ``/oauth2/v2.1/verify``
+        ปฏิเสธเพราะ ``aud`` ไม่ตรง → ผู้ใช้เห็นแค่ "ผิดพลาด (HTTP 401)" ซึ่งไม่
+        บอกว่าต้องแก้ตรงไหน จับตรงนี้ตอนสตาร์ทดีกว่าปล่อยไปเจอตอนใช้งาน
+        (เลขหน้าขีดใน LIFF ID คือ channel ID ของเจ้าของ)
+
+        >>> Settings(_env_file=None, liff_id='1657403396-PB88O0Pf',
+        ...          line_login_channel_id='1657403396').liff_id
+        '1657403396-PB88O0Pf'
+
+        ตั้งมาไม่ครบทั้งคู่ = ยังไม่เปิดใช้ LIFF ปล่อยผ่าน (dev ที่ไม่แตะส่วนนี้):
+
+        >>> Settings(_env_file=None, liff_id='', line_login_channel_id='165').liff_url
+        ''
+
+        (เคสสลับ channel ดูที่ ``tests/test_config.py`` — pydantic ห่อ error
+        เป็น ``ValidationError`` ข้อความหลายบรรทัด เทียบใน doctest ไม่ไหว)
+        """
+        if not (self.liff_id and self.line_login_channel_id):
+            return self
+
+        owner = self.liff_id.split("-", 1)[0]
+        if owner != self.line_login_channel_id:
+            raise ValueError(
+                f"LIFF_ID ({self.liff_id}) สังกัด channel {owner} "
+                f"แต่ LINE_LOGIN_CHANNEL_ID ตั้งไว้ {self.line_login_channel_id} — "
+                "ช่องนี้ต้องเป็น LINE Login channel ที่เป็นเจ้าของ LIFF app "
+                "ไม่ใช่ Messaging API channel (ดู LIFF tab ในคอนโซล)"
+            )
+
         return self
 
     # ── helpers ─────────────────────────────────────────────────────────────

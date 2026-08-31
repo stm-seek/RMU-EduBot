@@ -33,13 +33,19 @@ import logging
 import sys
 from pathlib import Path
 from typing import Annotated, AsyncIterator
+from urllib.parse import parse_qsl, unquote, urlencode
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from pydantic import BaseModel, Field
 
-from . import planner
+from . import admin, planner
 from . import router as bot_router
 from .config import Settings, get_settings
 from .db import Database, SupportsExecute, SupportsQuery
@@ -238,7 +244,7 @@ async def build_result(
     event_type = event.get("type")
 
     if event_type == "follow":
-        return await bot_router.handle_follow()
+        return await bot_router.handle_follow(settings=settings)
 
     if event_type == "postback":
         data = (event.get("postback") or {}).get("data", "")
@@ -448,8 +454,18 @@ async def _log_conversation(
         if event.get("type") == "postback":
             message_text = (event.get("postback") or {}).get("data")
 
+        # flex message ไม่มี ``text`` — ใช้ ``altText`` (ข้อความที่ขึ้นใน
+        # รายการแชทแทนการ์ด) แทน เพื่อไม่ให้รอบที่ตอบด้วยการ์ดหายไปจาก
+        # ``chat_logs`` (ใช้วัดผลในธีสิส)
+        response_parts: list[str] = []
+        for message in result.messages:
+            if message.get("type") == "flex":
+                response_parts.append(message.get("altText", ""))
+            elif message.get("text"):
+                response_parts.append(message["text"])
+
         response_text = "\n".join(
-            message.get("text", "") for message in result.messages if message.get("text")
+            part for part in response_parts if part
         ) or None
 
         await repo.insert_chat_log(
@@ -626,6 +642,115 @@ async def liff_page() -> HTMLResponse:
     if not LIFF_PAGE.is_file():  # pragma: no cover - ไฟล์หายจาก repo เท่านั้น
         raise _http_error(500, "ไม่พบไฟล์หน้า LIFF ในเซิร์ฟเวอร์")
     return HTMLResponse(LIFF_PAGE.read_text(encoding="utf-8"))
+
+
+# ── หน้า admin ──────────────────────────────────────────────────────────────
+#
+# เสิร์ฟจากแอปเดียวกันด้วยเหตุผลเดียวกับหน้า LIFF (โดเมนเดียว = ไม่ต้องตั้ง CORS)
+# ตัว router ของ API อยู่ใน :mod:`app.admin` — ไฟล์นี้แค่เสิร์ฟ HTML
+#
+# **หน้า HTML เปิดได้โดยไม่ต้องล็อกอิน** โดยเจตนา: มันไม่มีข้อมูลอยู่ในตัว
+# ต้องยิง ``/api/admin/*`` พร้อม cookie เซสชันที่ ``/api/admin/login`` ออกให้จึงจะ
+# ได้ข้อมูล ตัวที่กันคนอยู่ที่ :func:`app.admin.require_admin` ไม่ใช่ที่การซ่อน
+# ไฟล์นี้ (ซ่อน HTML ไม่ใช่การป้องกัน และซ่อนแล้วคนจะเข้าไปกรอกฟอร์มล็อกอินไม่ได้)
+ADMIN_PAGE = Path(__file__).resolve().parent.parent / "web" / "admin" / "index.html"
+
+app.include_router(admin.router)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page() -> HTMLResponse:
+    """หน้าแก้ข้อมูลของ admin — ไฟล์เดียว ไม่มี build step"""
+    if not ADMIN_PAGE.is_file():  # pragma: no cover - ไฟล์หายจาก repo เท่านั้น
+        raise _http_error(500, "ไม่พบไฟล์หน้า admin ในเซิร์ฟเวอร์")
+    return HTMLResponse(ADMIN_PAGE.read_text(encoding="utf-8"))
+
+
+# ── ทางเข้าจากลิงก์ liff.line.me ────────────────────────────────────────────
+#
+# LIFF app หนึ่งใบมี Endpoint URL ได้ค่าเดียว แต่เรามีสองหน้า (``/liff`` ของ
+# นักศึกษา และ ``/admin``) จึงตั้ง Endpoint URL เป็น **โดเมนเปล่า** แล้วเปิด
+# ด้วยลิงก์ ``https://liff.line.me/<liffId>/admin``
+#
+# กลไกของ LINE: ลิงก์นั้นจะพาไปที่ Endpoint URL **ราก** พร้อม
+# ``?liff.state=%2Fadmin`` (บวก ``code``/``state`` ของการล็อกอิน) แล้วคาดว่า
+# หน้าที่รากจะโหลด LIFF SDK เพื่อเด้งต่อไปยัง path ใน ``liff.state`` เอง
+# ถ้ารากเป็น 404 ทั้งอย่างนี้จะจบลงด้วย ``{"detail":"Not Found"}`` โดยไม่มี
+# อะไรบอกว่าเพราะอะไร (เจอมาแล้ว 28 ส.ค. 2026)
+#
+# แก้ด้วยการ redirect ฝั่งเซิร์ฟเวอร์แทนที่จะฝัง SDK ไว้ที่ราก: สั้นกว่า และ
+# ``code``/``state`` ถูกส่งต่อครบให้ ``liff.init()`` ของหน้าปลายทางจัดการเอง
+#
+# **allowlist ไม่ใช่การกรอง** — ``liff.state`` มาจาก query string ที่ใครก็ใส่
+# อะไรก็ได้ ถ้าเอาไป redirect ตรง ๆ จะได้ open redirect (ยิงลิงก์โดเมนเราที่
+# พาไปเว็บหลอกลวง) จึงยอมเฉพาะสองหน้าที่มีจริง
+LIFF_STATE_TARGETS = frozenset({"/liff", "/admin"})
+
+# หน้าที่ตอบเมื่อมีคนเปิด "โดเมนเปล่า ๆ" เอง (ไม่มี ``liff.state``)
+#
+# เดิมตอบ 404 เป็น JSON ``{"detail":"Not Found"}`` ด้วยเหตุผลว่าไม่อยากโฆษณา
+# ว่ามีหน้า /admin อยู่ — เหตุผลนั้นยังใช้อยู่ (หน้านี้จึง**ไม่มีลิงก์ไป /admin**
+# และไม่เอ่ยถึงมัน) แต่ JSON ก้อนนั้นทำให้คนตั้งระบบเข้าใจว่าเซิร์ฟเวอร์พัง
+# แล้วไปไล่แก้ tunnel/webhook ทั้งที่ไม่มีอะไรพัง (เกิดจริง 28 ส.ค. 2026 สองรอบ)
+# ตอบหน้าสั้น ๆ ที่บอกว่า "ทำงานอยู่" จึงเป็นข้อมูลที่จริงกว่าและหลงน้อยกว่า
+ROOT_PAGE = """<!doctype html>
+<html lang="th">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>ระบบผู้ช่วยวิชาการ</title>
+<style>
+  :root { color-scheme: light dark }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         font-family: "Noto Sans Thai", "Leelawadee UI", "Tahoma", sans-serif;
+         line-height: 1.7; padding: 24px; text-align: center }
+  h1 { font-size: 1.25rem; margin: 0 0 .5rem }
+  p { margin: 0; opacity: .7; font-size: .95rem }
+</style>
+<h1>ระบบผู้ช่วยวิชาการ</h1>
+<p>เซิร์ฟเวอร์ทำงานอยู่ — ใช้งานผ่านแอป LINE</p>
+</html>
+"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def liff_state_entry(request: Request) -> Response:
+    """
+    รับลิงก์ ``liff.line.me/<liffId>/<path>`` แล้วส่งต่อไปหน้าที่ขอ
+
+    ไม่มี ``liff.state`` = คนเปิดโดเมนเปล่า ๆ เอง → ตอบ :data:`ROOT_PAGE`
+    ไม่เดาว่าเขาอยากไปหน้าไหน (เด้งไปหน้า admin เองจะกลายเป็นการโฆษณาว่ามี
+    หน้านี้อยู่)
+    """
+    raw = request.query_params.get("liff.state")
+    if raw is None:
+        return HTMLResponse(ROOT_PAGE)
+
+    # บางเส้นทาง LINE ส่ง ``liff.state`` มาแบบ encode ซ้อนสองชั้น — เห็นได้จาก
+    # ``liffRedirectUri`` ที่มันแนบมาเองว่าเป็น ``liff.state=%252Fadmin``
+    # ชั้นนอกถูกถอดตอน parse query string เหลือค่า ``%2Fadmin`` ซึ่งไม่ตรง
+    # allowlist แล้วกลายเป็น 404 ทั้งที่ปลายทางถูกต้อง จึงถอดอีกชั้นเฉพาะกรณี
+    # ที่ยังไม่ได้ขึ้นต้นด้วย ``/`` — ถอดแล้วยัง**ต้องผ่าน allowlist เหมือนกัน**
+    # (การถอด encoding ไม่ใช่การอนุญาต ค่าที่ถอดออกมาชี้ออกนอกเว็บก็ยังถูกปฏิเสธ)
+    if not raw.startswith("/"):
+        raw = unquote(raw)
+
+    target, _, inner_query = raw.partition("?")
+    if target not in LIFF_STATE_TARGETS:
+        log.warning("liff.state ชี้ไปที่ %r ซึ่งไม่อยู่ในรายการที่ยอมให้เด้งไป", target)
+        raise _http_error(404, "Not Found")
+
+    # ``code``/``state`` ของการล็อกอินอยู่ใน query ชั้นนอก ต้องส่งต่อให้ครบ
+    # ไม่งั้นหน้าปลายทางจะเริ่มล็อกอินใหม่ตั้งแต่ต้นเป็นวงไม่จบ
+    passthrough = [
+        (key, value)
+        for key, value in request.query_params.multi_items()
+        if key != "liff.state"
+    ]
+    query = urlencode(
+        [*parse_qsl(inner_query, keep_blank_values=True), *passthrough]
+    )
+    return RedirectResponse(f"{target}?{query}" if query else target)
 
 
 @app.get("/api/liff/config")

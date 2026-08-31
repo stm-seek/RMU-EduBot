@@ -1,0 +1,59 @@
+<!doctype html><html lang="th"><head><meta charset="utf-8">
+<style>body{margin:0;padding:24px;background:#fff;font-family:"Sarabun","Tahoma",sans-serif}.mermaid{zoom:1.7}</style>
+</head><body>
+<pre class="mermaid">
+flowchart TB
+  S(["ผู้ใช้ส่งข้อความเข้ามา"])
+  PB{"เป็นการกดปุ่ม<br/>(postback) หรือไม่?"}
+  PBH["ไปที่ handler ของปุ่มนั้นโดยตรง<br/>ไม่ต้องเดาเจตนา"]
+  Q1{"1. มีรหัสวิชา 7 หลัก<br/>ในข้อความ?"}
+  Q1a{"ถามว่า 'ลงได้ไหม'<br/>ด้วยหรือไม่?"}
+  A1a["ตอบเงื่อนไขการลงทะเบียน<br/>answered_by = planner"]
+  A1b["ตอบรายละเอียดรายวิชา<br/>answered_by = course"]
+  Q2{"2. ถามว่าเทอมหน้า<br/>ลงอะไรดี?"}
+  A2["แนะนำวิชาเทอมถัดไป · planner"]
+  Q3{"3. ถามเรื่องเกรด / GPAX /<br/>เกียรตินิยม?"}
+  A3["คำนวณเกรด-เป้า GPAX · planner"]
+  Q4{"4. ถามความก้าวหน้า /<br/>จบได้ไหม?"}
+  A4["สรุปหน่วยกิตตามหมวด · planner"]
+  Q5{"5. อยู่ในโหมดปรึกษา AI<br/>หรือกำลังเข้า/ออกโหมด?"}
+  A5["คุยกับ AI · ai_chat"]
+  Q6{"6. พูดถึงแบบประเมินระบบ?"}
+  A6["ส่งลิงก์แบบประเมิน · search"]
+  Q7{"7. ตรงกับ FAQ ที่คนเขียนไว้<br/>ถึงเกณฑ์ความคล้าย?"}
+  A7["ตอบด้วยคำตอบที่คนเขียน · faq"]
+  Q8{"8. ค้นในฐานข้อมูลเจอ?<br/>(เอกสาร / อาจารย์)"}
+  A8["ตอบผลค้น · search"]
+  A9["บอกตรง ๆ ว่ายังตอบไม่ได้<br/>+ เสนอปุ่มที่ตอบได้ · fallback"]
+  E(["บันทึกลง chat_logs แล้วตอบกลับ"])
+
+  S --> PB
+  PB -->|ใช่| PBH --> E
+  PB -->|"ไม่ (พิมพ์ข้อความ)"| Q1
+  Q1 -->|ใช่| Q1a
+  Q1a -->|ใช่| A1a --> E
+  Q1a -->|ไม่| A1b --> E
+  Q1 -->|ไม่| Q2
+  Q2 -->|ใช่| A2 --> E
+  Q2 -->|ไม่| Q3
+  Q3 -->|ใช่| A3 --> E
+  Q3 -->|ไม่| Q4
+  Q4 -->|ใช่| A4 --> E
+  Q4 -->|ไม่| Q5
+  Q5 -->|ใช่| A5 --> E
+  Q5 -->|ไม่| Q6
+  Q6 -->|ใช่| A6 --> E
+  Q6 -->|ไม่| Q7
+  Q7 -->|ใช่| A7 --> E
+  Q7 -->|ไม่| Q8
+  Q8 -->|ใช่| A8 --> E
+  Q8 -->|ไม่| A9 --> E
+
+  classDef det fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+  classDef llm fill:#fff3e0,stroke:#ef6c00,color:#e65100
+  class A1a,A1b,A2,A3,A4,A6,A7,A8 det
+  class A5,A9 llm
+</pre>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:"base",flowchart:{htmlLabels:true,nodeSpacing:30,rankSpacing:35},themeVariables:{fontFamily:'Sarabun,Tahoma,sans-serif',fontSize:'14px'}});</script>
+</body></html>

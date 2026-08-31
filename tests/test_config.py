@@ -142,6 +142,38 @@ def test_threshold_bounds_are_enforced() -> None:
         make_settings(rag_top_k=0)
 
 
+def test_liff_id_must_belong_to_the_login_channel() -> None:
+    """
+    LIFF อยู่ใต้ channel ประเภท LINE Login แต่ ``LINE_CHANNEL_SECRET/TOKEN``
+    มาจาก Messaging API channel — คนละเลขกัน และหยิบสลับกันง่ายมาก
+
+    ใส่สลับแล้วอาการเงียบ: หน้า LIFF เปิดได้ แต่ verify ID token ถูกปฏิเสธ
+    เพราะ ``aud`` ไม่ตรง ผู้ใช้เห็นแค่ "ผิดพลาด (HTTP 401)" ที่ไม่บอกสาเหตุ
+    (เกิดขึ้นจริงตอนทดสอบ 23 ส.ค. 2026 — .env ใส่ Messaging API ID ไว้)
+    """
+    with pytest.raises(ValueError) as info:
+        make_settings(
+            liff_id="1657403396-PB88O0Pf", line_login_channel_id="1657782134"
+        )
+
+    message = str(info.value)
+    assert "1657403396" in message, "ต้องบอกเลขที่ถูกต้องไว้ copy ไปแก้ได้เลย"
+    assert "LINE_LOGIN_CHANNEL_ID" in message
+
+
+def test_matching_liff_and_login_channel_is_accepted() -> None:
+    settings = make_settings(
+        liff_id="1657403396-PB88O0Pf", line_login_channel_id="1657403396"
+    )
+    assert settings.liff_url == "https://liff.line.me/1657403396-PB88O0Pf"
+
+
+def test_liff_check_is_skipped_when_either_value_is_unset() -> None:
+    """ยังไม่เปิดใช้ LIFF ต้องรันได้ — ไม่งั้น dev ส่วนอื่นทำงานไม่ได้"""
+    assert make_settings(liff_id="", line_login_channel_id="1657782134").liff_url == ""
+    assert make_settings(liff_id="1657403396-PB88O0Pf").liff_id
+
+
 # ── require() ───────────────────────────────────────────────────────────────
 
 

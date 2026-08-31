@@ -26,6 +26,9 @@ DEFAULT_FILES = [
     REPO_ROOT / "db" / "migrations" / "003_answered_by_values.sql",
     REPO_ROOT / "db" / "migrations" / "004_chat_log_status.sql",
     REPO_ROOT / "db" / "migrations" / "005_planner.sql",
+    REPO_ROOT / "db" / "migrations" / "006_admin.sql",
+    REPO_ROOT / "db" / "migrations" / "007_answered_by_faq.sql",
+    REPO_ROOT / "db" / "migrations" / "008_admin_accounts.sql",
     REPO_ROOT / "db" / "seed" / "002_seed_data.sql",
     REPO_ROOT / "db" / "seed" / "003_curriculum_rules.sql",
 ]

@@ -221,3 +221,63 @@ async def test_list_queries_return_empty_list_not_none() -> None:
     assert await repo.instructor_groups(db) == []
     assert await repo.offerings_for_course(db, "7010102") == []
     assert await repo.search_instructors(db, "สมชาย") == []
+
+
+# ── FAQ (ชั้นที่ 2) ──────────────────────────────────────────────────────────
+
+
+def test_faq_query_filters_inactive_rows() -> None:
+    """
+    ปุ่ม "ปิดใช้" ในหน้า admin ไม่ได้ลบแถว มันตั้ง ``is_active = FALSE``
+    → ถ้า query นี้ลืมกรอง คำตอบที่ตั้งใจซ่อนจะยังถูกส่งให้นักศึกษาต่อไป
+    และไม่มีใครรู้จนกว่าจะมีคนร้องเรียน
+    """
+    assert "is_active" in repo.SQL_SEARCH_FAQS
+
+
+def test_faq_query_matches_question_and_variants_both_ways() -> None:
+    """
+    ต้องเทียบ **สองทิศทาง** (คนพิมพ์คำเดียว vs พิมพ์เป็นประโยค) และต้องกาง
+    ``variants`` ออกมาเทียบทีละคำ ไม่ใช่เทียบกับ array ที่ต่อกันเป็นสตริง
+    (ถ้าเทียบรวม คะแนนจะเจือจางตามจำนวนคำพ้อง = ยิ่งเขียน FAQ ดียิ่งแมตช์แย่)
+    """
+    sql = repo.SQL_SEARCH_FAQS
+
+    assert "word_similarity" in sql, "similarity() ธรรมดาใช้กับไทยไม่ได้"
+    assert "unnest(f.variants)" in sql
+    assert "word_similarity(%s, variant)" in sql, "ทิศทาง: คำค้น → คำพ้อง"
+    assert "word_similarity(variant, %s)" in sql, "ทิศทาง: คำพ้อง → ประโยคที่พิมพ์"
+
+
+async def test_search_faqs_repeats_question_for_every_placeholder() -> None:
+    """คำถามถูกใช้ 4 ครั้ง แล้วปิดท้ายด้วยเกณฑ์กับ limit — ส่งไม่ครบ psycopg error"""
+    db = FakeDatabase()
+    await repo.search_faqs(db, "ดรอปเรียนทำยังไง", limit=3)
+
+    params = db.params_for("FROM faqs f")
+    assert params == (
+        "ดรอปเรียนทำยังไง",
+        "ดรอปเรียนทำยังไง",
+        "ดรอปเรียนทำยังไง",
+        "ดรอปเรียนทำยังไง",
+        repo.FAQ_MIN_SCORE,
+        3,
+    )
+    assert repo.SQL_SEARCH_FAQS.count("%s") == len(params)
+
+
+async def test_faq_threshold_is_overridable_and_stricter_than_document_search() -> None:
+    """
+    FAQ ตอบเป็นคำตอบสำเร็จ (ไม่ใช่รายการลิงก์ให้เลือกเอง) → แมตช์ผิดแล้ว
+    เสียหายกว่า จึงต้องมั่นใจกว่าการค้นเอกสาร
+    """
+    db = FakeDatabase()
+    await repo.search_faqs(db, "กยศ", min_score=0.3)
+
+    assert db.params_for("FROM faqs f")[4] == 0.3
+    assert repo.FAQ_MIN_SCORE == 0.82
+    assert repo.FAQ_MIN_SCORE > repo.SEARCH_MIN_SCORE
+
+
+async def test_search_faqs_returns_empty_list_not_none() -> None:
+    assert await repo.search_faqs(FakeDatabase(), "อะไรก็ได้") == []

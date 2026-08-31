@@ -1,0 +1,36 @@
+<!doctype html><html lang="th"><head><meta charset="utf-8">
+<style>body{margin:0;padding:24px;background:#fff;font-family:"Sarabun","Tahoma",sans-serif}</style>
+</head><body>
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor S as นักศึกษา (แอป LINE)
+  participant L as LINE Platform
+  participant F as FastAPI (app/main.py)
+  participant R as Router (app/router.py)
+  participant D as Postgres
+  participant M as LLM (Gemini)
+
+  S->>L: พิมพ์คำถาม
+  L->>F: POST /webhook + X-Line-Signature
+  F->>F: ตรวจลายเซ็น HMAC-SHA256
+  Note over F: ลายเซ็นไม่ตรง → 400 ทันที ไม่ทำงานต่อ
+  F-->>L: HTTP 200 (ภายในไม่กี่มิลลิวินาที)
+  Note over F,L: ต้องตอบก่อน ไม่งั้น LINE ส่ง webhook ซ้ำ<br/>ผู้ใช้จะได้ข้อความซ้ำ
+  F->>R: BackgroundTasks: ประมวลผลข้อความ
+  R->>D: ค้นชั้นที่ 1 (SQL + pg_trgm)
+  D-->>R: ผลลัพธ์ / ไม่พบ
+  opt ชั้นที่ 1 ไม่ตอบได้
+    R->>D: ค้น FAQ (word_similarity)
+    D-->>R: ไม่ถึงเกณฑ์
+    R->>M: ส่งคำถาม + บริบท
+    Note over R,M: 503 → retry 0.5/1/2 วิ ×4<br/>ยังไม่ได้ → สลับโมเดลสำรอง<br/>ใต้เพดานรวม 28 วินาที
+    M-->>R: คำตอบ (หรือหมดงบเวลา)
+  end
+  R->>D: INSERT chat_logs (+ answered_by)
+  R->>L: POST /v2/bot/message/reply (reply token)
+  L->>S: แสดงคำตอบในห้องแชท
+</pre>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:"base",themeVariables:{fontFamily:'Sarabun,Tahoma,sans-serif',fontSize:'15px'}});</script>
+</body></html>

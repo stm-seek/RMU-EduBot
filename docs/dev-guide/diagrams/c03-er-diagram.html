@@ -1,0 +1,120 @@
+<!doctype html><html lang="th"><head><meta charset="utf-8">
+<style>body{margin:0;padding:24px;background:#fff;font-family:"Sarabun","Tahoma",sans-serif}
+.mermaid{zoom:1.45}
+h2{font-size:18px;margin:0 0 4px}p{margin:0 0 18px;color:#555;font-size:14px}svg{height:auto!important}
+</style>
+</head><body>
+<h2>แผนภาพความสัมพันธ์ฐานข้อมูล (ตารางหลัก 13 จาก 22 ตาราง)</h2>
+<p>แสดงเฉพาะคอลัมน์สำคัญ · PK = คีย์หลัก, FK = คีย์นอก · ความสัมพันธ์ทั้งหมดตรงตาม constraint จริงในฐานข้อมูล</p>
+<pre class="mermaid">
+erDiagram
+  programs ||--o{ categories : "แบ่งเป็นหมวด"
+  programs ||--o{ program_courses : "มีรายวิชา"
+  courses  ||--o{ program_courses : "อยู่ในหลักสูตร"
+  courses  ||--o{ offerings : "เปิดสอนเป็นหมู่เรียน"
+  offerings ||--o{ offering_slots : "มีคาบเรียน"
+  instructors ||--o{ instructor_affiliations : "สังกัด"
+  app_users ||--o{ user_completed_courses : "วิชาที่ผ่านแล้ว"
+  app_users ||--o{ chat_logs : "ประวัติการถาม"
+  app_users ||--o{ ai_sessions : "โหมดปรึกษา AI"
+  app_users ||--o{ liff_sessions : "เซสชัน LIFF"
+
+  programs {
+    integer program_id PK
+    text program_code "643170151"
+    text program_name
+    text degree_name
+    integer total_credits "120"
+  }
+  categories {
+    bigint id PK
+    integer program_id FK
+    integer row_id "เลขหมวดในหลักสูตร"
+    integer parent_row_id "หมวดแม่"
+    text label "ชื่อหมวด"
+    integer required_credits "หน่วยกิตที่ต้องได้"
+    boolean is_leaf
+  }
+  courses {
+    integer course_id PK
+    text course_code "รหัส 7 หลัก"
+    text name_th
+    integer credits
+    text description_th "คำอธิบายรายวิชา"
+  }
+  program_courses {
+    integer program_id FK
+    integer category_row_id FK
+    integer course_id FK
+    integer position "ลำดับในหมวด"
+  }
+  offerings {
+    bigint id PK
+    integer course_id FK
+    integer acad_year "2568"
+    smallint semester "1-3"
+    text section "หมู่เรียน"
+    text instructors
+    integer seats_left
+  }
+  offering_slots {
+    bigint id PK
+    bigint offering_id FK
+    text day_code "รหัสวัน"
+    integer start_min "นาทีเริ่ม"
+    integer end_min "นาทีจบ"
+    text room
+  }
+  instructors {
+    bigint id PK
+    text full_name
+    text email
+    text phone "ยังว่าง 0-28"
+    text room "ยังว่าง 0-28"
+    boolean is_active
+  }
+  instructor_affiliations {
+    bigint id PK
+    bigint instructor_id FK
+    text group_name "กลุ่มสาขา"
+    boolean is_chair
+  }
+  app_users {
+    bigint id PK
+    text line_user_hash "SHA-256 + pepper ไม่ใช่ userId ดิบ"
+    text program_code
+    smallint study_year
+  }
+  user_completed_courses {
+    bigint id PK
+    bigint user_id FK
+    text course_code
+    text source "self_report"
+  }
+  chat_logs {
+    bigint id PK
+    bigint user_id FK
+    text message_text
+    text answered_by "ป้าย 11 ค่าสำหรับวัดผล"
+    real confidence
+    integer latency_ms
+    text llm_model
+    timestamp created_at
+  }
+  ai_sessions {
+    bigint id PK
+    bigint user_id FK
+    integer turn_count "จำนวนตาที่ใช้"
+    timestamp last_active_at
+    text end_reason
+  }
+  liff_sessions {
+    bigint id PK
+    bigint user_id FK
+    text session_token
+    timestamp expires_at
+  }
+</pre>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:"base",themeVariables:{fontFamily:'Sarabun,Tahoma,sans-serif',fontSize:'14px'}});</script>
+</body></html>

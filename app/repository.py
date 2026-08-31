@@ -14,6 +14,11 @@ Repository — SQL ทั้งหมดของชั้นที่ 1 (ตอ
 * กรองเอกสารที่ลิงก์ตายออก (``is_available``) เพราะส่งลิงก์เสียให้นักศึกษา
   แย่กว่าไม่ส่งเลย — รอบตรวจ 22 ส.ค. 2026 ทั้ง 33 ฉบับเข้าได้ครบ ถ้าลิงก์
   ตายอีกครั้งตัวกรองจะตัดออกเองเหมือนเดิม
+* **ทุก query ที่อ่านข้อมูลไปตอบผู้ใช้ต้องกรอง ``is_active``** (เพิ่มใน
+  ``006_admin.sql``) — ปุ่ม "ปิดใช้" ในหน้า admin ไม่ได้ลบแถว มันตั้ง flag
+  ตัวนี้ ถ้ามี query ไหนลืมกรอง ปุ่มนั้นจะไม่มีผลอะไรเลยและไม่มีใครรู้
+  จนกว่านักศึกษาจะได้คำตอบที่ตั้งใจซ่อนไปแล้ว
+  (``is_active`` = คนตั้ง, ``is_available`` = ตัวตรวจลิงก์ตั้ง — คนละเรื่อง)
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ SELECT category, count(*) AS total
 FROM documents
 WHERE audience = 'student'
   AND coalesce(is_available, TRUE)
+  AND is_active
 GROUP BY category
 ORDER BY count(*) DESC, category
 """
@@ -42,6 +48,7 @@ FROM documents
 WHERE category = %s
   AND audience = 'student'
   AND coalesce(is_available, TRUE)
+  AND is_active
 ORDER BY title
 LIMIT %s
 """
@@ -98,6 +105,7 @@ FROM (
     FROM documents d
     WHERE d.audience = 'student'
       AND coalesce(d.is_available, TRUE)
+      AND d.is_active
 ) AS scored
 WHERE score >= %s
 ORDER BY score DESC, title
@@ -140,10 +148,12 @@ async def search_documents(
 # ── อาจารย์ ─────────────────────────────────────────────────────────────────
 
 SQL_INSTRUCTOR_GROUPS = """
-SELECT group_name, count(DISTINCT instructor_id) AS total
-FROM instructor_affiliations
-GROUP BY group_name
-ORDER BY count(DISTINCT instructor_id) DESC, group_name
+SELECT a.group_name, count(DISTINCT a.instructor_id) AS total
+FROM instructor_affiliations a
+JOIN instructors i ON i.id = a.instructor_id
+WHERE i.is_active
+GROUP BY a.group_name
+ORDER BY count(DISTINCT a.instructor_id) DESC, a.group_name
 """
 
 SQL_INSTRUCTORS_IN_GROUP = """
@@ -152,6 +162,7 @@ SELECT i.full_name, i.title_prefix, i.email, i.room, i.office_hours,
 FROM instructors i
 JOIN instructor_affiliations a ON a.instructor_id = i.id
 WHERE a.group_name = %s
+  AND i.is_active
 ORDER BY a.is_chair DESC, i.full_name
 LIMIT %s
 """
@@ -174,6 +185,7 @@ FROM (
                )
            ) AS score
     FROM instructors i
+    WHERE i.is_active
 ) AS scored
 WHERE score >= %s
 ORDER BY score DESC, full_name
@@ -187,6 +199,7 @@ SELECT count(*)      AS total,
        count(phone)  AS with_phone,
        count(room)   AS with_room
 FROM instructors
+WHERE is_active
 """
 
 
@@ -216,14 +229,101 @@ async def instructor_contact_coverage(db: SupportsQuery) -> dict:
     return row or {"total": 0, "with_email": 0, "with_phone": 0, "with_room": 0}
 
 
+# ── FAQ ที่คนเขียนคำตอบไว้ (ชั้นที่ 2) ───────────────────────────────────────
+
+# เกณฑ์ขั้นต่ำของการแมตช์ FAQ — **สูงกว่าเกณฑ์การค้นเอกสาร (0.6) โดยเจตนา**
+#
+# FAQ ตอบเป็น "คำตอบสำเร็จ" ไม่ใช่รายการลิงก์ให้เลือกเอง → แมตช์ผิดแล้ว
+# นักศึกษาได้คำตอบผิดเต็ม ๆ ไม่มีสัญญาณว่าไม่เกี่ยว (ต่างจากผลค้นเอกสาร
+# ที่ผู้ใช้เห็นชื่อไฟล์แล้วรู้ทันทีว่าไม่ใช่เรื่องที่ถาม) จึงต้องมั่นใจกว่า
+#
+# ค่านี้เป็นแค่ default ของชั้นข้อมูล — ของจริง router ส่ง
+# ``settings.faq_match_threshold`` (``FAQ_MATCH_THRESHOLD`` ใน ``.env``) มาให้
+# ทั้งสองที่ตั้ง 0.82 ตรงกัน ห้ามให้ต่างกันเพราะจะ debug ไม่ออกว่าใช้ค่าไหน
+FAQ_MIN_SCORE = 0.82
+
+# ใช้ ``word_similarity`` **สองทิศทาง** ด้วยเหตุผลเดียวกับ SQL_SEARCH_DOCUMENTS
+# (ไทยไม่มีเว้นวรรค → full-text ไม่ได้ และ ``word_similarity`` ไม่สมมาตร):
+#
+# 1. ``word_similarity(คำถามผู้ใช้, question)`` และกับ ``variants`` ทีละคำ —
+#    คนพิมพ์คำเดียวสั้น ๆ ("ดรอปเรียน") แล้วไปตรงกับส่วนหนึ่งของประโยคที่ยาวกว่า
+# 2. ``max(word_similarity(variant/token, คำถามผู้ใช้))`` — คนพิมพ์เป็นประโยค
+#    ("อยากดรอปเรียนต้องทำยังไง") แล้วคำพ้องโผล่อยู่ข้างในประโยคนั้น
+#
+# ``variants`` เป็น ``TEXT[]`` จึงต้อง ``unnest`` ออกมาเทียบทีละคำ เทียบกับ
+# ทั้ง array ต่อกันเป็นสตริงไม่ได้ (คะแนนจะเจือจางตามจำนวนคำพ้องที่ใส่ไว้ —
+# ยิ่งเขียน FAQ ดีขึ้นยิ่งแมตช์แย่ลง ซึ่งกลับหัวกลับหาง)
+#
+# ``length(btrim(...)) >= 3`` กันคำสั้นกว่า 1 trigram ไปแมตช์กับอะไรก็ได้
+#
+# ``WHERE f.is_active`` จำเป็น: ปุ่ม "ปิดใช้" ในหน้า admin ไม่ได้ลบแถว
+# ถ้าลืมกรอง คำตอบที่ตั้งใจซ่อนจะยังถูกส่งให้นักศึกษาต่อไปเงียบ ๆ
+SQL_SEARCH_FAQS = """
+SELECT intent_key, question, answer, category, quick_replies, source_url, score
+FROM (
+    SELECT f.intent_key, f.question, f.answer, f.category, f.quick_replies,
+           f.source_url,
+           greatest(
+               word_similarity(%s, f.question),
+               (
+                   SELECT coalesce(max(word_similarity(%s, variant)), 0)
+                   FROM unnest(f.variants) AS variant
+                   WHERE length(btrim(variant)) >= 3
+               ),
+               (
+                   SELECT coalesce(max(word_similarity(variant, %s)), 0)
+                   FROM unnest(f.variants) AS variant
+                   WHERE length(btrim(variant)) >= 3
+               ),
+               (
+                   SELECT coalesce(max(word_similarity(token, %s)), 0)
+                   FROM unnest(string_to_array(f.question, ' ')) AS token
+                   WHERE length(btrim(token)) >= 3
+               )
+           ) AS score
+    FROM faqs f
+    WHERE f.is_active
+) AS scored
+WHERE score >= %s
+ORDER BY score DESC, intent_key
+LIMIT %s
+"""
+
+
+async def search_faqs(
+    db: SupportsQuery,
+    question: str,
+    limit: int = 3,
+    min_score: float = FAQ_MIN_SCORE,
+) -> list[dict]:
+    """
+    ค้น FAQ ที่คนเขียนคำตอบไว้ — คืนแถวที่คะแนนถึงเกณฑ์ เรียงคะแนนมากไปน้อย
+
+    คืน ``score`` ออกมาด้วยเพื่อให้ router เอาไปเป็น ``confidence`` ใน
+    ``chat_logs`` ได้ (วัดในธีสิสภายหลังว่าคำตอบชั้นนี้มั่นใจแค่ไหนจริง)
+
+    ``limit`` default 3 ไม่ใช่ 5 เพราะชั้นนี้ใช้แถวแรกตอบเสมอ ที่เหลือมีไว้
+    ให้ log/debug เห็นว่ามี FAQ ใบอื่นสูสีไหม (สัญญาณว่า FAQ เขียนซ้ำซ้อน)
+
+    ``min_score`` เปิดให้ปรับได้เพื่อให้เทสพิสูจน์ได้ว่าเกณฑ์เป็นตัวกำหนดผล
+    แต่**ค่าที่ใช้จริงมาจาก ``settings.faq_match_threshold``** (ดู
+    :data:`FAQ_MIN_SCORE`)
+    """
+    return await db.fetch_all(
+        SQL_SEARCH_FAQS, (question, question, question, question, min_score, limit)
+    )
+
+
 # ── แผนการเรียน / วิชาที่เปิด ────────────────────────────────────────────────
 
 # นับทีเดียวหลายอย่างในหนึ่ง round-trip — ใช้บอกผู้ใช้ว่า "ตอบอะไรได้บ้าง"
 # ตอนนี้ prerequisites/curriculum_rules ยังว่าง (รอ มคอ.2) → ต้องบอกตรง ๆ
 SQL_PLANNING_COVERAGE = """
 SELECT
-    (SELECT count(*) FROM curriculum_rules WHERE program_code = %s) AS curriculum_rules,
-    (SELECT count(*) FROM prerequisites WHERE program_code = %s) AS prerequisites,
+    (SELECT count(*) FROM curriculum_rules
+      WHERE program_code = %s AND is_active) AS curriculum_rules,
+    (SELECT count(*) FROM prerequisites
+      WHERE program_code = %s AND is_active) AS prerequisites,
     (SELECT count(*) FROM offering_patterns) AS patterns,
     (SELECT count(*) FROM offering_patterns WHERE opens_sem1) AS opens_sem1,
     (SELECT count(*) FROM offering_patterns WHERE opens_sem2) AS opens_sem2,
@@ -559,6 +659,7 @@ LEFT JOIN LATERAL (
 ) c ON TRUE
 LEFT JOIN offering_patterns op ON op.course_code = cr.course_code
 WHERE cr.program_code = %s
+  AND cr.is_active
 ORDER BY cr.std_year, cr.std_semester, cr.course_code
 """
 
@@ -573,6 +674,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) r ON TRUE
 WHERE p.program_code = %s
+  AND p.is_active
 ORDER BY p.course_code, p.requires_code
 """
 
@@ -714,6 +816,7 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_INSTRUCTOR_GROUPS": SQL_INSTRUCTOR_GROUPS,
     "SQL_INSTRUCTORS_IN_GROUP": SQL_INSTRUCTORS_IN_GROUP,
     "SQL_SEARCH_INSTRUCTORS": SQL_SEARCH_INSTRUCTORS,
+    "SQL_SEARCH_FAQS": SQL_SEARCH_FAQS,
     "SQL_INSTRUCTOR_CONTACT_COVERAGE": SQL_INSTRUCTOR_CONTACT_COVERAGE,
     "SQL_PLANNING_COVERAGE": SQL_PLANNING_COVERAGE,
     "SQL_COURSE_BY_CODE": SQL_COURSE_BY_CODE,

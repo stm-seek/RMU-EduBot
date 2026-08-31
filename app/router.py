@@ -10,17 +10,22 @@ Router 3 ชั้น: postback → FAQ → RAG → fallback
 ชั้นที่ 1 ตอบจาก DB ตรง ๆ: เร็ว ฟรี แม่น 100%  ← **ทำแล้ว** ครอบคลุม
 postback จากปุ่ม, รหัสวิชา 7 หลัก, และ **ค้นด้วยคำที่พิมพ์มา** (``pg_trgm``)
 ชั้นที่ 2 (FAQ) ใช้คำตอบที่คนเขียนไว้ ไม่เรียก LLM → ประหยัดและคุมคำตอบได้
+← **ทำแล้ว** อ่านจากตาราง ``faqs`` ที่หน้า ``/admin`` เขียนเข้ามา แมตช์ด้วย
+``word_similarity`` สองทิศทางกับ ``question`` และ ``variants`` (ดู
+:func:`_faq_answer`) — **มาก่อนการค้นเอกสาร** เพราะคำตอบที่คนเขียนเองต้องชนะ
+ผลค้นอัตโนมัติ ไม่ถึงเกณฑ์ ``FAQ_MATCH_THRESHOLD`` → ตกไปชั้นถัดไป ไม่เดา
 ชั้นที่ 3 (RAG/AI Chat) generate ด้วย LLM — ตอนนี้ **AI Chat ทำแล้ว**
-(คำแนะนำการเรียนทั่วไป ตอบจาก ``app/ai_chat.py``) ส่วน RAG/FAQ ยังไม่มี
-เพราะตาราง ``rag_chunks``/``faqs`` ยังว่าง (บล็อกที่เนื้อหาทางการ)
+(คำแนะนำการเรียนทั่วไป ตอบจาก ``app/ai_chat.py``) ส่วน RAG ยังไม่มี
+เพราะตาราง ``rag_chunks`` ยังว่าง (บล็อกที่เนื้อหาทางการ)
 
-**ค่า ``answered_by`` ที่ไฟล์นี้ผลิตได้จริงตอนนี้มี 10 ค่า**: ``rich_menu``
+**ค่า ``answered_by`` ที่ไฟล์นี้ผลิตได้จริงตอนนี้มี 11 ค่า**: ``rich_menu``
 (กดปุ่มบน Rich Menu — postback มี ``src=rich``), ``quick_reply`` (กดปุ่มใน
 บทสนทนา), ``course`` (พิมพ์รหัสวิชา 7 หลัก), ``follow`` (ทักครั้งแรก),
 ``search`` (พิมพ์คำแล้วค้นจาก DB), ``no_data`` (เข้าใจคำถามแต่ไม่มีข้อมูล),
 ``db_error`` (ถามฐานข้อมูลไม่สำเร็จ), ``fallback`` (ไม่เข้าใจคำถาม),
 ``ai_chat`` (LLM ตอบคำถามทั่วไป), ``planner`` (ความก้าวหน้าตามหลักสูตร
-และการคำนวณเกรด — ประกอบคำตอบใน ``app/progress.py``) — ยังไม่มี ``faq`` / ``rag``
+และการคำนวณเกรด — ประกอบคำตอบใน ``app/progress.py``), ``faq`` (คำตอบที่คน
+เขียนไว้ในตาราง ``faqs`` — ชั้นที่ 2) — **ยังไม่มี ``rag``** เท่านั้น
 
 **เดิมทุกทางข้างบนถูกป้ายว่า ``rich_menu`` หมด** รวมทั้งการพิมพ์รหัสวิชาและ
 ข้อความต้อนรับ ซึ่งทำให้วัดในธีสิสไม่ได้ว่า Rich Menu รับภาระเท่าไหร่จริง
@@ -34,6 +39,7 @@ postback จากปุ่ม, รหัสวิชา 7 หลัก, แล�
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Awaitable
@@ -43,6 +49,7 @@ from urllib.parse import parse_qsl
 
 from . import repository as repo
 from .db import SupportsQuery
+from .line import flex
 from .line import messages as msg
 
 log = logging.getLogger("app.router")
@@ -61,12 +68,18 @@ SEARCH_RESULT_LIMIT = 5
 # วิชาตัวอย่างบนปุ่ม "ค้นรายวิชา" — 3 พอให้เห็นว่าใช้งานยังไง ไม่บังปุ่มเมนูหลัก
 SAMPLE_COURSE_COUNT = 3
 
+# label ปุ่มเปิดหน้า LIFF บนเมนูหลัก — ใช้คำเดียวกับที่ ``progress.py`` ใช้
+# ตอนชวนติ๊กครั้งแรก ไม่ตั้งชื่อใหม่ให้หน้าเดียวกันสองชื่อ (ยาว 18 < 20 ตัว
+# ที่ LINE ยอมให้ใน label ของ quick reply)
+LIFF_MENU_LABEL = "ติ๊กวิชาที่ผ่านแล้ว"
+
 # เพดานเอกสารต่อหมวด **ต้องมากกว่าหมวดที่ใหญ่สุด** (ตอนนี้ loan = 12 ฉบับ)
 #
 # ``repo.documents_in_category`` ตั้ง default ไว้ 10 เป็นกันชนของชั้นข้อมูล
 # ตรงนี้เคยเรียกโดยไม่ส่ง limit → เมนูบอก "12 ฉบับ" แต่กดเข้าไปเห็น 10
 # และเอกสาร 2 ฉบับสุดท้ายเข้าถึงไม่ได้เลยจากบอท (เจอกับข้อมูลจริง)
-# ถ้าโตเกินงบตัวอักษร :func:`join_lines` จะตัดให้แล้วบอก "แสดง N จาก M รายการ"
+# ถ้าโตเกินเพดานแถวของฟอง (:data:`app.line.flex.MAX_ROWS`) จะแสดงเท่าที่
+# ได้แล้วมีบรรทัดบอกจำนวนทั้งหมดให้พิมพ์คำค้นต่อ
 DOCUMENTS_PER_CATEGORY = 30
 
 
@@ -81,8 +94,8 @@ class RouteResult:
 
     messages: list[dict]
     # ค่าที่ผลิตได้จริงตอนนี้: rich_menu / quick_reply / course / follow / search
-    # / no_data / db_error / fallback / ai_chat / planner
-    # (faq / rag ยังไม่มีชั้นที่ผลิตค่าเหล่านี้ — อย่าเคลมในเอกสาร)
+    # / faq / no_data / db_error / fallback / ai_chat / planner
+    # (rag ยังไม่มีชั้นที่ผลิตค่านี้ — อย่าเคลมในเอกสาร)
     answered_by: str
     intent_key: str | None = None
     confidence: float | None = None
@@ -285,7 +298,35 @@ POSTBACK_HANDLERS: dict[str, str] = {
     # (เงื่อนไข+กติกาทั้งหมดอยู่ที่ app/ai_chat.py::dispatch)
     "ai_session": "ปรึกษา AI",
     "ai_end": "จบการปรึกษา",
+    # แบบประเมินระบบสำหรับงานวิจัย — ไม่ใช้ DB และไม่ใช้ LLM ตอบลิงก์ตรง ๆ
+    "survey": "แบบประเมิน",
 }
+
+# คำที่พิมพ์แล้วต้องได้แบบประเมิน — อาจารย์/ผู้เชี่ยวชาญบางท่านพิมพ์เอง
+# ไม่กดปุ่ม (และ Quick Reply ไม่ขึ้นบนเดสก์ท็อปอยู่แล้ว)
+SURVEY_PATTERN = re.compile(r"แบบประเมิน|ประเมิน|แบบสอบถาม")
+
+
+def _survey_answer(answered_by: str = BUTTON_ANSWER) -> RouteResult:
+    """
+    แบบประเมินระบบ — ใช้ร่วมกันทั้งทางปุ่มและทางพิมพ์
+
+    ทางปุ่มใช้ ``BUTTON_ANSWER`` (ถูกแทนด้วยพื้นผิวจริงใน
+    :func:`handle_postback`) **ห้ามคิดค่า ``answered_by`` ใหม่** เพราะ
+    ``chat_logs.answered_by`` มี CHECK constraint อยู่ (ดู
+    ``db/migrations/007_answered_by_faq.sql``) ค่าที่ไม่อยู่ในลิสต์นั้นทำให้
+    เขียน log ล้มทุกครั้งที่ปุ่มถูกกด
+
+    ทางพิมพ์จึงต้องส่งค่าที่ constraint ยอมมาเอง (``BUTTON_ANSWER`` เป็นป้าย
+    ชั่วคราวที่ไม่มีใครแทนให้ในเส้นทางข้อความ — ถ้าปล่อยไว้จะหลุดลง DB)
+    แบบเดียวกับ :func:`_course_answer` ที่รับ ``answered_by`` เข้ามา
+    """
+    return RouteResult(
+        messages=[msg.survey_message()],
+        answered_by=answered_by,
+        intent_key="survey",
+        confidence=1.0,
+    )
 
 # ชื่อหมวดเอกสารเป็นภาษาไทย — ต้องไม่เกิน 20 ตัวอักษรเพราะใช้เป็น label ของปุ่ม
 DOCUMENT_CATEGORY_LABELS: dict[str, str] = {
@@ -386,7 +427,10 @@ async def _dispatch_postback(
         return result or _fallback(action)
 
     if action == "menu":
-        return await handle_follow(intent_key="menu")
+        return await handle_follow(intent_key="menu", settings=settings)
+
+    if action == "survey":
+        return _survey_answer()
 
     if action == "documents":
         category = params.get("cat", "")
@@ -477,22 +521,15 @@ async def _documents_answer(
     if not rows:
         return _no_data(f"เอกสารหมวด{label}", intent)
 
-    lines: list[str] = []
-    for index, row in enumerate(rows, start=1):
-        lines.append(f"{index}. {row['title']}")
-        lines.append(f"   {row['url']}")
-        if row.get("note"):
-            lines.append(f"   หมายเหตุ: {row['note']}")
-
+    # รายการเอกสารในฟองเดียว (Flex) — แถวละ 1 ฉบับ แตะแถวเปิดเอกสารนั้น
+    # ไอคอนหัวฟองดูจากคีย์หมวด (``category`` ดิบ ไม่ใช่ชื่อไทย)
     return RouteResult(
         messages=[
-            msg.text_message(
-                join_lines(
-                    f"เอกสารหมวด{label} ({len(rows)} ฉบับ)",
-                    lines,
-                    "กดลิงก์เพื่อดาวน์โหลดได้เลยครับ",
-                ),
+            flex.documents_flex_message(
+                label,
+                rows,
                 _menu_quick_reply(msg.postback_action("หมวดอื่น", "action=documents")),
+                category_key=category,
             )
         ],
         answered_by=BUTTON_ANSWER,
@@ -704,9 +741,12 @@ async def handle_text(
     (ดักก่อน search — ดู :mod:`app.ai_chat`), และ **ค้นด้วยคำที่พิมพ์มา**
     (``pg_trgm`` word_similarity) → เอกสาร/อาจารย์ ทั้งสองทางยังเป็นชั้นที่ 1
     คือตอบจากฐานข้อมูลตรง ๆ
+    นอกจากนี้คำว่า "แบบประเมิน"/"ประเมิน"/"แบบสอบถาม" (:data:`SURVEY_PATTERN`)
+    ตอบลิงก์แบบประเมินระบบ — วางไว้หลังโหมดปรึกษาแต่ก่อน FAQ/search
     search ไม่เจอ → ตอบ fallback พร้อม **ปุ่ม "ปรึกษา AI"** (ไม่ยิง LLM
     ทันทีทุกข้อความ กันเสีย token ฟรีกับพิมพ์ผิด/คำทักทาย)
-    ยังไม่ทำ: FAQ ที่คนเขียนคำตอบไว้ (ชั้น 2) และ RAG (ตาราง ``rag_chunks`` ว่าง)
+    และ **FAQ ที่คนเขียนคำตอบไว้ (ชั้นที่ 2)** ซึ่งถูกถามก่อนการค้นเอกสารเสมอ
+    ยังไม่ทำ: RAG (ตาราง ``rag_chunks`` ว่าง)
 
     ``settings``/``llm``/``user_hash`` เป็น keyword-only และ ``None`` ได้ —
     เทสเดิมที่เรียก ``handle_text(text, db)`` ยังทำงานเหมือนเดิมทุกประการ
@@ -790,7 +830,26 @@ async def _dispatch_text(
     if result is not None:
         return result
 
+    # ── แบบประเมินระบบ — ก่อน FAQ/search ────────────────────────────────────
+    # ต้องอยู่ **หลัง** โหมดปรึกษา (ห้ามแย่งเทิร์นตอนคนกำลังคุยกับ AI แล้วพูด
+    # คำว่า "ประเมิน") และ **ก่อน** FAQ/search เพราะคำว่า "แบบประเมิน" ไปตรงกับ
+    # ชื่อเอกสาร/แบบฟอร์มในคลังได้ง่าย แล้วจะได้ลิงก์ผิดใบ
+    #
+    # ``answered_by='search'`` เพราะ constraint ของ ``chat_logs`` ไม่มีค่าสำหรับ
+    # "ตอบด้วยคำที่พิมพ์มาแต่ไม่ได้ค้น DB" และเราไม่เขียน migration ใหม่เพื่อ
+    # เรื่องนี้ — แถวนี้แยกออกจากผลค้นจริงได้ด้วย ``intent_key='survey'``
+    if SURVEY_PATTERN.search(cleaned):
+        return _survey_answer("search")
+
     if db is not None:
+        # ── ชั้นที่ 2: FAQ ที่คนเขียนคำตอบไว้ — **มาก่อนการค้นเอกสาร** ───────
+        # คำตอบที่คนเขียนเองต้องชนะผลค้นอัตโนมัติ: เขียน FAQ ขึ้นมาเพราะ
+        # คำตอบจากลิงก์เอกสารยังไม่พอ ถ้าให้ search ตอบก่อนก็เท่ากับหน้า
+        # /admin กรอกไปเปล่า ๆ (คำถามที่มี FAQ มักมีเอกสารที่ชื่อคล้ายด้วย)
+        answer = await _faq_answer(db, cleaned, _faq_threshold(settings))
+        if answer is not None:
+            return answer
+
         found = await _search_answer(db, cleaned)
         if found is not None:
             return found
@@ -817,6 +876,113 @@ async def _dispatch_text(
         answered_by="fallback",
         intent_key="text",
     )
+
+
+# ── ชั้นที่ 2: FAQ ที่คนเขียนคำตอบไว้ ────────────────────────────────────────
+
+
+def _faq_threshold(settings: Any | None) -> float:
+    """
+    เกณฑ์แมตช์ FAQ ที่จะใช้จริง — ``settings`` เป็น ``None`` ได้
+
+    เทสเดิม (และการเรียก ``handle_text(text, db)`` แบบไม่ส่ง settings) ต้อง
+    ทำงานเหมือนเดิมทุกประการ → ไม่มี settings ก็ใช้ค่าเดียวกับที่ชั้นข้อมูล
+    ตั้งไว้ ไม่ใช่ปิดชั้นนี้เงียบ ๆ และไม่ใช่พัง
+
+    >>> _faq_threshold(None) == repo.FAQ_MIN_SCORE
+    True
+    >>> from types import SimpleNamespace
+    >>> _faq_threshold(SimpleNamespace(faq_match_threshold=0.5))
+    0.5
+    """
+    value = getattr(settings, "faq_match_threshold", None)
+    return repo.FAQ_MIN_SCORE if value is None else float(value)
+
+
+async def _faq_answer(
+    db: SupportsQuery, question: str, threshold: float
+) -> RouteResult | None:
+    """
+    ตอบจาก FAQ — คืน ``None`` เมื่อไม่มีใบไหนถึงเกณฑ์ เพื่อให้ไหลไปชั้นถัดไป
+
+    **ต่ำกว่าเกณฑ์ = ไม่ตอบ ไม่ใช่ตอบใบที่ใกล้สุด**: FAQ ส่ง "คำตอบสำเร็จ"
+    ออกไปโดยไม่มีสัญญาณให้ผู้ใช้เอะใจว่าไม่เกี่ยวกับที่ถาม (ต่างจากผลค้น
+    เอกสารที่เห็นชื่อไฟล์แล้วรู้ทันที) เดาผิดจึงเสียหายกว่าตกไปชั้นถัดไป
+
+    ใช้ **แถวแรก** (คะแนนสูงสุด) ตอบเสมอ — ไม่รวมคำตอบหลายใบเข้าด้วยกัน
+    เพราะแต่ละใบเป็นคำตอบเต็มของคำถามหนึ่งข้อ ต่อกันแล้วอ่านไม่รู้เรื่อง
+    """
+    rows = await repo.search_faqs(db, question, min_score=threshold)
+    if not rows:
+        return None
+
+    row = rows[0]
+    source_url = (row.get("source_url") or "").strip()
+    # คำตอบเป็นก้อนเดียวที่คนเขียนไว้ → เป็น header ของ join_lines
+    # ส่วนแหล่งอ้างอิงเป็น footer (Requirement ข้อ 11 ต้องบอกที่มาได้)
+    answer = join_lines(
+        str(row["answer"]).strip(), [], f"อ้างอิง: {source_url}" if source_url else ""
+    )
+
+    return RouteResult(
+        messages=[
+            msg.text_message(answer, _faq_quick_reply(row.get("quick_replies")))
+        ],
+        answered_by="faq",
+        intent_key=f"faq:{row['intent_key']}",
+        confidence=float(row["score"]),
+        citations=(
+            [{"title": str(row["question"]), "url": source_url}] if source_url else []
+        ),
+    )
+
+
+def _faq_quick_reply(raw: Any) -> dict:
+    """
+    ปุ่มของ FAQ ใบนั้น (คอลัมน์ ``quick_replies`` JSONB) + ปุ่มกลับเมนู
+
+    รูปแบบที่รับ: list ของ dict — ถ้ามี ``type`` ถือว่าเป็น action ของ LINE
+    มาแล้วส่งต่อตรง ๆ ถ้าไม่มีก็ประกอบจาก ``label`` + ``text``/``data``/``uri``
+
+    **ค่าเสียรูปต้องไม่ทำให้ตอบไม่ได้**: คอลัมน์นี้หน้า admin แก้ไม่ได้
+    (ดู :mod:`app.admin_repo`) แต่ถูกกรอกด้วยมือผ่าน SQL ได้ → ถ้า JSON
+    ผิดรูปให้ถอยไปใช้เมนูหลัก ไม่ใช่ 500 ทั้งคำตอบเพราะปุ่มพัง
+
+    >>> _faq_quick_reply(None)['items'][0]['action']['label']
+    'แผนการเรียน'
+    >>> _faq_quick_reply([{'label': 'กยศ.', 'text': 'กยศ'}])['items'][0]['action']
+    {'type': 'message', 'label': 'กยศ.', 'text': 'กยศ'}
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            log.warning("faqs.quick_replies ไม่ใช่ JSON ที่อ่านได้ — ใช้เมนูหลักแทน")
+            raw = None
+
+    if not isinstance(raw, list):
+        return _menu_quick_reply()
+
+    buttons: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type"):
+            buttons.append(item)
+            continue
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        if item.get("uri"):
+            buttons.append(msg.uri_action(label, str(item["uri"])))
+        elif item.get("data"):
+            buttons.append(msg.postback_action(label, str(item["data"])))
+        else:
+            buttons.append(msg.message_action(label, str(item.get("text") or label)))
+
+    if not buttons:
+        return _menu_quick_reply()
+    return _list_quick_reply(buttons)
 
 
 # ── ค้นด้วยคำที่พิมพ์มา ────────────────────────────────────────────────────────
@@ -1052,7 +1218,9 @@ async def _course_help_answer(db: SupportsQuery | None) -> RouteResult:
     )
 
 
-async def handle_follow(intent_key: str = "follow") -> RouteResult:
+async def handle_follow(
+    intent_key: str = "follow", settings: Any | None = None
+) -> RouteResult:
     """
     ข้อความต้อนรับ — ใช้ทั้งตอน follow และตอนกดปุ่ม "เมนูหลัก"
 
@@ -1060,7 +1228,20 @@ async def handle_follow(intent_key: str = "follow") -> RouteResult:
     และ ``answered_by`` ก็ต้องแยกด้วย: การ **เพิ่มเพื่อน** ไม่ใช่การกดปุ่ม
     (เดิมนับเป็น ``rich_menu`` ทั้งคู่ ทำให้ยอดกดเมนูเกินความจริงทุกครั้ง
     ที่มีคนเพิ่มเพื่อนใหม่)
+
+    ``settings`` มีไว้ใส่ปุ่มเปิดหน้า LIFF (ติ๊กวิชาที่ผ่านแล้ว) — ทางเข้า
+    หน้านั้นที่สั้นที่สุด เพราะ Rich Menu ทั้ง 6 ช่องเป็น postback ล้วน
+    เปิด LIFF ไม่ได้ (ต้องเป็น ``uri`` action) ถ้ายังไม่ได้ตั้ง ``LIFF_ID``
+    ทั้งปุ่มและบรรทัดที่พูดถึงปุ่มจะหายไปพร้อมกัน ไม่ทิ้งคำสัญญาลอย ๆ
     """
+    from . import progress as prog
+
+    liff = prog.liff_button(settings, LIFF_MENU_LABEL)
+    tick_line = (
+        f"  • กด “{LIFF_MENU_LABEL}” บอกระบบว่าเรียนอะไรไปแล้ว แล้วถามความก้าวหน้า/เกรดได้\n"
+        if liff
+        else ""
+    )
     return RouteResult(
         messages=[
             msg.text_message(
@@ -1070,11 +1251,14 @@ async def handle_follow(intent_key: str = "follow") -> RouteResult:
                 "  • ดูข้อมูลติดต่ออาจารย์ (อีเมล — ยังไม่มีเบอร์โทรในระบบ)\n"
                 "  • พิมพ์รหัสวิชา 7 หลัก เพื่อดูรายละเอียดรายวิชา\n"
                 "  • พิมพ์คำที่อยากค้นมาได้เลย เช่น ชื่อเอกสารหรือชื่ออาจารย์\n"
-                "  • กด “ปรึกษา AI” บนเมนู หรือพิมพ์ “ปรึกษา” ตามด้วยคำถาม\n\n"
-                "ยังทำไม่ได้: จัดแผนรายเทอมและตรวจวิชาบังคับก่อน\n"
-                "(ระบบทะเบียนไม่ได้เผยแพร่ข้อมูลส่วนนี้)\n\n"
+                "  • กด “ปรึกษา AI” บนเมนู หรือพิมพ์ “ปรึกษา” ตามด้วยคำถาม\n"
+                f"{tick_line}"
+                "  • กด “แบบประเมิน” เพื่อช่วยประเมินระบบนี้ (มีทั้งใบของอาจารย์และนักศึกษา)\n"
+                "\n"
+                "ยังทำไม่ได้: ตรวจวิชาบังคับก่อน — ระบบทะเบียนไม่เผยแพร่\n"
+                "ข้อมูลส่วนนี้ วิชาที่เสนอจึงเรียงตามแผนการเรียนแทน\n\n"
                 "เลือกจากปุ่มด้านล่างได้เลยครับ",
-                _menu_quick_reply(),
+                _menu_quick_reply(*liff),
             )
         ],
         answered_by=BUTTON_ANSWER if intent_key == "menu" else "follow",

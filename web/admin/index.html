@@ -1,0 +1,3223 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#06c755">
+<title>หน้า admin — แก้ข้อมูลที่บอทเอาไปตอบ</title>
+<!--
+  หน้า admin: แก้ FAQ / เอกสาร / ข้อมูลติดต่ออาจารย์ / แผนการเรียน / วิชาบังคับก่อน
+  และอ่านคำถามที่บอทตอบไม่ได้ (input ของการเขียน FAQ)
+
+  ข้อตกลงด้านความปลอดภัยที่ห้ามแก้:
+    * เข้าสู่ระบบด้วย **ชื่อผู้ใช้ + รหัสผ่าน** แล้วเซิร์ฟเวอร์ตั้ง cookie
+      ``admin_session`` แบบ HttpOnly ให้เอง — หน้านี้อ่าน cookie นั้นไม่ได้และ
+      ไม่ต้องอ่าน ทุก request แค่ส่ง cookie ไปด้วย (credentials: "same-origin")
+    * ไม่เก็บชื่อผู้ใช้ / รหัสผ่าน / เซสชัน ลง localStorage/sessionStorage และ
+      ไม่ใส่ลง URL — อยู่ในตัวแปรของหน้านี้เท่านั้น (หน้านี้เข้าจากคอมได้ ซึ่ง
+      เป็นเครื่องที่มี extension ของคนอื่นอ่าน storage ได้ ส่วน query string
+      ของ GET จะไปนอนอยู่ใน access log ของ uvicorn และของ cloudflared)
+    * ทุก endpoint ที่ต้องมีสิทธิ์เป็น POST รวมทั้งตัวที่แค่อ่าน
+    * ไม่มีปุ่มลบทั้งหน้า มีแต่ปุ่มเปิด/ปิด (``is_active``) — เพราะ scraper
+      เขียนทับตารางเหล่านี้ได้ ลบจริงแล้วรอบ scrape ถัดไปจะเอากลับมาเงียบ ๆ
+
+  ทำไมไฟล์เดียวไม่มี build step: ของที่ต้อง npm install ก่อนแก้ปุ่มเดียว จะไม่มี
+  ใครแก้ต่อหลังส่งธีสิส — หน้านี้ต้องเปิดด้วย editor อะไรก็ได้แล้วแก้ได้ทันที
+  ด้วยเหตุผลเดียวกัน CSS/JS อยู่ในไฟล์นี้ และของนอกที่โหลดมีแค่อย่างเดียว:
+  ฟอนต์ไทยจาก Google Fonts (โหลดไม่ขึ้นก็อ่านได้ปกติ เพราะ fallback ไล่ไปหา
+  ฟอนต์ไทยที่มีในเครื่องอยู่แล้ว)
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- โหลดฟอนต์แบบไม่บล็อกการวาดหน้า: เปิดผ่าน tunnel เน็ตอาจช้ามาก
+     หน้าต้องขึ้นก่อนแล้วฟอนต์ค่อยมาทีหลัง (font-display=swap) -->
+<link rel="stylesheet" media="print" onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&display=swap">
+<style>
+/* ── โทเคนของดีไซน์ ────────────────────────────────────────────────────────
+   สีทุกตัวอยู่ที่นี่ที่เดียว และมีคู่ของโหมดมืดครบทุกตัว — สีที่ hard-code
+   ในกฎข้างล่างคือสีที่ "จะพังในโหมดมืด" แบบที่ไม่มีใครเห็นจนกว่าจะเปิดกลางคืน
+
+   หมายเหตุเรื่อง contrast: เขียว LINE (#06c755) สว่างเกินกว่าจะใส่ตัวอักษรขาว
+   ทับได้ตามเกณฑ์ AA (ได้แค่ ~2:1) ปุ่มหลักในโหมดสว่างจึงใช้เขียวเข้ม
+   --brand-ink (#06803b + ตัวอักษรขาว = 5.0:1) ส่วนโหมดมืดกลับด้าน คือใช้เขียว
+   สดเป็นพื้นแล้วใส่ตัวอักษรเกือบดำทับ */
+:root {
+  color-scheme: light;
+  --bg: #f2f4f7;
+  --surface: #ffffff;
+  --surface-2: #f7f9fb;
+  --surface-3: #eef1f5;
+  --border: #dde3ea;
+  --border-strong: #c4ccd6;
+  --text: #11151b;
+  --text-dim: #4b5563;
+  --text-faint: #6a7481;
+  --brand: #06c755;
+  --brand-ink: #06803b;
+  --brand-on: #ffffff;
+  --brand-text: #05702f;
+  --brand-soft: #e7f8ee;
+  --warn-bg: #fff8e1;
+  --warn-border: #ecd48a;
+  --warn-text: #6b4e00;
+  --err-bg: #fdecea;
+  --err-border: #f0b4ae;
+  --err-text: #8c2318;
+  --ok-bg: #e8f7ec;
+  --ok-border: #a9dfb8;
+  --ok-text: #145c2c;
+  --focus: #1a6dff;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .05);
+  --shadow-lg: 0 10px 30px rgba(16, 24, 40, .18);
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #10131a;
+    --surface: #181c24;
+    --surface-2: #1f242e;
+    --surface-3: #262c38;
+    --border: #2f3742;
+    --border-strong: #414b59;
+    --text: #e9edf3;
+    --text-dim: #b3bcc8;
+    --text-faint: #9aa4b1;
+    --brand: #2ad86f;
+    --brand-ink: #06c755;
+    --brand-on: #05200f;
+    --brand-text: #4fe08c;
+    --brand-soft: #122b1d;
+    --warn-bg: #322709;
+    --warn-border: #5b4915;
+    --warn-text: #f3dc9c;
+    --err-bg: #3a1d1a;
+    --err-border: #61302a;
+    --err-text: #ffb8ae;
+    --ok-bg: #10301e;
+    --ok-border: #205c37;
+    --ok-text: #86e2a7;
+    --focus: #7fb0ff;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .5);
+    --shadow-lg: 0 12px 34px rgba(0, 0, 0, .6);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  padding: 0 0 56px;
+  /* fallback ไทยเรียงจาก "มีในเครื่องแน่ ๆ" ไปหาตัวสำรอง — ฟอนต์เว็บโหลดไม่ขึ้น
+     แล้วต้องยังได้ฟอนต์ไทยที่มีหัวอ่านสบาย ไม่ใช่ตกไปที่ฟอนต์ default ของระบบ */
+  font-family: "Noto Sans Thai", -apple-system, BlinkMacSystemFont, "Segoe UI",
+               "Sarabun", "Leelawadee UI", "Thonburi", "Tahoma", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  background: var(--bg);
+  color: var(--text);
+  /* ตัวเลขไทย/อารบิกในตารางต้องเรียงตรงหลัก ไม่งั้นอ่านคอลัมน์ปีที่/ภาคยาก */
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* ── แถบหัว ───────────────────────────────────────────────────────────────── */
+
+.topbar { position: sticky; top: 0; z-index: 30; }
+.appbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.appbar__inner {
+  max-width: 1080px; margin: 0 auto;
+  padding: 10px 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+.mark {
+  flex: none; width: 34px; height: 34px; border-radius: 10px;
+  background: var(--brand-soft); color: var(--brand-text);
+  display: grid; place-items: center;
+}
+.mark svg { width: 20px; height: 20px; display: block; }
+.appbar__title { min-width: 0; flex: 1; }
+.appbar h1 {
+  margin: 0; font-size: .98rem; font-weight: 700; line-height: 1.3;
+  letter-spacing: -.01em;
+}
+.appbar .who {
+  margin-top: 1px; font-size: .74rem; color: var(--text-faint);
+  display: flex; align-items: center; gap: 6px;
+}
+.dot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--border-strong);
+}
+.dot--on { background: var(--brand); }
+.dot--off { background: var(--err-text); }
+/* จอแคบมาก: ปุ่มโหลดใหม่เหลือแค่ไอคอน เพื่อไม่ให้บีบหัวข้อจนตกบรรทัด
+   (ข้อความยังอยู่ให้ screen reader อ่าน) */
+@media (max-width: 439px) {
+  #refresh .btnlabel, #logout .btnlabel {
+    position: absolute; width: 1px; height: 1px;
+    overflow: hidden; clip-path: inset(50%);
+  }
+  #refresh, #logout { padding: 6px 10px; }
+}
+
+/* ── แถบแท็บ ──────────────────────────────────────────────────────────────── */
+
+.tabbar {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.tabbar__scroll {
+  max-width: 1080px; margin: 0 auto;
+  display: flex; gap: 6px;
+  padding: 8px 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.tabbar__scroll::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none; scroll-snap-align: start;
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 40px; padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font: inherit; font-size: .84rem; font-weight: 500;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.tab:hover { border-color: var(--border-strong); color: var(--text); }
+.tab[aria-selected="true"] {
+  background: var(--brand-ink); border-color: var(--brand-ink);
+  color: var(--brand-on); font-weight: 600;
+}
+.tab .pill {
+  font-size: .72rem; font-weight: 700;
+  padding: 0 6px; border-radius: 999px;
+  background: var(--surface-3); color: var(--text-dim);
+}
+.tab[aria-selected="true"] .pill {
+  background: rgba(255, 255, 255, .22); color: var(--brand-on);
+}
+
+/* ── โครงเนื้อหา ─────────────────────────────────────────────────────────── */
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 14px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.card__head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.card__head h2 {
+  margin: 0; font-size: .92rem; font-weight: 700; color: var(--text);
+}
+.card__head .sub { font-size: .76rem; color: var(--text-faint); }
+.card__body { padding: 15px; }
+.card--flush .card__body { padding: 0; }
+
+/* ── กล่องข้อความ (คำเตือน / ผิดพลาด / สำเร็จ) ───────────────────────────── */
+
+.msg {
+  display: flex; gap: 9px; align-items: flex-start;
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg); color: var(--warn-text);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  font-size: .82rem;
+  margin-bottom: 10px;
+}
+.msg svg { flex: none; width: 17px; height: 17px; margin-top: 2px; }
+.msg--err { background: var(--err-bg); border-color: var(--err-border); color: var(--err-text); }
+.msg--ok { background: var(--ok-bg); border-color: var(--ok-border); color: var(--ok-text); }
+.msg--info {
+  background: var(--surface-2); border-color: var(--border); color: var(--text-dim);
+}
+.msg b { font-weight: 600; }
+.msg .detail {
+  margin-top: 4px; font-size: .78rem; white-space: pre-wrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── สรุปตัวเลข ──────────────────────────────────────────────────────────── */
+
+.stats {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.stat {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 11px 12px;
+  background: var(--surface-2);
+}
+.stat b {
+  display: block; font-size: 1.45rem; font-weight: 700; line-height: 1.2;
+  letter-spacing: -.02em;
+}
+.stat span { display: block; font-size: .76rem; color: var(--text-dim); }
+.stat .meter {
+  height: 5px; border-radius: 999px; background: var(--surface-3);
+  margin-top: 8px; overflow: hidden;
+}
+.stat .meter > i { display: block; height: 100%; background: var(--brand); }
+.stat--empty b { color: var(--warn-text); }
+.stat--empty { background: var(--warn-bg); border-color: var(--warn-border); }
+
+/* ── ฟอร์ม ───────────────────────────────────────────────────────────────── */
+
+.grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field.wide { grid-column: 1 / -1; }
+.field > label {
+  font-size: .8rem; font-weight: 600; color: var(--text);
+  display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap;
+}
+.field .req { color: var(--err-text); font-weight: 700; }
+.field .hint { font-size: .74rem; color: var(--text-faint); line-height: 1.45; }
+.field .rowline {
+  display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
+}
+.field .count {
+  font-size: .72rem; color: var(--text-faint); white-space: nowrap;
+}
+.field .count--near { color: var(--warn-text); font-weight: 600; }
+.field .count--over { color: var(--err-text); font-weight: 700; }
+.field .fielderr {
+  font-size: .76rem; color: var(--err-text); font-weight: 500;
+}
+
+/* ``input[type=search]`` ต้องอยู่ในลิสต์นี้ด้วย — ช่องค้นหาถูกสร้างจาก JS และ
+   เคยตกหล่นจากกฎนี้ จึงเป็น input เปล่า ๆ ของเบราว์เซอร์ตัวเดียวในหน้า */
+input[type=text], input[type=password], input[type=number], input[type=url],
+input[type=email], input[type=search], textarea, select {
+  font: inherit; font-size: .92rem;
+  width: 100%;
+  padding: 10px 11px;
+  min-height: 44px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+textarea { min-height: 120px; resize: vertical; line-height: 1.55; }
+/* Safari/iOS วาด type=search เป็นแคปซูลของตัวเองทับ border/radius ข้างบน */
+input[type=search] { -webkit-appearance: none; appearance: none; }
+/* ปุ่มกากบาทที่ WebKit/Blink ใส่มาเอง — ต้องเอาออก ไม่ให้ซ้อนปุ่มล้างของเรา */
+input[type=search]::-webkit-search-cancel-button,
+input[type=search]::-webkit-search-decoration {
+  -webkit-appearance: none; appearance: none; display: none;
+}
+input:hover, textarea:hover, select:hover { border-color: var(--text-faint); }
+input:focus, textarea:focus, select:focus {
+  border-color: var(--brand-ink);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+  outline: none;
+}
+input[aria-invalid="true"], textarea[aria-invalid="true"] {
+  border-color: var(--err-text);
+}
+input[readonly] {
+  background: var(--surface-3); color: var(--text-dim); cursor: not-allowed;
+}
+.check {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 44px; padding: 4px 2px; cursor: pointer;
+  font-size: .86rem; font-weight: 500;
+}
+.check input[type=checkbox] {
+  flex: none; width: 22px; height: 22px; margin: 0;
+  accent-color: var(--brand-ink); cursor: pointer;
+}
+
+/* ── ปุ่ม ─────────────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  min-height: 44px; padding: 10px 18px;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  font: inherit; font-size: .88rem; font-weight: 600;
+  cursor: pointer;
+  background: var(--surface); color: var(--text);
+  transition: background .12s ease, border-color .12s ease, opacity .12s ease;
+}
+.btn--primary { background: var(--brand-ink); color: var(--brand-on); }
+.btn--primary:hover:not([disabled]) { filter: brightness(1.08); }
+.btn--ghost { border-color: var(--border-strong); color: var(--text-dim); }
+.btn--ghost:hover:not([disabled]) { background: var(--surface-2); color: var(--text); }
+.btn--danger { border-color: var(--err-border); background: var(--err-bg); color: var(--err-text); }
+.btn[disabled] { opacity: .5; cursor: not-allowed; }
+/* display ของ .btn ทับ [hidden] ของเบราว์เซอร์ — ต้องเขียนคืนเอง ไม่งั้นปุ่ม
+   บนแถบหัวโชว์ตั้งแต่ยังไม่ล็อกอิน */
+.btn[hidden] { display: none; }
+.btn--sm { min-height: 38px; padding: 6px 12px; font-size: .8rem; }
+.btn svg { width: 15px; height: 15px; flex: none; }
+
+.actions {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);
+}
+.actions .status {
+  font-size: .8rem; color: var(--text-dim); min-height: 1.2em;
+}
+
+/* วงกลมหมุนตอนบันทึก — ใช้ CSS ล้วน ไม่มีไฟล์ภาพ/ไลบรารี */
+.spin {
+  width: 15px; height: 15px; flex: none;
+  border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001s !important; transition-duration: .001s !important; }
+}
+
+/* ── ตารางรายการ ──────────────────────────────────────────────────────────
+   จอแคบ (ในแอป LINE) แถวหนึ่งกลายเป็นการ์ดที่มีป้ายชื่อคอลัมน์กำกับทุกค่า
+   ไม่ใช่ตารางที่ต้องเลื่อนซ้ายขวาหาว่าตัวเลขนี้คือคอลัมน์ไหน — DOM ยังเป็น
+   table จริงเพื่อให้ screen reader และการ copy ยังได้โครงตารางเดิม */
+
+table.rows { width: 100%; border-collapse: collapse; }
+table.rows th, table.rows td {
+  text-align: left; vertical-align: top;
+  padding: 10px 12px;
+  font-size: .84rem;
+}
+table.rows thead th {
+  font-size: .74rem; font-weight: 600; color: var(--text-faint);
+  white-space: nowrap; background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0;
+}
+table.rows tbody tr { border-top: 1px solid var(--border); }
+table.rows tbody tr:first-child { border-top: 0; }
+table.rows tbody tr.off { background: var(--surface-2); }
+table.rows tbody tr:hover { background: var(--surface-2); }
+td.nowrap { white-space: nowrap; }
+td.clip { max-width: 320px; overflow-wrap: anywhere; }
+td.wrapline { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* กลุ่มปุ่มในคอลัมน์จัดการ — ``align-items: stretch`` คือหัวใจ: ปุ่ม "แก้"
+   (2 ตัวอักษร + ไอคอน) กับ "ปิดใช้" (6 ตัวอักษร) ต้องสูงเท่ากันเป๊ะ และ
+   ``gap`` 10px คือระยะกันนิ้วพลาด — ปุ่มขวาคือปุ่มที่ทำให้บอทเลิกใช้ข้อมูล
+   แถวนั้น การกดพลาดจึงมีราคา ไม่ใช่แค่เรื่องความสวย */
+td.rowact { white-space: nowrap; }
+.btnset { display: flex; align-items: stretch; gap: 10px; }
+.btnset > .btn { margin: 0; min-width: 86px; height: auto; }
+.rowlabel { display: none; }
+
+/* ── ตัวกรอง/ค้นหาในหน้า (ไม่ยิง API ใหม่ กรองจากข้อมูลที่โหลดมาแล้ว) ───── */
+
+.filterbar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.filterbar .grow { flex-grow: 1; flex-shrink: 1; flex-basis: 260px; min-width: 180px; max-width: 460px; }
+.filterbar label { display: block; font-size: .74rem; font-weight: 600; color: var(--text-faint); margin-bottom: 4px; }
+.filterbar input { width: 100%; min-height: 44px; }
+.filterbar select { min-height: 44px; }
+.filterbar .btn { min-height: 44px; }
+.filterbar .spread { flex: 1 1 100%; display: flex; gap: 10px; flex-wrap: wrap; }
+.hitcount { font-size: .78rem; color: var(--text-dim); padding: 8px 16px 0; }
+.hitcount b { color: var(--text); }
+
+/* ── ช่องค้นหา ─────────────────────────────────────────────────────────────
+   โครงเดียวกับ .pwwrap/.pwtoggle ของช่องรหัสผ่าน: กล่อง position:relative
+   ครอบ input ที่เว้น padding ไว้สองข้าง แล้ววางไอคอน/ปุ่มทับตำแหน่งที่เว้นไว้
+   ตัว input เองไม่มี class — มันได้หน้าตาจากกฎ input[type=search] ข้างบน
+   ซึ่งเป็นกฎเดียวกับ input อื่นทั้งหน้า (สีจากโทเคน จึงถูกทั้งสองโหมดเอง) */
+.searchfield { position: relative; display: flex; width: 100%; }
+.searchfield input[type=search] { padding-left: 38px; padding-right: 46px; }
+.searchicon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  width: 17px; height: 17px; color: var(--text-faint); pointer-events: none;
+}
+.searchfield input[type=search]:focus ~ .searchicon { color: var(--brand-text); }
+/* 44×44 = พื้นที่กดขั้นต่ำบนมือถือ พอดีกับความสูงขั้นต่ำของ input */
+.searchclear {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  width: 44px; height: 44px; padding: 0;
+  display: grid; place-items: center;
+  border: 0; background: none; color: var(--text-faint);
+  border-radius: var(--r-sm); cursor: pointer;
+}
+.searchclear:hover { color: var(--text); background: var(--surface-3); }
+.searchclear[hidden] { display: none; }
+.searchclear svg { width: 16px; height: 16px; display: block; }
+
+/* ── แถบรีเฟรชเอง ─────────────────────────────────────────────────────────
+   อยู่ในเนื้อหา ไม่ใช่ในแถบหัวที่ sticky — บนจอ 390px แถบหัว+แถบแท็บกินความสูง
+   ไปมากแล้ว เพิ่มแถวที่สามค้างบนจอจะเหลือที่อ่านตารางไม่พอ */
+.autobar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px;
+  margin-bottom: 12px; padding: 2px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+}
+.autobar[hidden] { display: none; }
+.autobar .check { font-size: .8rem; font-weight: 500; }
+.autobar .when { font-size: .76rem; color: var(--text-faint); }
+
+/* ── หัวกลุ่มที่ยุบ/กางได้ ─────────────────────────────────────────────── */
+
+tr.grouprow td { padding: 0; background: var(--surface-3); }
+tr.grouprow:hover td { background: var(--surface-3); }
+.grouphead {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  min-height: 46px; padding: 8px 14px;
+  border: 0; background: none; color: var(--text);
+  font: inherit; font-size: .84rem; font-weight: 700; text-align: left;
+  cursor: pointer;
+}
+.grouphead:hover { background: var(--surface); }
+/* ต้องกำหนดขนาด svg เอง — svg ที่ไม่มี width/height จะยืดเต็มกล่อง flex
+   (เคยทำให้หัวกลุ่มสูง 1,000px) */
+.grouphead .caret {
+  flex: none; width: 16px; height: 16px;
+  transition: transform .15s ease; color: var(--text-faint);
+}
+.grouphead[aria-expanded="true"] .caret { transform: rotate(90deg); }
+.grouphead .count { font-weight: 600; font-size: .76rem; color: var(--text-dim); }
+.grouphead .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* ── ข้อความยาว: ตัดไว้ก่อน มีปุ่มกางเต็ม ───────────────────────────────── */
+
+.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere; }
+.clamp--open { display: block; -webkit-line-clamp: unset; white-space: pre-wrap; }
+.linkbtn {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 2px 0;
+  margin-top: 2px; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: .76rem; font-weight: 600;
+  color: var(--brand-text); text-decoration: underline;
+}
+.rowmore { display: none; }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: .72rem; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border-strong); color: var(--text-dim);
+  background: var(--surface);
+}
+.badge--on { background: var(--ok-bg); border-color: var(--ok-border); color: var(--ok-text); }
+.badge--off { background: var(--surface-3); color: var(--text-faint); }
+a { color: var(--brand-text); overflow-wrap: anywhere; }
+
+@media (max-width: 899px) {
+  table.rows thead {
+    position: absolute; width: 1px; height: 1px;
+    overflow: hidden; clip-path: inset(50%);
+  }
+  table.rows, table.rows tbody, table.rows tr, table.rows td { display: block; width: 100%; }
+  table.rows tbody tr {
+    border: 1px solid var(--border); border-radius: var(--r-md);
+    margin: 0 0 10px; padding: 10px 12px; background: var(--surface);
+  }
+  table.rows tbody tr.off { border-style: dashed; }
+  table.rows td { padding: 6px 0; border-top: 1px dashed var(--border); }
+  table.rows td:first-child { border-top: 0; padding-top: 0; }
+  .rowlabel {
+    display: block; font-size: .7rem; font-weight: 600;
+    color: var(--text-faint); margin-bottom: 1px;
+  }
+  td.clip { max-width: none; }
+  td.rowact { white-space: normal; padding-top: 10px; }
+  td.rowact .btnset { width: 100%; }
+  td.rowact .btnset > .btn { flex: 1 1 0; min-width: 0; min-height: 44px; }
+  td.rowact .rowlabel { display: none; }
+  /* บนจอแคบ แถวเริ่มแบบยุบ: เห็นกุญแจ + สถานะ + ปุ่ม แล้วค่อยกางดูรายละเอียด
+     — สิ่งที่ต้องใช้ตัดสินใจว่าจะกดปิดใช้ไหม ต้องไม่ถูกซ่อน */
+  tr.fold.closed td.detailcell { display: none; }
+  .rowmore {
+    display: inline-flex; align-items: center; gap: 6px;
+    min-height: 40px; padding: 4px 0; margin-top: 4px;
+    border: 0; background: none; color: var(--brand-text);
+    font: inherit; font-size: .78rem; font-weight: 600; cursor: pointer;
+  }
+  .rowmore svg { width: 14px; height: 14px; transition: transform .15s ease; }
+  .rowmore[aria-expanded="true"] svg { transform: rotate(90deg); }
+}
+@media (min-width: 900px) {
+  .tablewrap { max-height: 68vh; overflow: auto; }
+}
+
+/* ── โครงกระดูกตอนโหลด ───────────────────────────────────────────────────── */
+
+.skel {
+  background: linear-gradient(90deg, var(--surface-3), var(--surface-2), var(--surface-3));
+  background-size: 300% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+  border-radius: 6px; height: 14px; margin-bottom: 9px;
+}
+.skel--wide { width: 100%; }
+.skel--half { width: 55%; }
+.skel--tall { height: 46px; }
+@keyframes shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
+
+/* ── สถานะว่างเปล่า ──────────────────────────────────────────────────────── */
+
+.empty { text-align: center; padding: 26px 16px; }
+.empty .icon {
+  width: 44px; height: 44px; margin: 0 auto 10px;
+  border-radius: 12px; background: var(--surface-3); color: var(--text-faint);
+  display: grid; place-items: center;
+}
+.empty .icon svg { width: 24px; height: 24px; }
+.empty h3 { margin: 0 0 6px; font-size: .92rem; font-weight: 700; }
+.empty p {
+  margin: 0 auto; max-width: 46ch;
+  font-size: .82rem; color: var(--text-dim); line-height: 1.6;
+}
+.empty .steps {
+  margin: 12px auto 0; max-width: 46ch; text-align: left;
+  font-size: .82rem; color: var(--text-dim);
+  padding-left: 1.3em;
+}
+.empty .steps li { margin-bottom: 4px; }
+
+/* ── หน้าจอเข้าสู่ระบบ ────────────────────────────────────────────────────
+   <dialog> ตัวเดียวใช้ทั้งตอนเปิดหน้า (ยังไม่ล็อกอิน) และตอนเซสชันหมดกลางทาง
+   — ตอนหมดกลางทางมันซ้อนขึ้นบนหน้าเดิม หน้าไม่ถูกโหลดใหม่ ร่างที่พิมพ์ค้างไว้
+   จึงอยู่ครบ (สีทุกตัวมาจากโทเคนด้านบน โหมดมืดจึงมาเองไม่ต้องเขียนซ้ำ) */
+
+dialog.gate {
+  border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 0; width: min(420px, calc(100vw - 24px));
+  background: var(--surface); color: var(--text);
+  box-shadow: var(--shadow-lg);
+}
+/* เบราว์เซอร์ที่ไม่รู้จัก <dialog> ต้องไม่โชว์กล่องนี้ค้างไว้ตอนปิด */
+dialog.gate:not([open]) { display: none; }
+dialog.gate::backdrop { background: rgba(8, 11, 16, .62); }
+.gate__head { display: flex; align-items: center; gap: 11px; padding: 18px 18px 0; }
+.gate__head h2 { margin: 0; font-size: 1.02rem; font-weight: 700; line-height: 1.35; }
+.gate__head p { margin: 2px 0 0; }
+.gate__body {
+  padding: 15px 18px 2px;
+  display: flex; flex-direction: column; gap: 13px;
+}
+.gate__body .msg { margin-bottom: 0; }
+.gate__foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 18px 18px;
+}
+.gate__foot .btn { flex: 1 1 auto; }
+.gate__foot .status { font-size: .8rem; color: var(--text-dim); }
+/* ช่องรหัสผ่าน + ปุ่มรูปตาวางทับด้านขวาในกรอบเดียวกัน (สูงเท่าช่อง = 44px) */
+.pwwrap { position: relative; display: flex; }
+.pwwrap input { padding-right: 50px; }
+.pwtoggle {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: 46px; min-height: 44px;
+  display: grid; place-items: center;
+  background: none; border: 0; border-radius: var(--r-sm);
+  color: var(--text-faint); cursor: pointer;
+}
+.pwtoggle:hover { color: var(--text); }
+.pwtoggle[aria-pressed="true"] { color: var(--brand-text); }
+.pwtoggle svg { width: 20px; height: 20px; display: block; }
+.pwtoggle .pwslash { display: none; }
+.pwtoggle[aria-pressed="true"] .pwslash { display: inline; }
+
+/* ── กล่องยืนยัน ─────────────────────────────────────────────────────────── */
+
+dialog.sheet {
+  border: 1px solid var(--border); border-radius: var(--r-lg);
+  padding: 0; width: min(440px, calc(100vw - 28px));
+  background: var(--surface); color: var(--text);
+  box-shadow: var(--shadow-lg);
+}
+dialog.sheet::backdrop { background: rgba(8, 11, 16, .55); }
+dialog.sheet .body { padding: 18px 18px 6px; }
+dialog.sheet h2 { margin: 0 0 8px; font-size: 1rem; }
+dialog.sheet p { margin: 0 0 10px; font-size: .85rem; color: var(--text-dim); }
+dialog.sheet .keyline {
+  font-size: .8rem; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 8px 10px; overflow-wrap: anywhere;
+}
+dialog.sheet .foot {
+  display: flex; gap: 10px; justify-content: flex-end;
+  padding: 14px 18px 18px;
+}
+dialog.sheet .foot .btn { flex: 1; }
+@media (min-width: 520px) { dialog.sheet .foot .btn { flex: none; } }
+
+.muted { color: var(--text-dim); font-size: .82rem; }
+.tiny { font-size: .76rem; color: var(--text-faint); }
+code {
+  background: var(--surface-3); color: var(--text);
+  padding: 1px 5px; border-radius: 4px; font-size: .88em;
+}
+.legend {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  font-size: .76rem; color: var(--text-faint); margin-top: 12px;
+}
+.stack > * + * { margin-top: 12px; }
+</style>
+</head>
+<body>
+<a class="sr-only" href="#main">ข้ามไปที่เนื้อหา</a>
+<div class="topbar">
+<header class="appbar">
+  <div class="appbar__inner">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3l8 4v5c0 4.5-3.2 7.9-8 9-4.8-1.1-8-4.5-8-9V7z"></path>
+        <path d="M9 12l2 2 4-4"></path>
+      </svg>
+    </div>
+    <div class="appbar__title">
+      <h1>คลังคำตอบของบอท</h1>
+      <div class="who">
+        <span class="dot" id="statedot"></span>
+        <span id="whotext">กำลังเตรียมหน้า…</span>
+      </div>
+    </div>
+    <button class="btn btn--ghost btn--sm" id="refresh" type="button" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 1 1-3-6.7"></path><path d="M21 4v5h-5"></path>
+      </svg>
+      <span class="btnlabel">โหลดใหม่</span>
+    </button>
+    <button class="btn btn--ghost btn--sm" id="logout" type="button" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M14 4h5v16h-5"></path><path d="M10 8l-4 4 4 4"></path>
+        <path d="M6 12h8"></path>
+      </svg>
+      <span class="btnlabel">ออกจากระบบ</span>
+    </button>
+  </div>
+</header>
+
+<nav class="tabbar" id="tabbar" hidden aria-label="หมวดข้อมูล">
+  <div class="tabbar__scroll" id="tabs" role="tablist"></div>
+</nav>
+</div>
+
+<main class="wrap" id="main">
+  <!-- ข้อความผลลัพธ์ทุกตัวลงกล่องนี้ และเป็น aria-live เพื่อให้คนที่ใช้
+       screen reader ได้ยินว่าบันทึกผ่านหรือไม่ผ่านโดยไม่ต้องไล่หาเอง -->
+  <div id="notices" role="status" aria-live="polite"></div>
+  <!-- รีเฟรชเอง: ค่าเริ่มต้นเปิด และจำสถานะของสวิตช์นี้ไว้ข้ามการโหลดหน้า
+       ที่เก็บใน localStorage มีคีย์เดียวคือ boolean ของสวิตช์นี้ ไม่มีชื่อผู้ใช้
+       ไม่มีเซสชัน ไม่มีเนื้อข้อมูลของหลักสูตร (ดูข้อตกลงด้านบนของไฟล์) -->
+  <div class="autobar" id="autobar" hidden>
+    <label class="check" for="autotoggle">
+      <input type="checkbox" id="autotoggle">
+      <span>โหลดข้อมูลใหม่เองทุก 60 วินาที</span>
+    </label>
+    <span class="when" id="autowhen">ยังไม่ได้โหลดใหม่</span>
+  </div>
+  <div id="view"></div>
+</main>
+
+<!-- หน้าจอเข้าสู่ระบบ: ใช้ทั้งตอนเปิดหน้าและตอนเซสชันหมดกลางทาง
+     เป็น <form> จริงเพื่อให้ Enter ในช่องรหัสผ่าน submit ได้ และให้ตัวจำ
+     รหัสผ่านของเบราว์เซอร์ทำงาน (autocomplete=username/current-password)
+     ค่าที่พิมพ์อยู่ในตัวแปรของหน้านี้เท่านั้น ไม่ลงที่เก็บข้อมูลและไม่ลง URL -->
+<dialog class="gate" id="gate" aria-labelledby="gatetitle">
+  <form id="gateform" novalidate>
+    <div class="gate__head">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l8 4v5c0 4.5-3.2 7.9-8 9-4.8-1.1-8-4.5-8-9V7z"></path>
+          <path d="M9 12l2 2 4-4"></path>
+        </svg>
+      </div>
+      <div>
+        <h2 id="gatetitle">เข้าสู่ระบบผู้ดูแล</h2>
+        <p class="tiny" id="gatesub">ใช้ชื่อผู้ใช้และรหัสผ่านของผู้ดูแลระบบ</p>
+      </div>
+    </div>
+    <div class="gate__body">
+      <!-- คำเตือนที่รู้ตั้งแต่เปิดหน้า (เช่น เซิร์ฟเวอร์ยังไม่มีบัญชี) -->
+      <div id="gatenotice" aria-live="polite"></div>
+      <div class="field">
+        <label for="gateuser">ชื่อผู้ใช้</label>
+        <input id="gateuser" name="username" type="text" autocomplete="username"
+               autocapitalize="none" autocorrect="off" spellcheck="false"
+               enterkeyhint="next" required>
+      </div>
+      <div class="field">
+        <label for="gatepass">รหัสผ่าน</label>
+        <div class="pwwrap">
+          <input id="gatepass" name="password" type="password"
+                 autocomplete="current-password" enterkeyhint="go" required>
+          <button class="pwtoggle" type="button" id="gateeye"
+                  aria-pressed="false" aria-controls="gatepass">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M2 12s3.6-6.2 10-6.2S22 12 22 12s-3.6 6.2-10 6.2S2 12 2 12z"></path>
+              <path d="M12 14.6a2.6 2.6 0 100-5.2 2.6 2.6 0 000 5.2z"></path>
+              <path class="pwslash" d="M4 20L20 4"></path>
+            </svg>
+            <span class="sr-only" id="gateeyelabel">แสดงรหัสผ่าน</span>
+          </button>
+        </div>
+        <div class="hint">พิมพ์บนมือถือแล้วพิมพ์ผิดง่าย — กดรูปตาเพื่อดูว่าพิมพ์ถูกไหม</div>
+      </div>
+      <!-- role=alert เพื่อให้ screen reader ได้ยินข้อความผิดพลาดทันที -->
+      <div id="gateerr" role="alert"></div>
+    </div>
+    <div class="gate__foot">
+      <button class="btn btn--primary" type="submit" id="gatesubmit">เข้าสู่ระบบ</button>
+      <span class="status" id="gatestatus"></span>
+    </div>
+  </form>
+</dialog>
+
+<!-- กล่องยืนยันก่อนปิดใช้แถว — ใช้ <dialog> ของเบราว์เซอร์ (โฟกัสวนในกล่อง
+     และปิดด้วย Esc ได้เอง) ถ้าเบราว์เซอร์เก่าไม่มี showModal จะถอยไปใช้
+     window.confirm ให้ยังยืนยันได้เสมอ ไม่ใช่ปิดทันทีโดยไม่ถาม -->
+<dialog class="sheet" id="confirmbox" aria-labelledby="confirmtitle">
+  <div class="body">
+    <h2 id="confirmtitle">ยืนยัน</h2>
+    <p id="confirmtext"></p>
+    <div class="keyline" id="confirmkey"></div>
+  </div>
+  <div class="foot">
+    <button class="btn btn--ghost" type="button" id="confirmno">ยกเลิก</button>
+    <button class="btn btn--danger" type="button" id="confirmyes">ยืนยัน</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+
+// ── สถานะของหน้า ────────────────────────────────────────────────────────────
+
+// ชื่อผู้ใช้ที่ล็อกอินอยู่ — ใช้แสดงบนแถบหัวเท่านั้น ตัวตนจริงคือ cookie
+// ``admin_session`` แบบ HttpOnly ที่เซิร์ฟเวอร์ตั้งให้ (หน้านี้อ่านไม่ได้)
+// และไม่มีการเก็บชื่อผู้ใช้/รหัสผ่านลงที่เก็บข้อมูลของเบราว์เซอร์เลย
+let adminUser = null;
+// เวลาหมดอายุของเซสชันเป็น ms — คำนวณจาก ``expires_in`` ที่ /login คืนมา
+let sessionExpiresAt = null;
+// เตือนเรื่องเซสชันใกล้หมดแล้วหรือยัง — เตือนครั้งเดียวพอ
+let expiryWarned = false;
+// ผูก listener ของปุ่มบนแถบหัวแล้วหรือยัง (ล็อกอินหลายรอบได้ในหน้าเดียว)
+let appWired = false;
+// ตัวจับเวลาเตือนก่อนเซสชันหมด — ตั้งครั้งเดียว
+let sessionWatch = null;
+// ผลของ /api/admin/state ทั้งก้อน — โหลดครั้งเดียวแล้วสลับแท็บในหน้าได้เลย
+let state = null;
+let activeTab = "summary";
+// โหลดแยกเพราะเป็นตารางที่โตเรื่อย ๆ (คำถามที่นักศึกษาพิมพ์เอง ต้อง "กดดู")
+let chatLogs = null;
+// แถวที่กำลังแก้อยู่ของแต่ละแท็บ — ใช้บอกบนหัวฟอร์มว่ากำลังแก้ของเดิม
+// ไม่ใช่กำลังเพิ่มใหม่ (จุดที่คนเผลอสร้างแถวซ้ำเพราะไม่รู้ว่าอยู่โหมดไหน)
+let editingKey = null;
+
+const el = (id) => document.getElementById(id);
+
+// ── ไอคอน (inline SVG — ไม่โหลด icon font จากเน็ต) ──────────────────────────
+
+const ICONS = {
+  warn: "M12 3l9.5 17H2.5zM12 9v5M12 17.2v.1",
+  err: "M12 21a9 9 0 100-18 9 9 0 000 18zM12 8v5M12 16.2v.1",
+  ok: "M12 21a9 9 0 100-18 9 9 0 000 18zM8 12.5l2.6 2.6L16 9.7",
+  info: "M12 21a9 9 0 100-18 9 9 0 000 18zM12 11v5M12 8.1v.1",
+  empty: "M4 7h16v13H4zM4 7l2-3h12l2 3M9 12h6",
+  save: "M5 4h11l3 3v13H5zM8 4v5h7V4M8 20v-6h8v6",
+  edit: "M4 20h4L19 9l-4-4L4 16zM14 6l4 4",
+  caret: "M9 5.5l7 6.5-7 6.5",
+  search: "M11 18.5a7.5 7.5 0 100-15 7.5 7.5 0 000 15zM20.5 20.5l-4.2-4.2",
+  close: "M6 6l12 12M18 6L6 18",
+  clock: "M12 21a9 9 0 100-18 9 9 0 000 18zM12 7.4V12l3.3 2.1",
+};
+
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", ICONS[name] || ICONS.info);
+  svg.appendChild(path);
+  return svg;
+}
+
+// ── ข้อความผลลัพธ์ ──────────────────────────────────────────────────────────
+
+/**
+ * kind: "warn" (ดีฟอลต์) | "err" | "ok" | "info"
+ * detail: บรรทัดรายละเอียดใต้ข้อความหลัก (เช่น รายการช่องที่เปลี่ยนไปจริง)
+ */
+function notice(text, kind, detail) {
+  const box = document.createElement("div");
+  box.className = "msg" + (kind ? " msg--" + kind : "");
+  box.appendChild(icon(kind === "err" ? "err" : kind === "ok" ? "ok" : kind === "info" ? "info" : "warn"));
+  const body = document.createElement("div");
+  const head = document.createElement("b");
+  head.textContent = text;
+  body.appendChild(head);
+  if (detail) {
+    const more = document.createElement("div");
+    more.className = "detail";
+    more.textContent = detail;
+    body.appendChild(more);
+  }
+  box.appendChild(body);
+  el("notices").appendChild(box);
+  return box;
+}
+
+function clearNotices() {
+  el("notices").textContent = "";
+}
+
+/** กล่องข้อความแบบอยู่ในการ์ด (ไม่ใช่กล่องผลลัพธ์ด้านบนหน้า) */
+function inlineMsg(message, kind) {
+  const box = document.createElement("div");
+  box.className = "msg" + (kind ? " msg--" + kind : "");
+  box.appendChild(icon(kind === "err" ? "err" : kind === "ok" ? "ok" : kind === "warn" ? "warn" : "info"));
+  const body = document.createElement("div");
+  body.textContent = message;
+  box.appendChild(body);
+  return box;
+}
+
+// ── เซสชันของผู้ดูแล ────────────────────────────────────────────────────────
+//
+// ตัวยืนยันตัวตนคือ cookie ``admin_session`` แบบ HttpOnly ที่เซิร์ฟเวอร์ตั้งให้
+// ตอนล็อกอินสำเร็จ — หน้านี้อ่านค่าใน cookie ไม่ได้และไม่ต้องอ่าน ที่นี่เก็บแค่
+// สองอย่างไว้แสดงบนแถบหัว: ชื่อผู้ใช้ และเวลาหมดอายุที่คำนวณจาก ``expires_in``
+// ที่ /api/admin/login คืนมา (ไม่มี JWT ให้แกะ exp เองแล้ว)
+
+const WARN_BEFORE_MS = 5 * 60 * 1000;   // เตือนก่อนเซสชันหมด 5 นาที
+const EXPIRED_TEXT =
+  "เซสชันหมดอายุ — เข้าสู่ระบบในกล่องที่ขึ้นมาแล้วกดอีกครั้ง " +
+  "หน้านี้ไม่ถูกโหลดใหม่ ข้อความที่พิมพ์ค้างไว้ยังอยู่ครบ";
+
+/** นาทีที่เหลือของเซสชัน — null เมื่อไม่รู้ (เซิร์ฟเวอร์ไม่ส่ง expires_in มา) */
+function sessionMinsLeft() {
+  if (sessionExpiresAt === null) return null;
+  return Math.max(0, Math.round((sessionExpiresAt - Date.now()) / 60000));
+}
+
+/** บรรทัดสถานะบนแถบหัว: ใครล็อกอินอยู่ · หลักสูตร · เซสชันเหลือเท่าไร */
+function whoLine() {
+  const left = sessionMinsLeft();
+  return `เข้าสู่ระบบเป็น ${adminUser}` +
+    (state && state.program_code ? ` · หลักสูตร ${state.program_code}` : "") +
+    " · การแก้ทุกครั้งถูกบันทึกไว้" +
+    (left === null ? "" : ` · เซสชันเหลือ ${left} นาที`);
+}
+
+/** มีอะไรที่ผู้ใช้พิมพ์ค้างอยู่ในฟอร์มไหม (ใช้ถามก่อนออกจากระบบ) */
+function hasDraft() {
+  const form = document.querySelector("#view form");
+  if (!form) return false;
+  return Array.from(form.elements).some((node) => {
+    if (!node.name || node.type === "hidden" || node.readOnly) return false;
+    if (node.type === "checkbox") return false;
+    // program_code ถูกเติมให้อัตโนมัติ ไม่ใช่สิ่งที่คนพิมพ์
+    if (node.name === "program_code") return false;
+    return String(node.value || "").trim() !== "";
+  });
+}
+
+// ── กล่องเข้าสู่ระบบ ────────────────────────────────────────────────────────
+//
+// **ห้ามรีโหลดหน้าหรือเด้งไปที่อื่นเมื่อเซสชันหมด** ของเดิมพาไปหน้าล็อกอินเอง
+// แล้วเกิดสองปัญหาพร้อมกัน: วนล็อกอินไม่จบ และร่างที่พิมพ์ค้างหายทั้งหมด
+// ที่นี่กล่องล็อกอินซ้อนขึ้นบนหน้าเดิม DOM ใต้กล่องไม่ถูกแตะเลย สิ่งที่พิมพ์ค้าง
+// จึงอยู่ครบ ล็อกอินเสร็จกล่องปิด แล้วกดปุ่มเดิมซ้ำได้ทันทีจากที่ค้างไว้
+
+/** คำเตือนบนกล่องล็อกอิน (สิ่งที่รู้ก่อนกดปุ่ม เช่น เซิร์ฟเวอร์ยังไม่มีบัญชี) */
+function gateHint(message, kind, detail) {
+  fillMsgBox(el("gatenotice"), message, kind || "warn", detail);
+}
+
+/** ข้อความผิดพลาดของการล็อกอิน — อยู่ในกล่อง role="alert" */
+function gateError(message, detail) {
+  fillMsgBox(el("gateerr"), message, "err", detail);
+}
+
+function fillMsgBox(box, message, kind, detail) {
+  box.textContent = "";
+  if (!message) return;
+  const msg = inlineMsg(message, kind);
+  if (detail) {
+    const more = document.createElement("div");
+    more.className = "detail";
+    more.textContent = detail;
+    msg.lastChild.appendChild(more);
+  }
+  box.appendChild(msg);
+}
+
+/** สลับ "แสดงรหัสผ่าน" — พิมพ์รหัสบนมือถือแล้วพิมพ์ผิดง่าย ต้องมองเห็นได้ */
+function setPasswordVisible(visible) {
+  const input = el("gatepass");
+  const button = el("gateeye");
+  const label = visible ? "ซ่อนรหัสผ่าน" : "แสดงรหัสผ่าน";
+  input.type = visible ? "text" : "password";
+  button.setAttribute("aria-pressed", visible ? "true" : "false");
+  button.title = label;
+  el("gateeyelabel").textContent = label;
+}
+
+/**
+ * เปิดกล่องล็อกอิน — ``hint`` เป็น {text, kind, detail} หรือ null
+ * ใช้ ``showModal`` เพื่อให้โฟกัสวนอยู่ในกล่องและพื้นหลังกดไม่ได้
+ */
+function showGate(hint) {
+  const box = el("gate");
+  gateError("");
+  el("gatestatus").textContent = "";
+  el("gatepass").value = "";
+  setPasswordVisible(false);
+  gateHint(hint ? hint.text : "", hint ? hint.kind : null, hint ? hint.detail : "");
+  el("gatetitle").textContent = adminUser ? "เข้าสู่ระบบอีกครั้ง" : "เข้าสู่ระบบผู้ดูแล";
+  if (!box.open) {
+    if (typeof box.showModal === "function") box.showModal();
+    else box.setAttribute("open", "");   // เบราว์เซอร์เก่าที่ไม่มี showModal
+  }
+  // เปิดหน้ามาโฟกัสช่องชื่อผู้ใช้ — ถ้ารู้ชื่ออยู่แล้ว (ล็อกอินซ้ำ) ไปที่ช่องรหัสผ่าน
+  const first = el("gateuser").value.trim() ? el("gatepass") : el("gateuser");
+  first.focus();
+}
+
+function hideGate() {
+  const box = el("gate");
+  el("gatepass").value = "";   // ไม่เก็บรหัสผ่านค้างไว้ใน DOM
+  setPasswordVisible(false);
+  if (typeof box.close === "function" && box.open) box.close();
+  else box.removeAttribute("open");
+}
+
+/**
+ * ข้อความของแต่ละสถานะ — **401 ห้ามเดาว่าผิดช่องไหน** เซิร์ฟเวอร์ตั้งใจไม่บอก
+ * (บอกไปคือยืนยันให้คนเดารหัสว่าชื่อผู้ใช้นี้มีอยู่จริง)
+ */
+function loginErrorText(status, data) {
+  const detail = Array.isArray(data.detail)
+    ? data.detail.map((d) => `${(d.loc || []).slice(-1)}: ${d.msg}`).join(", ")
+    : data.detail;
+  if (status === 401) {
+    return {
+      text: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",
+      detail: "ตรวจตัวพิมพ์เล็ก/ใหญ่และภาษาของแป้นพิมพ์ แล้วลองอีกครั้ง",
+    };
+  }
+  if (status === 403) {
+    return {
+      text: "ยังไม่มีบัญชีผู้ดูแลในระบบ",
+      detail: "ให้ผู้ดูแลสร้างบัญชีที่เครื่องเซิร์ฟเวอร์ด้วยคำสั่ง " +
+        "python scripts/admin_user.py --username <ชื่อ> แล้วเข้าสู่ระบบอีกครั้ง" +
+        (detail ? " · เซิร์ฟเวอร์แจ้ง: " + detail : ""),
+    };
+  }
+  if (status === 429) {
+    return {
+      text: "ผิดหลายครั้งจนถูกล็อกชั่วคราว",
+      detail: detail || "รอสักครู่แล้วลองอีกครั้ง",
+    };
+  }
+  if (status === 503) {
+    return {
+      text: "เซิร์ฟเวอร์ตั้งค่าไม่ครบ จึงเข้าสู่ระบบไม่ได้",
+      detail: detail || "ดู log ของเซิร์ฟเวอร์ว่าตัวแปรตัวไหนยังไม่ได้ตั้ง",
+    };
+  }
+  return { text: detail || `เข้าสู่ระบบไม่สำเร็จ (HTTP ${status})`, detail: "" };
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+  const button = el("gatesubmit");
+  if (button.disabled) return;   // กดรัว ๆ ต้องไม่ยิงซ้ำ
+  const username = el("gateuser").value.trim();
+  const password = el("gatepass").value;
+  gateError("");
+  if (!username || !password) {
+    gateError("กรอกทั้งชื่อผู้ใช้และรหัสผ่านก่อน");
+    (username ? el("gatepass") : el("gateuser")).focus();
+    return;
+  }
+
+  let data = null;
+  setBusy(button, true);
+  el("gatestatus").textContent = "กำลังเข้าสู่ระบบ…";
+  try {
+    const res = await fetch("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // เซิร์ฟเวอร์ตอบมาพร้อม Set-Cookie — ต้องให้เบราว์เซอร์รับเก็บ
+      credentials: "same-origin",
+      body: JSON.stringify({ username, password }),
+    });
+    data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const problem = loginErrorText(res.status, data);
+      gateError(problem.text, problem.detail);
+      el("gatepass").value = "";
+      el("gatepass").focus();
+      return;
+    }
+  } catch (error) {
+    gateError("ติดต่อเซิร์ฟเวอร์ไม่ได้",
+      "เซิร์ฟเวอร์ไม่ตอบหรือตอบมาไม่ใช่ JSON — ตรวจว่าเซิร์ฟเวอร์ยังรันอยู่ " +
+      "และเน็ตยังต่ออยู่ แล้วลองอีกครั้ง");
+    return;
+  } finally {
+    setBusy(button, false);
+    el("gatestatus").textContent = "";
+  }
+
+  // ผ่านแล้ว — cookie เป็นของเซิร์ฟเวอร์ ที่นี่เก็บแค่ของที่เอาไปแสดงบนแถบหัว
+  adminUser = data.username || username;
+  sessionExpiresAt = typeof data.expires_in === "number" && data.expires_in > 0
+    ? Date.now() + data.expires_in * 1000
+    : null;
+  expiryWarned = false;
+  const firstTime = state === null;
+  hideGate();
+  clearNotices();
+  if (firstTime) {
+    await afterLogin();
+    return;
+  }
+  // ล็อกอินซ้ำกลางทาง: ไม่โหลดข้อมูลใหม่ ไม่วาดหน้าใหม่ — ของที่พิมพ์ค้างต้องอยู่
+  setWho(whoLine(), "on");
+  // เซสชันกลับมาแล้ว ปลดล็อกการโหลดเองที่หยุดไว้ตอนเจอ 401
+  autoBlocked = false;
+  if (appWired) {
+    autoStatus("รอโหลดรอบถัดไป");
+    autoStart();
+  }
+  notice("เข้าสู่ระบบอีกครั้งแล้ว", "ok",
+    "หน้านี้ไม่ถูกโหลดใหม่ ข้อความที่พิมพ์ค้างไว้ยังอยู่ — กดปุ่มที่ค้างไว้ซ้ำได้เลย");
+}
+
+/** เจอ 401 กลางทาง: เปิดกล่องล็อกอินซ้อนบนหน้าเดิม ไม่รีโหลด ไม่เด้งไปไหน */
+function onSessionLost() {
+  sessionExpiresAt = null;
+  expiryWarned = false;
+  setWho("เซสชันหมดอายุ", "off");
+  // คำขอหลายใบได้ 401 พร้อมกันได้ — กล่องเดียวพอ
+  if (el("gate").open) return;
+  showGate({
+    text: "เซสชันหมดอายุ — เข้าสู่ระบบอีกครั้งเพื่อทำต่อ",
+    kind: "warn",
+    detail: "หน้านี้ไม่ถูกโหลดใหม่ ข้อความที่พิมพ์ค้างไว้ยังอยู่ครบ",
+  });
+}
+
+function wireGate() {
+  el("gateform").addEventListener("submit", submitLogin);
+  el("gateeye").addEventListener("click", () => {
+    setPasswordVisible(el("gatepass").type === "password");
+    el("gatepass").focus();
+  });
+  // กดปิดกล่องนี้ไม่ได้ (Esc ก็ไม่ได้) — ปิดไปก็ใช้งานอะไรไม่ได้อยู่ดี
+  el("gate").addEventListener("cancel", (event) => event.preventDefault());
+  setPasswordVisible(false);
+}
+
+/**
+ * เตือนก่อนเซสชันหมด เพื่อไม่ให้คนพิมพ์คำตอบยาว ๆ เสียของฟรี
+ * **เตือนเท่านั้น ห้ามพาไปล็อกอินเอง** — กล่องล็อกอินขึ้นตอนเจอ 401 จริงพอ
+ */
+function watchSession() {
+  if (sessionWatch !== null) return;
+  sessionWatch = window.setInterval(() => {
+    const gateShown = el("gate").open;
+    if (adminUser && !gateShown) setWho(whoLine(), "on");
+    if (gateShown || expiryWarned || sessionExpiresAt === null) return;
+    if (sessionExpiresAt - Date.now() > WARN_BEFORE_MS) return;
+    expiryWarned = true;
+    notice(
+      `เซสชันจะหมดอายุใน ${sessionMinsLeft()} นาที`,
+      "warn",
+      "กดบันทึกสิ่งที่พิมพ์ไว้ก่อนได้เลย — หมดอายุแล้วจะมีกล่องให้เข้าสู่ระบบ " +
+        "อีกครั้งบนหน้านี้ หน้าไม่ถูกโหลดใหม่และข้อความที่พิมพ์ค้างไว้ไม่หาย"
+    );
+  }, 60 * 1000);
+}
+
+// ── เรียก API ───────────────────────────────────────────────────────────────
+//
+// ทุก endpoint ที่ต้องมีสิทธิ์เป็น POST รวมทั้งตัวที่แค่อ่าน และยืนยันตัวตนด้วย
+// cookie ``admin_session`` (HttpOnly) ที่เบราว์เซอร์แนบไปให้เอง — เขียน
+// ``credentials: "same-origin"`` ไว้ชัด ๆ ให้อ่านโค้ดแล้วรู้ว่าอะไรทำให้ผ่านสิทธิ์
+//
+// 401 = เซสชันหาย/หมดอายุ → เปิดกล่องล็อกอินซ้อนบนหน้าเดิม (ห้ามรีโหลดหน้า
+// ห้ามเด้งไปไหน — ทำแล้ววนไม่จบและร่างที่พิมพ์ค้างหาย)
+// 403 = ไม่มีสิทธิ์ · 503 = เซิร์ฟเวอร์ตั้งค่าไม่ครบ สองตัวนี้ล็อกอินใหม่กี่ครั้ง
+// ก็ได้ผลเดิม จึงแค่แสดงข้อความ ไม่พาไปล็อกอิน
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    onSessionLost();
+    throw new Error(EXPIRED_TEXT);
+  }
+  if (!res.ok) {
+    // detail ของ pydantic เป็น array ตอน validation ไม่ผ่าน (ไม่ใช่สตริง)
+    // — ต้องแปลงเป็นบรรทัดที่คนอ่านรู้ว่าช่องไหนผิด ไม่ใช่โยน [object Object]
+    const detail = Array.isArray(data.detail)
+      ? data.detail.map((d) => `${(d.loc || []).slice(-1)}: ${d.msg}`).join(", ")
+      : data.detail;
+    throw new Error(detail || `ผิดพลาด (HTTP ${res.status})`);
+  }
+  return data;
+}
+
+// ── ตัวช่วยแสดงค่า ──────────────────────────────────────────────────────────
+
+function text(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (value === true) return "ใช่";
+  if (value === false) return "ไม่";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
+  return String(value);
+}
+
+function shortTime(value) {
+  if (!value) return "—";
+  // แสดงเวลาไทยเสมอ ไม่ตามเครื่องผู้ใช้ — คนอ่าน log นี้อยู่ที่คณะ
+  return new Date(value).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" });
+}
+
+/** แปลง changes ของ API เป็นบรรทัด "ช่อง: ค่าเดิม → ค่าใหม่" */
+function changeLines(changes) {
+  return Object.entries(changes || {})
+    .map(([field, change]) => `${field}: ${text(change.from)} → ${text(change.to)}`)
+    .join("\n");
+}
+
+// ── นิยามของแต่ละแท็บ ───────────────────────────────────────────────────────
+//
+// ทั้งหน้าถูก generate จากรายการนี้: ฟอร์ม ตาราง และปุ่มเปิด/ปิด ใช้โค้ดชุด
+// เดียวกันหมด เพิ่มช่องใหม่ = เพิ่มบรรทัดใน ``fields`` ที่เดียว (ต้องเพิ่มใน
+// pydantic model ฝั่งเซิร์ฟเวอร์ด้วย ไม่งั้นค่าจะถูกทิ้งเงียบ ๆ ด้วย extra=ignore)
+//
+// ``table`` ตรงกับ ``admin_repo.TABLE_KEYS`` — ใช้ทั้งกับปุ่มเปิด/ปิด
+// ``key`` ต้องเรียงลำดับเดียวกับกุญแจในนั้นเป๊ะ ๆ (ผิดลำดับ = ปิดผิดแถว
+// ส่งไม่ครบ = เซิร์ฟเวอร์ตอบ 400 โดยเจตนา เพราะกุญแจไม่ครบ = UPDATE ที่ขาด
+// WHERE = ปิดทั้งตารางในคลิกเดียว)
+//
+// ``max``/``min``/``pattern``/``numMin``/``numMax`` ลอกมาจาก Field(...) ของ
+// pydantic ใน app/admin.py ตรง ๆ เพื่อบอกขอบเขตให้คนกรอกเห็น **ก่อน** กดส่ง
+// แต่การตรวจจริงยังอยู่ฝั่งเซิร์ฟเวอร์ — ที่นี่คือความสะดวก ไม่ใช่ด่านกัน
+const TABS = [
+  { id: "summary", label: "ภาพรวม" },
+  {
+    id: "faqs",
+    label: "FAQ",
+    table: "faqs",
+    endpoint: "/api/admin/faq",
+    key: ["intent_key"],
+    rows: () => state.faqs,
+    lead: "คำถาม-คำตอบที่บอทหยิบไปตอบตรง ๆ — ตารางเดียวในระบบที่ scraper " +
+      "เอามาให้ไม่ได้ เพราะเป็นความรู้ที่อยู่ในหัวคน",
+    empty: {
+      title: "ยังไม่มี FAQ แม้แต่ข้อเดียว",
+      body: "ทุกคำถามที่ตอบด้วยกฎ/เอกสารไม่ได้ บอทจะตอบว่าไม่มีข้อมูล " +
+        "การเพิ่มข้อแรกที่นี่คือสิ่งที่เปลี่ยนคำตอบของบอทได้เร็วที่สุด",
+      steps: [
+        "เปิดแท็บ “คำถามที่ตอบไม่ได้” กดโหลด แล้วดูว่านักศึกษาถามอะไรซ้ำบ่อย",
+        "ตั้ง intent_key เป็นภาษาอังกฤษสั้น ๆ เช่น drop_course",
+        "ใส่คำถามพ้องความหมายให้ใกล้คำที่นักศึกษาพิมพ์จริง ยิ่งใส่ยิ่งค้นเจอ",
+      ],
+    },
+    // จัดกลุ่มตามหมวด + แถวยุบบนจอแคบเหลือกุญแจ/คำถาม/สถานะ/ปุ่ม
+    groupBy: (row) => row.category || "ไม่ระบุหมวด",
+    groupLabel: "หมวด",
+    summary: ["intent_key", "question"],
+    columns: [
+      { name: "intent_key", label: "intent_key", cls: "nowrap" },
+      { name: "question", label: "คำถาม", cls: "clip" },
+      { name: "answer", label: "คำตอบ", cls: "clip" },
+      { name: "category", label: "หมวด" },
+      { name: "updated_by", label: "คนแก้", cls: "nowrap" },
+    ],
+    fields: [
+      { name: "intent_key", label: "intent_key", required: true, min: 2, max: 80,
+        hint: "กุญแจของแถว — ใส่ค่าเดิมคือแก้ ใส่ค่าใหม่คือเพิ่ม เช่น drop_course" },
+      { name: "question", label: "คำถาม (ตัวแทนของกลุ่มคำถามนี้)", required: true,
+        min: 2, max: 500, wide: true },
+      { name: "answer", label: "คำตอบที่บอทจะส่ง", type: "textarea", required: true,
+        min: 2, max: 4000, wide: true,
+        hint: "ไม่เกิน 4,000 ตัวอักษร (LINE จำกัด 5,000 ต่อข้อความ เผื่อหัวข้อ/ลิงก์ " +
+          "ที่บอทต่อท้าย) — เกินแล้วบอทจะเงียบตอนตอบ ไม่ใช่เตือนตอนบันทึก" },
+      { name: "category", label: "หมวด", max: 80 },
+      { name: "source_url", label: "ลิงก์อ้างอิง (ถ้ามี)", max: 500 },
+      { name: "variants", label: "คำถามพ้องความหมาย", type: "list", wide: true,
+        maxItems: 40,
+        hint: "คั่นด้วยคอมมา ไม่เกิน 40 คำ — ยิ่งใส่ใกล้คำที่นักศึกษาพิมพ์จริง ยิ่งค้นเจอ" },
+    ],
+  },
+  {
+    id: "documents",
+    label: "เอกสาร",
+    table: "documents",
+    endpoint: "/api/admin/document",
+    key: ["url"],
+    rows: () => state.documents,
+    lead: "ลิงก์แบบฟอร์ม/ประกาศที่บอทส่งให้นักศึกษา — ลิงก์ตายคือคำตอบที่ผิด",
+    empty: {
+      title: "ยังไม่มีเอกสารในคลัง",
+      body: "ปกติ scraper เติมตารางนี้ให้เอง ถ้าว่างแปลว่ายังไม่ได้รัน scraper " +
+        "หรือรันแล้วไม่ผ่าน — เพิ่มด้วยมือที่นี่ได้ โดยเอา URL เป็นกุญแจ",
+    },
+    groupBy: (row) => row.category || "ไม่ระบุหมวด",
+    groupLabel: "หมวด",
+    summary: ["title", "url"],
+    columns: [
+      { name: "title", label: "ชื่อเอกสาร", cls: "clip" },
+      { name: "category", label: "หมวด" },
+      { name: "doc_type", label: "ชนิด" },
+      { name: "audience", label: "สำหรับ" },
+      { name: "is_available", label: "ลิงก์เข้าได้", type: "bool" },
+      { name: "url", label: "URL", type: "link", cls: "clip" },
+    ],
+    fields: [
+      { name: "url", label: "URL ของไฟล์/หน้าเว็บ", required: true, min: 8, max: 500,
+        wide: true, hint: "กุญแจของแถว — URL เดิมคือแก้ URL ใหม่คือเพิ่ม" },
+      { name: "title", label: "ชื่อเอกสาร", required: true, min: 2, max: 300, wide: true },
+      { name: "category", label: "หมวด", required: true, min: 1, max: 80 },
+      { name: "doc_type", label: "ชนิด (pdf/doc/page)", max: 40 },
+      { name: "audience", label: "สำหรับ", type: "select",
+        options: [["student", "นักศึกษา"], ["staff", "บุคลากร"]] },
+      { name: "keywords", label: "คำค้น", max: 500 },
+      { name: "note", label: "หมายเหตุ", max: 500, wide: true },
+    ],
+  },
+  {
+    id: "instructors",
+    label: "อาจารย์",
+    table: "instructors",
+    endpoint: "/api/admin/instructor",
+    key: ["full_name"],
+    rows: () => state.instructors,
+    lead: "เว็บคณะมีแต่ชื่อกับอีเมล เบอร์โทรกับเลขห้องต้องกรอกมือ — " +
+      "ช่องที่ว่างอยู่คือคำถามที่บอทตอบว่า “ไม่มีข้อมูล” ทุกครั้ง",
+    // แก้ได้เท่านั้น เพิ่มไม่ได้: ``full_name`` เป็นกุญแจที่ scraper เป็นเจ้าของ
+    // และ ``name_normalized`` เป็นค่าที่ derive จากชื่อ — เพิ่มคนใหม่ด้วยมือ
+    // แล้วรอบ scrape ถัดไปจะได้คนเดียวกันสองแถว
+    editOnly: "เพิ่มอาจารย์ใหม่จากหน้านี้ไม่ได้ — กด “แก้” จากรายการข้างล่าง " +
+      "(ชื่อเป็นกุญแจที่ scraper เป็นเจ้าของ เพิ่มมือแล้วจะได้คนเดียวกันสองแถว)",
+    empty: {
+      title: "ยังไม่มีรายชื่ออาจารย์",
+      body: "ตารางนี้มาจาก scraper ของเว็บคณะ ถ้าว่างแปลว่ายังไม่ได้รัน scraper " +
+        "— แก้จากหน้านี้ได้เมื่อมีรายชื่อแล้วเท่านั้น",
+    },
+    summary: ["full_name", "email"],
+    columns: [
+      { name: "full_name", label: "ชื่อ", cls: "nowrap" },
+      { name: "email", label: "อีเมล", cls: "clip" },
+      { name: "phone", label: "โทร" },
+      { name: "room", label: "ห้อง" },
+      { name: "office_hours", label: "เวลาพบ", cls: "clip" },
+      { name: "manual_source", label: "ที่มา", cls: "clip" },
+    ],
+    fields: [
+      { name: "full_name", label: "ชื่อ-นามสกุล (กุญแจ ห้ามแก้)", required: true,
+        min: 2, max: 200, wide: true, readonly: true,
+        hint: "เปลี่ยนชื่อที่นี่ไม่ได้โดยเจตนา — ชื่อคือสิ่งที่ scraper ใช้จับคู่แถว" },
+      { name: "title_prefix", label: "คำนำหน้า/ตำแหน่งวิชาการ", max: 120 },
+      { name: "email", label: "อีเมล", max: 200 },
+      { name: "phone", label: "เบอร์โทร", max: 60 },
+      { name: "building", label: "อาคาร", max: 120 },
+      { name: "floor", label: "ชั้น", max: 40 },
+      { name: "room", label: "ห้อง", max: 60 },
+      { name: "office_hours", label: "เวลาที่นักศึกษาเข้าพบได้", max: 300 },
+      { name: "other_contact", label: "ช่องทางอื่น", max: 300 },
+      { name: "manual_source", label: "ที่มาของข้อมูลที่กรอก", max: 300, wide: true,
+        hint: "เช่น “ถามที่สำนักงานคณะ 27 ส.ค. 69” — schema สั่งไว้ว่าห้ามเดาเบอร์/ห้อง" },
+    ],
+  },
+  {
+    id: "curriculum_rules",
+    label: "แผนการเรียน",
+    table: "curriculum_rules",
+    endpoint: "/api/admin/curriculum_rule",
+    key: ["program_code", "course_code"],
+    rows: () => state.curriculum_rules,
+    lead: "ปี/ภาคที่หลักสูตรวางไว้ให้แต่ละวิชา — planner เอาชุดนี้ไปบอกว่า " +
+      "เทอมหน้าควรลงอะไร",
+    empty: {
+      title: "ยังไม่มีแผนการเรียนของหลักสูตรนี้",
+      body: "ไม่มีข้อมูลชุดนี้ = หน้าติ๊กวิชาที่ผ่านแล้วจะไม่มีวิชาให้ติ๊ก " +
+        "และบอทตอบไม่ได้ว่าเทอมหน้าควรลงอะไร กรอกจากเล่ม มคอ.2 ทีละวิชา",
+    },
+    groupBy: (row) => `ปี ${row.std_year} เทอม ${row.std_semester}`,
+    groupLabel: "ปี/ภาค",
+    summary: ["course_code", "course_code_full"],
+    columns: [
+      { name: "course_code", label: "รหัส", cls: "nowrap" },
+      { name: "course_code_full", label: "รหัสเต็ม", cls: "nowrap" },
+      { name: "std_year", label: "ปี" },
+      { name: "std_semester", label: "ภาค" },
+      { name: "is_fixed_term", label: "ล็อกเทอม", type: "bool" },
+      { name: "source", label: "ที่มา", cls: "clip" },
+    ],
+    fields: [
+      { name: "program_code", label: "รหัสหลักสูตร", required: true, min: 3, max: 20 },
+      { name: "course_code", label: "รหัสวิชา 7 หลัก", required: true,
+        pattern: "^\d{7}$", max: 7, numeric: true,
+        patternHint: "ต้องเป็นตัวเลข 7 หลักพอดี",
+        hint: "ต้องเป็น 7 หลักพอดี — ใส่รหัสเต็มลงช่องนี้แล้วจะหาชื่อวิชาไม่เจอ " +
+          "โดยไม่มี error อะไรเลย" },
+      { name: "course_code_full", label: "รหัสเต็ม (ถ้ามี)", max: 20 },
+      { name: "std_year", label: "ปีที่", type: "number", required: true,
+        numMin: 1, numMax: 8, hint: "1–8" },
+      { name: "std_semester", label: "ภาคเรียนที่", type: "number", required: true,
+        numMin: 1, numMax: 3, hint: "1–3" },
+      { name: "is_fixed_term", label: "ล็อกเทอมนี้ (ย้ายไปเทอมอื่นไม่ได้)", type: "checkbox" },
+      { name: "note", label: "หมายเหตุ", max: 500 },
+      { name: "source", label: "ที่มาของข้อมูล", required: true, min: 2, max: 200, wide: true,
+        hint: "บังคับกรอก — planner เอาไปบอกว่าเทอมหน้าควรลงอะไร " +
+          "ถ้าไม่รู้ว่าใครบอกมาก็แก้กลับไม่ได้" },
+    ],
+  },
+  {
+    id: "prerequisites",
+    label: "วิชาบังคับก่อน",
+    table: "prerequisites",
+    endpoint: "/api/admin/prerequisite",
+    key: ["program_code", "course_code", "requires_code"],
+    rows: () => state.prerequisites,
+    lead: "เงื่อนไข “ต้องผ่านวิชานี้ก่อน” ที่ระบบทะเบียนไม่เผยแพร่ — " +
+      "ตารางนี้ยังว่างทั้งตาราง",
+    note: "ตารางนี้ยังว่าง ทำให้หน้าติ๊กวิชาของนักศึกษาต้องขึ้นคำเตือนว่า " +
+      "ลำดับวิชาเป็นแค่คำแนะนำ " +
+      "กรอกจากเล่ม มคอ.2 แล้วคำเตือนนั้นจะหายไปเอง",
+    empty: {
+      title: "ยังไม่มีเงื่อนไขวิชาบังคับก่อนแม้แต่ข้อเดียว",
+      body: "ผลที่เห็นตอนนี้: หน้าติ๊กวิชาของนักศึกษาต้องขึ้นคำเตือนว่า " +
+        "“ลำดับที่เห็นคือเทอมที่แผนแนะนำเท่านั้น” และบอทเช็คให้ไม่ได้ว่า " +
+        "ลงวิชานี้ได้หรือยัง กรอกข้อแรกแล้วคำเตือนนั้นจะเริ่มหายไป",
+      steps: [
+        "เปิดเล่ม มคอ.2 หมวดคำอธิบายรายวิชา หาบรรทัด “วิชาบังคับก่อน”",
+        "กรอกคู่ละหนึ่งแถว: วิชา + วิชาที่ต้องผ่านก่อน (รหัส 7 หลักทั้งคู่)",
+        "เลือกชนิด hard ถ้าห้ามลงก่อนจริง ๆ ใช้ soft เมื่อเป็นเพียงคำแนะนำ",
+      ],
+    },
+    groupBy: (row) => ({ hard: "บังคับ (hard)", soft: "แนะนำ (soft)", concurrent: "ลงพร้อมกันได้ (concurrent)" })[row.kind] || row.kind || "ไม่ระบุชนิด",
+    groupLabel: "ชนิดเงื่อนไข",
+    summary: ["course_code", "requires_code"],
+    columns: [
+      { name: "course_code", label: "วิชา", cls: "nowrap" },
+      { name: "requires_code", label: "ต้องผ่านก่อน", cls: "nowrap" },
+      { name: "kind", label: "ชนิด" },
+      { name: "source", label: "ที่มา", cls: "clip" },
+    ],
+    fields: [
+      { name: "program_code", label: "รหัสหลักสูตร", required: true, min: 3, max: 20 },
+      { name: "course_code", label: "รหัสวิชา 7 หลัก", required: true,
+        pattern: "^\d{7}$", max: 7, numeric: true,
+        patternHint: "ต้องเป็นตัวเลข 7 หลักพอดี" },
+      { name: "requires_code", label: "วิชาที่ต้องผ่านก่อน (7 หลัก)", required: true,
+        pattern: "^\d{7}$", max: 7, numeric: true,
+        patternHint: "ต้องเป็นตัวเลข 7 หลักพอดี" },
+      { name: "kind", label: "ชนิดเงื่อนไข", type: "select",
+        options: [["hard", "บังคับ (hard)"], ["soft", "แนะนำ (soft)"],
+                  ["concurrent", "ลงพร้อมกันได้ (concurrent)"]] },
+      { name: "source", label: "ที่มาของข้อมูล", required: true, min: 2, max: 200, wide: true,
+        hint: "เช่น “มคอ.2 หน้า 42” — ข้อมูลที่ไม่รู้ที่มา แก้กลับไม่ได้เมื่อผิด" },
+    ],
+  },
+  { id: "chat_logs", label: "คำถามที่ตอบไม่ได้" },
+  { id: "audit", label: "ประวัติการแก้" },
+];
+
+function tabById(id) {
+  return TABS.find((tab) => tab.id === id);
+}
+
+/** ตัวเลขบนป้ายของแท็บ — ให้เห็นจากแถบแท็บว่าตารางไหนว่างอยู่ */
+function tabCount(tab) {
+  if (!state) return null;
+  const counts = state.counts || {};
+  if (tab.id === "chat_logs") return counts.unanswered ?? null;
+  if (tab.id === "audit") return (state.audit || []).length;
+  if (!tab.rows) return null;
+  return (tab.rows() || []).length;
+}
+
+// ── ฟอร์ม ───────────────────────────────────────────────────────────────────
+//
+// สร้างจาก ``fields`` ของแท็บ ไม่ได้เขียน HTML ของแต่ละฟอร์มแยก — ฟอร์มที่
+// copy-paste กันมักจะลืมแก้ที่ใดที่หนึ่งเวลาเพิ่มช่อง แล้วค่านั้นจะหายเงียบ ๆ
+
+function inputFor(field) {
+  let node;
+  if (field.type === "textarea") {
+    node = document.createElement("textarea");
+  } else if (field.type === "select") {
+    node = document.createElement("select");
+    for (const [value, label] of field.options) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      node.appendChild(option);
+    }
+  } else {
+    node = document.createElement("input");
+    node.type = field.type === "number" ? "number" : field.type === "checkbox" ? "checkbox" : "text";
+    if (field.type === "number") {
+      node.inputMode = "numeric";
+      if (field.numMin !== undefined) node.min = String(field.numMin);
+      if (field.numMax !== undefined) node.max = String(field.numMax);
+    }
+    // รหัสวิชาเป็นตัวเลขล้วน — เปิดแป้นตัวเลขบนมือถือให้พิมพ์เร็วและผิดยาก
+    if (field.numeric) node.inputMode = "numeric";
+  }
+  // ปล่อยให้เบราว์เซอร์กันความยาวให้ด้วย (นอกจากตัวนับ) — แต่ยังตรวจใน JS อยู่
+  // เพราะ maxLength ไม่กันการวางทับด้วยสคริปต์และไม่กันช่อง textarea ทุกรุ่น
+  if (field.max && field.type !== "checkbox" && field.type !== "select" && field.type !== "number") {
+    node.maxLength = field.max;
+  }
+  node.id = `f_${field.name}`;
+  node.name = field.name;
+  if (field.readonly) node.readOnly = true;
+  return node;
+}
+
+/** ตัวนับตัวอักษรสด ๆ — ช่อง ``answer`` คือช่องที่เกินแล้วบอทส่งไม่ผ่าน LINE */
+function attachCounter(node, field, counter) {
+  const paint = () => {
+    const used = node.value.length;
+    counter.textContent = `${used.toLocaleString("th-TH")} / ${field.max.toLocaleString("th-TH")}`;
+    counter.className =
+      "count" + (used > field.max ? " count--over" : used >= field.max * 0.9 ? " count--near" : "");
+  };
+  node.addEventListener("input", paint);
+  paint();
+}
+
+function fieldBox(field) {
+  const box = document.createElement("div");
+  box.className = "field" + (field.wide || field.type === "textarea" ? " wide" : "");
+  const node = inputFor(field);
+
+  if (field.type === "checkbox") {
+    // ช่องติ๊กเอา label ครอบทั้งแถวเพื่อให้พื้นที่แตะกว้างกว่ากล่องเล็ก ๆ
+    const label = document.createElement("label");
+    label.className = "check";
+    label.htmlFor = node.id;
+    label.append(node, document.createTextNode(field.label));
+    box.appendChild(label);
+    if (field.hint) box.appendChild(hintNode(field));
+    return box;
+  }
+
+  const label = document.createElement("label");
+  label.htmlFor = node.id;
+  label.textContent = field.label;
+  if (field.required) {
+    const star = document.createElement("span");
+    star.className = "req";
+    star.textContent = "*";
+    star.title = "ต้องกรอก";
+    label.appendChild(star);
+  }
+  box.append(label, node);
+
+  const line = document.createElement("div");
+  line.className = "rowline";
+  const describedBy = [];
+  if (field.hint || field.patternHint) {
+    const hint = hintNode(field);
+    hint.id = `h_${field.name}`;
+    describedBy.push(hint.id);
+    line.appendChild(hint);
+  } else {
+    line.appendChild(document.createElement("span"));
+  }
+  if (field.max && (field.type === "textarea" || !field.type)) {
+    const counter = document.createElement("span");
+    counter.className = "count";
+    counter.setAttribute("aria-hidden", "true");
+    line.appendChild(counter);
+    attachCounter(node, field, counter);
+  }
+  box.appendChild(line);
+
+  const error = document.createElement("div");
+  error.className = "fielderr";
+  error.id = `e_${field.name}`;
+  error.hidden = true;
+  describedBy.push(error.id);
+  box.appendChild(error);
+  node.setAttribute("aria-describedby", describedBy.join(" "));
+  return box;
+}
+
+function hintNode(field) {
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.textContent = [field.hint, field.patternHint].filter(Boolean).join(" · ");
+  return hint;
+}
+
+function showFieldError(field, message) {
+  const node = el(`f_${field.name}`);
+  const box = el(`e_${field.name}`);
+  if (box) {
+    box.textContent = message || "";
+    box.hidden = !message;
+  }
+  if (node) {
+    if (message) node.setAttribute("aria-invalid", "true");
+    else node.removeAttribute("aria-invalid");
+  }
+}
+
+function clearFieldErrors(tab) {
+  for (const field of tab.fields) showFieldError(field, null);
+}
+
+/**
+ * ตรวจค่าหนึ่งช่องตามขอบเขตที่ลอกมาจาก pydantic — คืนข้อความผิด หรือ null
+ *
+ * ตรวจที่นี่เพื่อบอกคนกรอกก่อนยิง **ไม่ใช่แทน** การตรวจฝั่งเซิร์ฟเวอร์:
+ * ข้อความผิดจากเซิร์ฟเวอร์ยังถูกแสดงเสมอ (ดู submitForm) เพราะกฎบางข้อ
+ * อยู่ที่ DB เท่านั้น เช่น ชื่ออาจารย์ที่ไม่มีอยู่จริง
+ */
+function fieldError(field, value) {
+  if (field.type === "checkbox" || field.type === "select") return null;
+  const empty = value === null || value === undefined || value === "";
+  if (field.required && empty) return "ต้องกรอกช่องนี้";
+  if (empty) return null;
+  if (field.type === "number") {
+    if (!Number.isInteger(value)) return "ต้องเป็นจำนวนเต็ม";
+    if (field.numMin !== undefined && value < field.numMin) return `ต้องไม่น้อยกว่า ${field.numMin}`;
+    if (field.numMax !== undefined && value > field.numMax) return `ต้องไม่เกิน ${field.numMax}`;
+    return null;
+  }
+  if (field.type === "list") {
+    if (field.maxItems && value.length > field.maxItems) {
+      return `ใส่ได้ไม่เกิน ${field.maxItems} คำ (ตอนนี้ ${value.length})`;
+    }
+    return null;
+  }
+  const length = String(value).length;
+  if (field.min && length < field.min) return `ต้องยาวอย่างน้อย ${field.min} ตัวอักษร`;
+  if (field.max && length > field.max) {
+    return `ยาวเกิน ${field.max.toLocaleString("th-TH")} ตัวอักษร (ตอนนี้ ${length.toLocaleString("th-TH")})`;
+  }
+  if (field.pattern && !new RegExp(field.pattern).test(String(value))) {
+    return field.patternHint || "รูปแบบไม่ถูกต้อง";
+  }
+  return null;
+}
+
+function collectForm(tab) {
+  const body = {};
+  const problems = [];
+  for (const field of tab.fields) {
+    const node = el(`f_${field.name}`);
+    if (!node) continue;
+    if (field.type === "checkbox") {
+      body[field.name] = node.checked;
+      continue;
+    }
+    const raw = node.value.trim();
+    if (field.type === "list") {
+      body[field.name] = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    } else if (field.type === "number") {
+      body[field.name] = raw === "" ? null : Number(raw);
+    } else {
+      // ช่องว่าง → null ไม่ใช่ "" เพราะคอลัมน์พวกนี้ใช้ NULL แทน "ไม่มีข้อมูล"
+      // และ query ฝั่งบอทเช็ค IS NOT NULL (สตริงว่างจะนับว่า "มีเบอร์แล้ว")
+      body[field.name] = raw === "" ? null : raw;
+    }
+    const message = fieldError(field, body[field.name]);
+    if (message) problems.push({ field, message });
+  }
+  return { body, problems };
+}
+
+function fillForm(tab, row) {
+  for (const field of tab.fields) {
+    const node = el(`f_${field.name}`);
+    if (!node) continue;
+    const value = row ? row[field.name] : undefined;
+    if (field.type === "checkbox") {
+      node.checked = Boolean(value);
+    } else if (field.type === "list") {
+      node.value = Array.isArray(value) ? value.join(", ") : value || "";
+    } else if (value === null || value === undefined) {
+      // ค่าดีฟอลต์ตอนเพิ่มใหม่: รหัสหลักสูตรที่กำลังดูอยู่ (พิมพ์ซ้ำทุกแถวคือ
+      // จุดที่คนพิมพ์ผิดแล้วได้แถวที่ planner มองไม่เห็น)
+      node.value = !row && field.name === "program_code" ? state.program_code : "";
+    } else {
+      node.value = String(value);
+    }
+    node.dispatchEvent(new Event("input"));
+  }
+  clearFieldErrors(tab);
+}
+
+/** เอาแถวจากตารางมาเติมในฟอร์ม แล้วเลื่อนขึ้นไปให้เห็นว่ากำลังแก้อะไร */
+function editRow(tab, row) {
+  editingKey = tab.key.map((name) => String(row[name])).join(" | ");
+  render();
+  fillForm(tab, row);
+  const first = tab.fields.find((f) => !f.readonly && f.type !== "checkbox");
+  const target = first ? el(`f_${first.name}`) : null;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (target) target.focus({ preventScroll: true });
+}
+
+function renderForm(tab) {
+  const card = document.createElement("section");
+  card.className = "card";
+
+  const head = document.createElement("div");
+  head.className = "card__head";
+  const title = document.createElement("h2");
+  title.textContent = editingKey
+    ? `กำลังแก้: ${editingKey}`
+    : tab.editOnly ? `แก้ ${tab.label}` : `เพิ่มหรือแก้ ${tab.label}`;
+  head.appendChild(title);
+  if (tab.lead) {
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = tab.lead;
+    head.appendChild(sub);
+  }
+  card.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "card__body";
+  if (tab.editOnly && !editingKey) body.appendChild(inlineMsg(tab.editOnly, "warn"));
+  if (tab.note) body.appendChild(inlineMsg(tab.note, "warn"));
+
+  // เป็น <form> จริงเพื่อให้กด Enter ในช่องข้อความเท่ากับกดบันทึก และเพื่อให้
+  // ช่องทั้งหมดถูกจัดกลุ่มให้เครื่องช่วยอ่านรู้ว่านี่คือฟอร์มเดียวกัน
+  const form = document.createElement("form");
+  form.noValidate = true;
+  form.autocomplete = "off";
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  for (const field of tab.fields) grid.appendChild(fieldBox(field));
+  form.appendChild(grid);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "btn btn--primary";
+  save.append(icon("save"), document.createTextNode("บันทึก"));
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "btn btn--ghost";
+  reset.textContent = editingKey ? "เลิกแก้แถวนี้" : "ล้างฟอร์ม";
+  reset.addEventListener("click", () => {
+    editingKey = null;
+    render();
+  });
+  const status = document.createElement("span");
+  status.className = "status";
+  status.id = "formstatus";
+  actions.append(save, reset, status);
+  form.appendChild(actions);
+
+  if (tab.editOnly && !editingKey) {
+    save.disabled = true;
+    status.textContent = "เลือกแถวที่จะแก้จากรายการข้างล่างก่อน";
+  }
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitForm(tab, save, status);
+  });
+  body.appendChild(form);
+  card.appendChild(body);
+  return card;
+}
+
+/** ทำให้ปุ่มกันกดซ้ำระหว่างรอเซิร์ฟเวอร์ และเห็นได้ว่ากำลังทำงานอยู่ */
+function setBusy(button, busy) {
+  button.disabled = busy;
+  const already = button.querySelector(".spin");
+  if (busy && !already) button.insertBefore(spinner(), button.firstChild);
+  if (!busy && already) already.remove();
+}
+
+function spinner() {
+  const dot = document.createElement("span");
+  dot.className = "spin";
+  return dot;
+}
+
+async function submitForm(tab, button, status) {
+  clearNotices();
+  clearFieldErrors(tab);
+  const { body, problems } = collectForm(tab);
+  if (problems.length) {
+    for (const problem of problems) showFieldError(problem.field, problem.message);
+    notice(
+      `ยังบันทึกไม่ได้ — มี ${problems.length} ช่องที่ต้องแก้`,
+      "err",
+      problems.map((p) => `${p.field.label}: ${p.message}`).join("\n")
+    );
+    const first = el(`f_${problems[0].field.name}`);
+    if (first) first.focus();
+    return;
+  }
+
+  setBusy(button, true);
+  status.textContent = "กำลังบันทึก…";
+  try {
+    const result = await api(tab.endpoint, body);
+    const changed = Object.keys(result.changes || {});
+    // "บันทึกแล้วไม่มีอะไรเปลี่ยน" เป็นข้อมูลที่มีประโยชน์ ไม่ใช่ความล้มเหลว
+    // — คนกดจะรู้ว่าค่าที่พิมพ์ไปตรงกับของเดิมอยู่แล้ว ไม่ต้องเดา
+    notice(
+      result.action === "create"
+        ? `เพิ่มแถวใหม่ใน ${tab.label} แล้ว`
+        : changed.length
+          ? `บันทึกแล้ว — เปลี่ยน ${changed.length} ช่อง`
+          : "บันทึกแล้ว — ไม่มีค่าไหนต่างจากเดิม",
+      "ok",
+      changeLines(result.changes)
+    );
+    editingKey = null;
+    await reload();
+  } catch (error) {
+    // ข้อความจากเซิร์ฟเวอร์ต้องขึ้นเสมอ ไม่ว่าฝั่งหน้าเว็บจะตรวจผ่านแล้วก็ตาม
+    status.textContent = "";
+    notice("บันทึกไม่สำเร็จ", "err", error.message);
+    setBusy(button, false);
+  }
+}
+
+// ── ตารางรายการ ─────────────────────────────────────────────────────────────
+
+function emptyState(config) {
+  const box = document.createElement("div");
+  box.className = "empty";
+  const art = document.createElement("div");
+  art.className = "icon";
+  art.appendChild(icon("empty"));
+  box.appendChild(art);
+  const title = document.createElement("h3");
+  title.textContent = config.title;
+  const body = document.createElement("p");
+  body.textContent = config.body;
+  box.append(title, body);
+  if (config.steps) {
+    const list = document.createElement("ol");
+    list.className = "steps";
+    for (const step of config.steps) {
+      const item = document.createElement("li");
+      item.textContent = step;
+      list.appendChild(item);
+    }
+    box.appendChild(list);
+  }
+  return box;
+}
+
+/** ใส่ป้ายชื่อคอลัมน์ในเซลล์ด้วย เพื่อให้จอแคบอ่านการ์ดรู้เรื่อง (ดู CSS) */
+function cell(label, cls) {
+  const td = document.createElement("td");
+  if (cls) td.className = cls;
+  if (label) {
+    const tag = document.createElement("span");
+    tag.className = "rowlabel";
+    tag.setAttribute("aria-hidden", "true");
+    tag.textContent = label;
+    td.appendChild(tag);
+  }
+  return td;
+}
+
+// ── สถานะการยุบ/กาง/ค้นหาของแต่ละแท็บ ──────────────────────────────────────
+//
+// อยู่ในหน่วยความจำเท่านั้น และอยู่ **นอก** ฟังก์ชัน render() เพราะกดปิดใช้
+// แถวเดียวแล้วหน้าถูกวาดใหม่ทั้งหน้า — ถ้าเก็บสถานะไว้ในตัว DOM ทุกกลุ่มจะ
+// ยุบกลับหมดทุกครั้งที่บันทึก (ไม่จำข้ามการโหลดหน้าใหม่โดยเจตนา)
+
+const ui = {};
+
+function uiFor(id) {
+  if (!ui[id]) {
+    ui[id] = {
+      query: "", status: "all",
+      closed: new Set(),   // ชื่อกลุ่มที่ยุบอยู่
+      open: new Set(),     // กุญแจแถวที่กางอยู่ (มีผลบนจอแคบ)
+      full: new Set(),     // ช่องข้อความยาวที่กางเต็มแล้ว
+      groupInit: false, rowInit: false,
+    };
+  }
+  return ui[id];
+}
+
+function rowKeyText(tab, row) {
+  return (tab.key || []).map((name) => String(row[name])).join(" | ");
+}
+
+/** ข้อความทั้งแถวไว้ให้ค้นหา — รวมช่องที่ไม่ได้แสดงเป็นคอลัมน์ (คำค้น/หมายเหตุ) */
+function rowHaystack(row) {
+  return Object.values(row)
+    .map((value) => (Array.isArray(value) ? value.join(" ")
+      : value === null || value === undefined ? "" : String(value)))
+    .join(" ")
+    .toLowerCase();
+}
+
+/** ตัดแถวตามคำค้น + สถานะ (ทำในหน้า ไม่ยิง API ใหม่) */
+function filterRows(rows, state_) {
+  const terms = state_.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return rows.filter((row) => {
+    if (state_.status === "on" && row.is_active === false) return false;
+    if (state_.status === "off" && row.is_active !== false) return false;
+    if (!terms.length) return true;
+    const hay = rowHaystack(row);
+    return terms.every((term) => hay.indexOf(term) >= 0);
+  });
+}
+
+/** ช่องข้อความยาว: ตัดเหลือ 3 บรรทัดแล้วมีปุ่มกางเต็ม (จำสถานะไว้) */
+function longCell(td, value, cellKey, state_) {
+  const str = text(value);
+  if (str.length <= 160) {
+    td.appendChild(document.createTextNode(str));
+    return;
+  }
+  const opened = state_.full.has(cellKey);
+  const box = document.createElement("div");
+  box.className = "clamp" + (opened ? " clamp--open" : "");
+  box.textContent = str;
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "linkbtn";
+  const label = (on) => (on ? "ย่อข้อความ" : `ดูข้อความเต็ม (${str.length} ตัวอักษร)`);
+  more.textContent = label(opened);
+  more.setAttribute("aria-expanded", opened ? "true" : "false");
+  more.addEventListener("click", () => {
+    const now = !state_.full.has(cellKey);
+    if (now) state_.full.add(cellKey); else state_.full.delete(cellKey);
+    box.classList.toggle("clamp--open", now);
+    more.textContent = label(now);
+    more.setAttribute("aria-expanded", now ? "true" : "false");
+  });
+  td.append(box, more);
+}
+
+// ── ตารางรายการ + ตัวกรอง + กลุ่มที่ยุบได้ ─────────────────────────────────
+
+function renderTable(tab) {
+  const all = tab.rows() || [];
+  const box = uiFor(tab.id);
+  const card = document.createElement("section");
+  card.className = "card card--flush";
+
+  const head = document.createElement("div");
+  head.className = "card__head";
+  const title = document.createElement("h2");
+  title.textContent = `รายการ ${tab.label}`;
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  const off = all.filter((row) => row.is_active === false).length;
+  sub.textContent = all.length
+    ? `${all.length} แถว` + (off ? ` · ปิดใช้อยู่ ${off} แถว` : " · ใช้งานอยู่ทั้งหมด")
+    : "ยังไม่มีข้อมูล";
+  head.append(title, sub);
+  card.appendChild(head);
+
+  if (!all.length) {
+    const body = document.createElement("div");
+    body.className = "card__body";
+    body.appendChild(
+      emptyState(
+        tab.empty || {
+          title: "ยังไม่มีข้อมูลในตารางนี้",
+          body: "กรอกฟอร์มด้านบนเพื่อเพิ่มแถวแรก",
+        }
+      )
+    );
+    card.appendChild(body);
+    return card;
+  }
+
+  // ครั้งแรกของแท็บนี้: ของเยอะ = เริ่มแบบยุบไว้ (เห็นภาพรวมก่อนว่ามีอะไรกี่อัน)
+  const grouped = typeof tab.groupBy === "function";
+  const groupNames = grouped
+    ? Array.from(new Set(all.map((row) => tab.groupBy(row)))).sort((a, b) => a.localeCompare(b, "th"))
+    : [];
+  if (grouped && !box.groupInit) {
+    box.groupInit = true;
+    if (all.length > 12 && groupNames.length > 1) {
+      for (const name of groupNames) box.closed.add(name);
+    }
+  }
+  if (!box.rowInit) {
+    box.rowInit = true;
+    if (all.length <= 6) {
+      for (const row of all) box.open.add(rowKeyText(tab, row));
+    }
+  }
+
+  const hits = document.createElement("div");
+  hits.className = "hitcount";
+  const holder = document.createElement("div");
+
+  /** วาดเฉพาะรายการ ไม่แตะช่องค้นหา — โฟกัส/เคอร์เซอร์ในช่องจึงไม่กระเด็น */
+  const paint = () => {
+    const rows = filterRows(all, box);
+    hits.textContent = "";
+    const line = document.createElement("span");
+    line.append(
+      document.createTextNode("แสดง "),
+      Object.assign(document.createElement("b"), { textContent: String(rows.length) }),
+      document.createTextNode(` จาก ${all.length} แถว`)
+    );
+    hits.appendChild(line);
+    holder.textContent = "";
+    if (!rows.length) {
+      const pad = document.createElement("div");
+      pad.className = "card__body";
+      pad.appendChild(emptyState({
+        title: "ไม่พบแถวที่ตรงกับที่กรองไว้",
+        body: `มีทั้งหมด ${all.length} แถว แต่ไม่มีแถวไหนตรงกับคำค้น/สถานะที่เลือก ` +
+          "— ลองใช้คำสั้นลง หรือกดล้างตัวกรอง",
+      }));
+      holder.appendChild(pad);
+      return;
+    }
+    holder.appendChild(buildTable(tab, rows, box, grouped, groupNames));
+  };
+
+  card.appendChild(filterBar(tab, box, all, groupNames, paint));
+  card.append(hits, holder);
+  paint();
+
+  const foot = document.createElement("div");
+  foot.className = "card__body";
+  foot.appendChild(legend());
+  card.appendChild(foot);
+  return card;
+}
+
+/**
+ * ช่องค้นหาหนึ่งช่อง: input ตัวเดิม (type=search) + ไอคอนแว่นขยาย + ปุ่มล้างคำค้น
+ *
+ * ไม่แตะพฤติกรรมการกรอง — ยังเป็น listener ``input`` ที่เรียก ``onChange``
+ * ทุกตัวอักษรเหมือนเดิม ผู้เรียกยังได้ ``input`` ตัวจริงไปใช้ต่อ
+ * (บางที่ต้องเซ็ต ``value = ""`` เอง ตอนกด "ล้างตัวกรอง" — ให้เรียก ``sync``
+ *  ต่อท้ายด้วย ไม่งั้นปุ่มกากบาทค้างอยู่ทั้งที่ช่องว่างแล้ว)
+ */
+function searchField(id, value, placeholder, onChange) {
+  const wrap = document.createElement("div");
+  wrap.className = "searchfield";
+  const input = document.createElement("input");
+  input.type = "search";
+  input.id = id;
+  input.value = value;
+  input.placeholder = placeholder;
+  input.autocomplete = "off";
+  const glass = icon("search");
+  glass.classList.add("searchicon");
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "searchclear";
+  clear.setAttribute("aria-label", "ล้างคำค้น");
+  clear.appendChild(icon("close"));
+  const sync = () => { clear.hidden = input.value === ""; };
+  sync();
+  input.addEventListener("input", () => { sync(); onChange(); });
+  clear.addEventListener("click", () => {
+    input.value = "";
+    sync();
+    onChange();
+    input.focus();   // กดล้างแล้วพิมพ์ต่อได้เลย ไม่ต้องกลับไปคลิกช่องเอง
+  });
+  // ลำดับใน DOM: input มาก่อน เพื่อให้กฎ ``input:focus ~ .searchicon`` ติด
+  // (ไอคอนเป็น aria-hidden ทั้งคู่ ลำดับจึงไม่มีผลกับ screen reader)
+  wrap.append(input, glass, clear);
+  return { wrap, input, sync };
+}
+
+/** แถบค้นหา/กรอง/ยุบทั้งหมด — ทุกอย่างทำในหน้า ไม่ยิง API ใหม่ */
+function filterBar(tab, box, all, groupNames, paint) {
+  const bar = document.createElement("div");
+  bar.className = "filterbar";
+
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "grow";
+  const searchLabel = document.createElement("label");
+  searchLabel.htmlFor = `find_${tab.id}`;
+  searchLabel.textContent = `ค้นหาใน ${all.length} แถวนี้`;
+  const search = searchField(`find_${tab.id}`, box.query,
+    "พิมพ์คำที่อยู่ในแถว เช่น ชื่อ รหัส หมวด", () => {
+      box.query = search.input.value;
+      paint();
+    });
+  searchWrap.append(searchLabel, search.wrap);
+
+  const statusWrap = document.createElement("div");
+  const statusLabel = document.createElement("label");
+  statusLabel.htmlFor = `stat_${tab.id}`;
+  statusLabel.textContent = "สถานะ";
+  const status = document.createElement("select");
+  status.id = `stat_${tab.id}`;
+  for (const [value, label] of [["all", "ทั้งหมด"], ["on", "ใช้งาน"], ["off", "ปิดใช้"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    if (box.status === value) option.selected = true;
+    status.appendChild(option);
+  }
+  status.addEventListener("change", () => {
+    box.status = status.value;
+    paint();
+  });
+  statusWrap.append(statusLabel, status);
+  bar.append(searchWrap, statusWrap);
+
+  const spread = document.createElement("div");
+  spread.className = "spread";
+  const openAll = document.createElement("button");
+  openAll.type = "button";
+  openAll.className = "btn btn--ghost btn--sm";
+  openAll.textContent = "กางทั้งหมด";
+  openAll.addEventListener("click", () => {
+    box.closed.clear();
+    for (const row of all) box.open.add(rowKeyText(tab, row));
+    paint();
+  });
+  const shutAll = document.createElement("button");
+  shutAll.type = "button";
+  shutAll.className = "btn btn--ghost btn--sm";
+  shutAll.textContent = "ยุบทั้งหมด";
+  shutAll.addEventListener("click", () => {
+    for (const name of groupNames) box.closed.add(name);
+    box.open.clear();
+    paint();
+  });
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "btn btn--ghost btn--sm";
+  clear.textContent = "ล้างตัวกรอง";
+  clear.addEventListener("click", () => {
+    box.query = "";
+    box.status = "all";
+    search.input.value = "";
+    search.sync();
+    status.value = "all";
+    paint();
+  });
+  spread.append(openAll, shutAll, clear);
+  bar.appendChild(spread);
+  return bar;
+}
+
+/** ตารางจริง: <tbody> หนึ่งก้อนต่อหนึ่งกลุ่ม หัวกลุ่มเป็นปุ่มยุบ/กาง */
+function buildTable(tab, rows, box, grouped, groupNames) {
+  const wrap = document.createElement("div");
+  wrap.className = "tablewrap";
+  const table = document.createElement("table");
+  table.className = "rows";
+  const caption = document.createElement("caption");
+  caption.className = "sr-only";
+  caption.textContent = `รายการ ${tab.label} ${rows.length} แถว`;
+  table.appendChild(caption);
+
+  const headers = tab.columns.map((column) => column.label)
+    .concat(["สถานะ", "แก้ไขล่าสุด", "การจัดการ"]);
+  const thead = document.createElement("thead");
+  const hrow = document.createElement("tr");
+  for (const label of headers) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = label;
+    hrow.appendChild(th);
+  }
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+
+  if (!grouped) {
+    const tbody = document.createElement("tbody");
+    for (const row of rows) tbody.appendChild(renderRow(tab, row, box));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  // ค้นหาอยู่ = ถือว่ากางทุกกลุ่ม ไม่งั้นค้นแล้วจะไม่เห็นอะไรเลย
+  const searching = box.query.trim() !== "";
+  for (const name of groupNames) {
+    const mine = rows.filter((row) => tab.groupBy(row) === name);
+    if (!mine.length) continue;
+    const tbody = document.createElement("tbody");
+    const shown = searching || !box.closed.has(name);
+
+    const grouptr = document.createElement("tr");
+    grouptr.className = "grouprow";
+    const cellHead = document.createElement("td");
+    cellHead.colSpan = headers.length;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "grouphead";
+    button.setAttribute("aria-expanded", shown ? "true" : "false");
+    const caret = icon("caret");
+    caret.classList.add("caret");
+    const label = document.createElement("span");
+    label.className = "grow";
+    label.textContent = `${tab.groupLabel || "กลุ่ม"}: ${name}`;
+    const count = document.createElement("span");
+    count.className = "count";
+    const dim = mine.filter((row) => row.is_active === false).length;
+    count.textContent = `${mine.length} รายการ` + (dim ? ` · ปิดใช้ ${dim}` : "");
+    button.append(caret, label, count);
+    button.addEventListener("click", () => {
+      if (box.closed.has(name)) box.closed.delete(name); else box.closed.add(name);
+      paintGroup(tbody, button, tab, mine, box, name);
+    });
+    cellHead.appendChild(button);
+    grouptr.appendChild(cellHead);
+    tbody.appendChild(grouptr);
+
+    if (shown) {
+      for (const row of mine) tbody.appendChild(renderRow(tab, row, box));
+    }
+    table.appendChild(tbody);
+  }
+  wrap.appendChild(table);
+  return wrap;
+}
+
+/** วาดใหม่เฉพาะกลุ่มที่ถูกกด — ไม่ยุ่งกับกลุ่มอื่นและไม่รีเซ็ตช่องค้นหา */
+function paintGroup(tbody, button, tab, mine, box, name) {
+  const shown = !box.closed.has(name);
+  button.setAttribute("aria-expanded", shown ? "true" : "false");
+  while (tbody.children.length > 1) tbody.removeChild(tbody.lastChild);
+  if (shown) {
+    for (const row of mine) tbody.appendChild(renderRow(tab, row, box));
+  }
+}
+
+function legend() {
+  const box = document.createElement("div");
+  box.className = "legend";
+  box.style.marginTop = "0";
+  for (const line of [
+    "“ปิดใช้” = บอทเลิกเอาแถวนั้นไปตอบ แต่ข้อมูลยังอยู่ เปิดกลับได้ทุกเมื่อ",
+    "หน้านี้ไม่มีปุ่มลบโดยเจตนา — ลบแล้วรอบเก็บข้อมูลถัดไปจะเอากลับมาเงียบ ๆ",
+    "บนจอมือถือแถวจะเริ่มแบบยุบ กด “ดูรายละเอียด” เพื่อกางเฉพาะแถวที่สนใจ",
+  ]) {
+    const item = document.createElement("span");
+    item.textContent = line;
+    box.appendChild(item);
+  }
+  return box;
+}
+
+function renderRow(tab, row, box) {
+  const tr = document.createElement("tr");
+  const keyText = rowKeyText(tab, row);
+  const isOff = row.is_active === false;
+  // คอลัมน์ที่ถือว่าเป็น "หัวแถว" — ต้องเห็นตอนยุบ: กุญแจของแถวเสมอ
+  const summary = new Set((tab.summary || [tab.columns[0].name]).concat(tab.key || []));
+  const opened = box.open.has(keyText);
+  tr.className = (isOff ? "off " : "") + "fold" + (opened ? "" : " closed");
+  if (isOff) tr.classList.add("off");
+
+  for (const column of tab.columns) {
+    const detail = !summary.has(column.name);
+    const td = cell(column.label, (column.cls || "") + (detail ? " detailcell" : ""));
+    if (column.type === "link" && row[column.name]) {
+      const link = document.createElement("a");
+      link.href = row[column.name];
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = row[column.name];
+      td.appendChild(link);
+    } else {
+      longCell(td, row[column.name], `${keyText}|${column.name}`, box);
+    }
+    tr.appendChild(td);
+  }
+
+  const stateCell = cell("สถานะ", "nowrap");
+  const badge = document.createElement("span");
+  badge.className = "badge " + (isOff ? "badge--off" : "badge--on");
+  badge.textContent = isOff ? "ปิดใช้" : "ใช้งาน";
+  stateCell.appendChild(badge);
+  tr.appendChild(stateCell);
+
+  const when = cell("แก้ไขล่าสุด", "nowrap tiny detailcell");
+  when.appendChild(document.createTextNode(row.updated_at ? shortTime(row.updated_at) : "—"));
+  tr.appendChild(when);
+
+  const buttons = cell("", "rowact");
+  // ปุ่มกางรายละเอียด — โผล่เฉพาะจอแคบ (CSS) เพราะจอกว้างเห็นทุกคอลัมน์อยู่แล้ว
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "rowmore";
+  more.setAttribute("aria-expanded", opened ? "true" : "false");
+  const caret = icon("caret");
+  const moreLabel = document.createElement("span");
+  moreLabel.textContent = opened ? "ย่อรายละเอียด" : "ดูรายละเอียด";
+  more.append(caret, moreLabel);
+  more.addEventListener("click", () => {
+    const now = !box.open.has(keyText);
+    if (now) box.open.add(keyText); else box.open.delete(keyText);
+    tr.classList.toggle("closed", !now);
+    more.setAttribute("aria-expanded", now ? "true" : "false");
+    moreLabel.textContent = now ? "ย่อรายละเอียด" : "ดูรายละเอียด";
+  });
+
+  const set = document.createElement("div");
+  set.className = "btnset";
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "btn btn--ghost btn--sm";
+  edit.append(icon("edit"), document.createTextNode("แก้"));
+  edit.addEventListener("click", () => editRow(tab, row));
+  const flip = document.createElement("button");
+  flip.type = "button";
+  flip.className = "btn btn--sm " + (isOff ? "btn--ghost" : "btn--danger");
+  flip.textContent = isOff ? "เปิดใช้" : "ปิดใช้";
+  flip.addEventListener("click", () => toggleRow(tab, row, flip));
+  set.append(edit, flip);
+  buttons.append(more, set);
+  tr.appendChild(buttons);
+  return tr;
+}
+
+// ── กล่องยืนยัน ─────────────────────────────────────────────────────────────
+
+/**
+ * ถามยืนยันด้วย <dialog> (โฟกัสวนในกล่อง ปิดด้วย Esc ได้) — ถ้าเบราว์เซอร์
+ * ไม่รู้จัก showModal จะถอยไป window.confirm เพื่อให้ยังมีการถามอยู่เสมอ
+ */
+function confirmAction(options) {
+  const box = el("confirmbox");
+  const plain = `${options.title}\n\n${options.text}\n\n${options.keyline}`;
+  if (!box || typeof box.showModal !== "function") {
+    return Promise.resolve(window.confirm(plain));
+  }
+  el("confirmtitle").textContent = options.title;
+  el("confirmtext").textContent = options.text;
+  el("confirmkey").textContent = options.keyline;
+  const yes = el("confirmyes");
+  yes.textContent = options.yesLabel || "ยืนยัน";
+  yes.className = "btn " + (options.danger === false ? "btn--primary" : "btn--danger");
+
+  return new Promise((resolve) => {
+    const done = (answer) => {
+      yes.removeEventListener("click", onYes);
+      el("confirmno").removeEventListener("click", onNo);
+      box.removeEventListener("close", onClose);
+      if (box.open) box.close();
+      resolve(answer);
+    };
+    const onYes = () => done(true);
+    const onNo = () => done(false);
+    const onClose = () => done(false);
+    yes.addEventListener("click", onYes);
+    el("confirmno").addEventListener("click", onNo);
+    box.addEventListener("close", onClose);
+    box.showModal();
+  });
+}
+
+// ── เปิด/ปิดแถว (ปุ่มที่แทนการลบทั้งหน้า) ───────────────────────────────────
+
+async function toggleRow(tab, row, button) {
+  // จำนวนและลำดับของกุญแจต้องตรงกับ ``admin_repo.TABLE_KEYS`` เป๊ะ ๆ
+  // ส่งไม่ครบ = เซิร์ฟเวอร์ตอบ 400 โดยเจตนา (กุญแจไม่ครบ = UPDATE ที่ขาด
+  // WHERE = ปิดทั้งตารางในคลิกเดียว) จึงเช็คซ้ำที่นี่ก่อนยิงด้วย
+  const key = tab.key.map((name) => row[name]);
+  if (key.some((value) => value === null || value === undefined || value === "")) {
+    notice("ปิด/เปิดแถวนี้ไม่ได้", "err",
+      `กุญแจของแถวไม่ครบ (ต้องมี ${tab.key.join(", ")}) — โหลดหน้าใหม่แล้วลองอีกครั้ง`);
+    return;
+  }
+  const keyText = key.map(String).join(" | ");
+  const turningOff = row.is_active !== false;
+
+  if (turningOff) {
+    const okay = await confirmAction({
+      title: `ปิดใช้แถวนี้ใน ${tab.label}?`,
+      text: "บอทจะไม่เอาข้อมูลแถวนี้ไปตอบนักศึกษาอีก ข้อมูลยังอยู่ในระบบ " +
+        "และกดเปิดกลับได้ทุกเมื่อ — นี่ไม่ใช่การลบ",
+      keyline: keyText,
+      yesLabel: "ปิดใช้แถวนี้",
+    });
+    if (!okay) return;
+  }
+
+  clearNotices();
+  setBusy(button, true);
+  try {
+    const result = await api("/api/admin/toggle", {
+      table: tab.table,
+      key: key.map(String),
+      is_active: !turningOff,
+    });
+    notice(
+      turningOff ? "ปิดใช้แถวนี้แล้ว — บอทจะไม่เอาไปตอบอีก" : "เปิดใช้แถวนี้แล้ว",
+      "ok",
+      `${keyText}\n${changeLines(result.changes)}`
+    );
+    await reload();
+  } catch (error) {
+    notice("เปลี่ยนสถานะไม่สำเร็จ", "err", error.message);
+    setBusy(button, false);
+  }
+}
+
+// ── แท็บภาพรวม ──────────────────────────────────────────────────────────────
+
+function statCard(item) {
+  const box = document.createElement("div");
+  const zero = item.zeroIsProblem && !item.num;
+  box.className = "stat" + (zero ? " stat--empty" : "");
+  const value = document.createElement("b");
+  value.textContent = item.den === undefined
+    ? String(item.num ?? 0)
+    : `${item.num ?? 0}/${item.den ?? 0}`;
+  const label = document.createElement("span");
+  label.textContent = item.label;
+  box.append(value, label);
+  if (item.den) {
+    const meter = document.createElement("div");
+    meter.className = "meter";
+    const fill = document.createElement("i");
+    fill.style.width = `${Math.min(100, Math.round(((item.num || 0) / item.den) * 100))}%`;
+    meter.appendChild(fill);
+    box.appendChild(meter);
+  }
+  return box;
+}
+
+/** ปุ่มลัดไปแท็บอื่น — ใช้ในรายการ "ควรทำต่อ" ของหน้าภาพรวม */
+function jumpButton(tabId, label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn btn--ghost btn--sm";
+  button.textContent = label;
+  button.addEventListener("click", () => {
+    activeTab = tabId;
+    editingKey = null;
+    clearNotices();
+    render();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+  return button;
+}
+
+function renderSummary() {
+  const counts = state.counts || {};
+  const frag = document.createDocumentFragment();
+
+  const card = document.createElement("section");
+  card.className = "card";
+  const head = document.createElement("div");
+  head.className = "card__head";
+  const title = document.createElement("h2");
+  title.textContent = `ภาพรวมคลังข้อมูล · หลักสูตร ${state.program_code}`;
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = "ตัวเลขที่เป็น 0 คือคำถามที่บอทตอบว่า “ไม่มีข้อมูล” อยู่ตอนนี้";
+  head.append(title, sub);
+  card.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "card__body";
+  const stats = document.createElement("div");
+  stats.className = "stats";
+  for (const item of [
+    { label: "FAQ ที่ใช้งาน", num: counts.faqs_active, den: counts.faqs, zeroIsProblem: true },
+    { label: "เอกสารที่ใช้งาน", num: counts.documents_active, den: counts.documents },
+    { label: "อาจารย์ในระบบ", num: counts.instructors },
+    { label: "อาจารย์ที่มีเบอร์โทร", num: counts.with_phone, den: counts.instructors, zeroIsProblem: true },
+    { label: "อาจารย์ที่มีเลขห้อง", num: counts.with_room, den: counts.instructors, zeroIsProblem: true },
+    { label: "วิชาในแผนการเรียน", num: counts.curriculum_rules },
+    { label: "เงื่อนไขวิชาบังคับก่อน", num: counts.prerequisites, zeroIsProblem: true },
+    { label: "คำถามที่บอทตอบไม่ได้", num: counts.unanswered },
+  ]) {
+    stats.appendChild(statCard(item));
+  }
+  body.appendChild(stats);
+  card.appendChild(body);
+  frag.appendChild(card);
+
+  // รายการ "ควรทำต่อ" — คำนวณจากตัวเลขจริง ไม่ใช่ข้อความคงที่ ทำเสร็จแล้ว
+  // บรรทัดนั้นจะหายไปเอง คนเข้ามาใหม่จะรู้ทันทีว่ายังเหลืออะไร
+  const todos = [];
+  if (!counts.faqs) {
+    todos.push(["faqs", "เขียน FAQ",
+      "ยังไม่มี FAQ เลย — คำถามที่ต้องใช้คำอธิบายของคนยังตอบไม่ได้ทั้งหมด"]);
+  }
+  if (!counts.prerequisites) {
+    todos.push(["prerequisites", "กรอกวิชาบังคับก่อน",
+      "ตารางว่าง → หน้าติ๊กวิชาของนักศึกษาต้องขึ้นคำเตือนว่าลำดับเป็นแค่คำแนะนำ"]);
+  }
+  if (counts.instructors && !counts.with_phone) {
+    todos.push(["instructors", "เติมเบอร์โทรอาจารย์",
+      `ยังไม่มีเบอร์เลย 0/${counts.instructors} คน — คำถามว่าติดต่ออาจารย์ยังไงตอบไม่ได้`]);
+  }
+  if (counts.instructors && !counts.with_room) {
+    todos.push(["instructors", "เติมเลขห้องอาจารย์",
+      `ยังไม่มีเลขห้องเลย 0/${counts.instructors} คน — คำถามว่าอาจารย์อยู่ห้องไหนตอบไม่ได้`]);
+  }
+  if (counts.unanswered) {
+    todos.push(["chat_logs", "ดูคำถามที่ตอบไม่ได้",
+      `มี ${counts.unanswered} ข้อความที่บอทตอบไม่ได้ — เอามาเขียนเป็น FAQ ได้`]);
+  }
+
+  const todoCard = document.createElement("section");
+  todoCard.className = "card";
+  const todoHead = document.createElement("div");
+  todoHead.className = "card__head";
+  const todoTitle = document.createElement("h2");
+  todoTitle.textContent = "ควรทำต่อ";
+  todoHead.appendChild(todoTitle);
+  todoCard.appendChild(todoHead);
+  const todoBody = document.createElement("div");
+  todoBody.className = "card__body stack";
+  if (!todos.length) {
+    todoBody.appendChild(inlineMsg("ช่องที่วัดได้ตอนนี้เต็มหมดแล้ว — ไม่มีรายการค้าง", "ok"));
+  }
+  for (const [tabId, label, why] of todos) {
+    const row = document.createElement("div");
+    row.className = "msg msg--warn";
+    row.appendChild(icon("warn"));
+    const info = document.createElement("div");
+    const strong = document.createElement("b");
+    strong.textContent = label;
+    const detail = document.createElement("div");
+    detail.className = "detail";
+    detail.textContent = why;
+    info.append(strong, detail);
+    const action = document.createElement("div");
+    action.style.marginTop = "8px";
+    action.appendChild(jumpButton(tabId, "ไปที่หน้านั้น"));
+    info.appendChild(action);
+    row.appendChild(info);
+    todoBody.appendChild(row);
+  }
+  todoCard.appendChild(todoBody);
+  frag.appendChild(todoCard);
+  return frag;
+}
+
+// ── แท็บประวัติการแก้ ───────────────────────────────────────────────────────
+
+function renderAudit() {
+  const card = document.createElement("section");
+  card.className = "card card--flush";
+  const head = document.createElement("div");
+  head.className = "card__head";
+  const title = document.createElement("h2");
+  title.textContent = "ประวัติการแก้";
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = "ใครแก้อะไร เปลี่ยนจากอะไรเป็นอะไร — การแก้ทุกครั้งจากหน้านี้ถูกบันทึกไว้";
+  head.append(title, sub);
+  card.appendChild(head);
+
+  const rows = state.audit || [];
+  if (!rows.length) {
+    const body = document.createElement("div");
+    body.className = "card__body";
+    body.appendChild(emptyState({
+      title: "ยังไม่มีการแก้ผ่านหน้านี้",
+      body: "เมื่อมีคนกดบันทึกหรือเปิด/ปิดแถว รายการจะขึ้นที่นี่พร้อมค่าก่อน-หลัง " +
+        "และย่อของ hash คนแก้ (ไม่เก็บชื่อ LINE)",
+    }));
+    card.appendChild(body);
+    return card;
+  }
+
+  const labels = ["เมื่อ", "ใคร", "ทำอะไร", "ตาราง", "แถว", "เปลี่ยนอะไร"];
+  const box = uiFor("audit");
+  const holder = document.createElement("div");
+  const hits = document.createElement("div");
+  hits.className = "hitcount";
+
+  const paint = () => {
+    const shown = filterRows(rows, { query: box.query, status: "all" });
+    hits.textContent = `แสดง ${shown.length} จาก ${rows.length} รายการ`;
+    holder.textContent = "";
+    if (!shown.length) {
+      const pad = document.createElement("div");
+      pad.className = "card__body";
+      pad.appendChild(emptyState({
+        title: "ไม่พบรายการที่ตรงกับคำค้น",
+        body: `มีทั้งหมด ${rows.length} รายการ — ลองคำสั้นลง เช่น ชื่อตาราง หรือกุญแจของแถว`,
+      }));
+      holder.appendChild(pad);
+      return;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "tablewrap";
+    const table = document.createElement("table");
+    table.className = "rows";
+    const thead = document.createElement("thead");
+    const hrow = document.createElement("tr");
+    for (const label of labels) {
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = label;
+      hrow.appendChild(th);
+    }
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    shown.forEach((row, index) => {
+      const tr = document.createElement("tr");
+      const values = [
+        [shortTime(row.created_at), "nowrap tiny", false],
+        [row.admin_short || "—", "nowrap", false],
+        [row.action, "nowrap", false],
+        [row.table_name, "nowrap", false],
+        [row.row_key || "—", "clip", true],
+        [changeLines(row.changes) || "—", "clip wrapline", true],
+      ];
+      values.forEach(([value, cls, long], column) => {
+        const td = cell(labels[column], cls);
+        if (long) longCell(td, value, `audit|${index}|${column}`, box);
+        else td.appendChild(document.createTextNode(value));
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    holder.appendChild(wrap);
+  };
+
+  card.appendChild(searchBar("audit", `ค้นหาใน ${rows.length} รายการนี้`,
+    "พิมพ์ชื่อตาราง กุญแจของแถว หรือคำที่ถูกแก้", box, paint));
+  card.append(hits, holder);
+  paint();
+  return card;
+}
+
+/** ช่องค้นหาเดี่ยว ๆ สำหรับตารางอ่านอย่างเดียว (ประวัติการแก้ / chat_logs) */
+function searchBar(id, labelText, placeholder, box, paint) {
+  const bar = document.createElement("div");
+  bar.className = "filterbar";
+  const wrap = document.createElement("div");
+  wrap.className = "grow";
+  const label = document.createElement("label");
+  label.htmlFor = `find_${id}`;
+  label.textContent = labelText;
+  const input = searchField(`find_${id}`, box.query, placeholder, () => {
+    box.query = input.input.value;
+    paint();
+  });
+  wrap.append(label, input.wrap);
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "btn btn--ghost btn--sm";
+  clear.textContent = "ล้างคำค้น";
+  clear.addEventListener("click", () => {
+    box.query = "";
+    input.input.value = "";
+    input.sync();
+    paint();
+  });
+  bar.append(wrap, clear);
+  return bar;
+}
+
+// ── แท็บคำถามที่บอทตอบไม่ได้ ────────────────────────────────────────────────
+
+function renderChatLogs() {
+  const card = document.createElement("section");
+  card.className = "card";
+  const head = document.createElement("div");
+  head.className = "card__head";
+  const title = document.createElement("h2");
+  title.textContent = "คำถามที่บอทตอบไม่ได้";
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = "รายการงานของคนเขียน FAQ — อ่านอย่างเดียว แก้จากหน้านี้ไม่ได้";
+  head.append(title, sub);
+  card.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "card__body";
+
+  const bar = document.createElement("div");
+  bar.className = "actions";
+  bar.style.marginTop = "0";
+  bar.style.paddingTop = "0";
+  bar.style.borderTop = "0";
+
+  const load = document.createElement("button");
+  load.type = "button";
+  load.className = "btn btn--primary";
+  load.textContent = chatLogs ? "โหลดใหม่" : "โหลดรายการ";
+
+  const only = document.createElement("label");
+  only.className = "check";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.id = "cl_only";
+  box.checked = !chatLogs || chatLogs.unanswered_only !== false;
+  only.htmlFor = box.id;
+  only.append(box, document.createTextNode("เฉพาะที่ตอบไม่ได้"));
+
+  const limitBox = document.createElement("label");
+  limitBox.className = "check";
+  const limit = document.createElement("select");
+  limit.id = "cl_limit";
+  limit.style.width = "auto";
+  for (const value of [50, 100, 200, 500]) {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = `${value} แถว`;
+    if (value === 100) option.selected = true;
+    limit.appendChild(option);
+  }
+  limitBox.htmlFor = limit.id;
+  limitBox.append(document.createTextNode("จำนวนที่ดึง"), limit);
+
+  load.addEventListener("click", async () => {
+    setBusy(load, true);
+    clearNotices();
+    try {
+      chatLogs = await api("/api/admin/chat_logs", {
+        unanswered_only: box.checked,
+        limit: Number(limit.value),
+      });
+      render();
+    } catch (error) {
+      notice("โหลดไม่สำเร็จ", "err", error.message);
+      setBusy(load, false);
+    }
+  });
+  bar.append(load, only, limitBox);
+  body.appendChild(bar);
+
+  // ต้องกดโหลดเอง ไม่โหลดอัตโนมัติ: นี่คือข้อความที่นักศึกษาพิมพ์มาเอง
+  // ควรเป็นของที่ "เปิดดูเมื่อจะใช้" ไม่ใช่ของที่เด้งขึ้นมาทุกครั้งที่เปิดหน้า
+  if (!chatLogs) {
+    body.appendChild(emptyState({
+      title: "ยังไม่ได้โหลด",
+      body: "หน้านี้ไม่ดึงข้อความของนักศึกษามาเองโดยเจตนา และไม่แสดงว่าใครถาม " +
+        "กดปุ่มด้านบนเมื่อจะใช้ข้อมูลชุดนี้เขียน FAQ",
+    }));
+    card.appendChild(body);
+    return card;
+  }
+
+  const rows = chatLogs.rows || [];
+  if (!rows.length) {
+    body.appendChild(emptyState({
+      title: "ไม่มีแถวที่ตรงเงื่อนไข",
+      body: box.checked
+        ? "ไม่มีคำถามที่บอทตอบไม่ได้ในช่วงที่ดึงมา — ลองเอาเครื่องหมายถูกออกเพื่อดูทั้งหมด"
+        : "ยังไม่มีบันทึกการสนทนาในระบบ",
+    }));
+    card.appendChild(body);
+    return card;
+  }
+  card.appendChild(body);
+
+  const labels = ["เมื่อ", "คำถาม", "ตอบด้วย", "intent", "ความมั่นใจ", "คำตอบที่ส่งไป"];
+  const store = uiFor("chat_logs");
+  const holder = document.createElement("div");
+  holder.className = "card card--flush";
+  const listing = document.createElement("div");
+  const hits = document.createElement("div");
+  hits.className = "hitcount";
+
+  const paint = () => {
+    const shown = filterRows(rows, { query: store.query, status: "all" });
+    hits.textContent = `แสดง ${shown.length} จาก ${rows.length} แถว` +
+      (chatLogs.unanswered_only === false ? " (ดึงมาทั้งหมด)" : " (ดึงเฉพาะที่ตอบไม่ได้)");
+    listing.textContent = "";
+    if (!shown.length) {
+      const pad = document.createElement("div");
+      pad.className = "card__body";
+      pad.appendChild(emptyState({
+        title: "ไม่พบคำถามที่ตรงกับคำค้น",
+        body: `ในชุดที่ดึงมามี ${rows.length} แถว — ลองคำสั้นลง หรือกดล้างคำค้น`,
+      }));
+      listing.appendChild(pad);
+      return;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "tablewrap";
+    const table = document.createElement("table");
+    table.className = "rows";
+    const thead = document.createElement("thead");
+    const hrow = document.createElement("tr");
+    for (const label of labels) {
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = label;
+      hrow.appendChild(th);
+    }
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    shown.forEach((row, index) => {
+      const tr = document.createElement("tr");
+      const values = [
+        [shortTime(row.created_at), "nowrap tiny", false],
+        [text(row.message_text), "clip", true],
+        [text(row.answered_by), "nowrap", false],
+        [text(row.intent_key), "nowrap", false],
+        [row.confidence === null || row.confidence === undefined
+          ? "—" : Number(row.confidence).toFixed(2), "nowrap", false],
+        [text(row.response_text), "clip", true],
+      ];
+      values.forEach(([value, cls, long], column) => {
+        const td = cell(labels[column], cls);
+        if (long) longCell(td, value, `chat|${index}|${column}`, store);
+        else td.appendChild(document.createTextNode(value));
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    listing.appendChild(wrap);
+  };
+
+  holder.appendChild(searchBar("chat_logs", `ค้นหาใน ${rows.length} แถวที่ดึงมา`,
+    "พิมพ์คำที่นักศึกษาถาม เช่น ยื่นขอจบ", store, paint));
+  holder.append(hits, listing);
+  paint();
+
+  const frag = document.createDocumentFragment();
+  frag.append(card, holder);
+  return frag;
+}
+
+// ── โครงหน้า ────────────────────────────────────────────────────────────────
+
+function renderTabs() {
+  const bar = el("tabs");
+  bar.textContent = "";
+  el("tabbar").hidden = false;
+  const buttons = [];
+  for (const tab of TABS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tab";
+    button.id = `tab_${tab.id}`;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-controls", "view");
+    const selected = tab.id === activeTab;
+    button.setAttribute("aria-selected", String(selected));
+    // แท็บที่ไม่ได้เลือกออกจากลำดับ Tab ตามแบบ tablist มาตรฐาน — เลื่อนแท็บ
+    // ด้วยปุ่มลูกศร แล้ว Tab หนึ่งครั้งเข้าเนื้อหาเลย ไม่ต้องกด 8 ครั้งผ่านแท็บ
+    button.tabIndex = selected ? 0 : -1;
+    const label = document.createElement("span");
+    label.textContent = tab.label;
+    button.appendChild(label);
+    const count = tabCount(tab);
+    if (count !== null && count !== undefined) {
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.textContent = String(count);
+      button.appendChild(pill);
+    }
+    button.addEventListener("click", () => {
+      if (activeTab === tab.id) return;
+      activeTab = tab.id;
+      editingKey = null;
+      clearNotices();
+      render();
+    });
+    buttons.push(button);
+    bar.appendChild(button);
+  }
+
+  bar.addEventListener("keydown", (event) => {
+    const keys = { ArrowRight: 1, ArrowLeft: -1 };
+    const index = TABS.findIndex((tab) => tab.id === activeTab);
+    let next = null;
+    if (event.key in keys) next = (index + keys[event.key] + TABS.length) % TABS.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = TABS.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    activeTab = TABS[next].id;
+    editingKey = null;
+    clearNotices();
+    render();
+    const moved = el(`tab_${activeTab}`);
+    if (moved) {
+      moved.focus();
+      moved.scrollIntoView({ block: "nearest", inline: "center" });
+    }
+  });
+
+  const current = el(`tab_${activeTab}`);
+  if (current) current.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function render() {
+  renderTabs();
+  const view = el("view");
+  view.textContent = "";
+  view.setAttribute("role", "tabpanel");
+  view.setAttribute("aria-labelledby", `tab_${activeTab}`);
+  view.tabIndex = 0;
+  const tab = tabById(activeTab);
+  if (activeTab === "summary") {
+    view.appendChild(renderSummary());
+  } else if (activeTab === "chat_logs") {
+    view.appendChild(renderChatLogs());
+  } else if (activeTab === "audit") {
+    view.appendChild(renderAudit());
+  } else {
+    view.appendChild(renderForm(tab));
+    view.appendChild(renderTable(tab));
+    if (!editingKey) fillForm(tab, null);
+  }
+}
+
+/** โครงกระดูกระหว่างรอ /api/admin/state ครั้งแรก (ผ่าน tunnel อาจหลายวินาที) */
+function renderSkeleton() {
+  const view = el("view");
+  view.textContent = "";
+  for (let card = 0; card < 2; card += 1) {
+    const box = document.createElement("div");
+    box.className = "card";
+    const body = document.createElement("div");
+    body.className = "card__body";
+    for (const cls of ["skel skel--half", "skel skel--tall", "skel skel--wide", "skel skel--half"]) {
+      const line = document.createElement("div");
+      line.className = cls;
+      body.appendChild(line);
+    }
+    box.appendChild(body);
+    view.appendChild(box);
+  }
+  const label = document.createElement("div");
+  label.className = "sr-only";
+  label.textContent = "กำลังโหลดข้อมูล";
+  view.appendChild(label);
+}
+
+async function reload() {
+  state = await api("/api/admin/state", {});
+  render();
+}
+
+// ── โหลดข้อมูลใหม่เองเป็นระยะ ───────────────────────────────────────────────
+//
+// เส้นทางเดียวกับปุ่ม "โหลดใหม่" เป๊ะ ๆ (``reload()`` → ``/api/admin/state``)
+// ไม่มี fetch เส้นที่สอง ต่างกันแค่ "ไม่รบกวน": ไม่ล้างกล่องข้อความ ไม่เด้ง
+// ข้อความ "โหลดข้อมูลใหม่แล้ว" ทุกนาที และคืนตำแหน่ง scroll ให้เท่าเดิม
+//
+// สิ่งที่ผู้ใช้ทำค้างไว้อยู่รอดอยู่แล้วโดยโครงของหน้า: คำค้น/กลุ่มที่ยุบ/แถวที่กาง
+// เก็บใน ``ui`` ซึ่งอยู่นอก render() และแท็บที่เปิดอยู่ใน ``activeTab``
+// เหลือแค่ scroll ที่ต้องจำเอง เพราะ render() ล้าง #view ทิ้งทั้งก้อน
+
+const AUTO_MS = 60 * 1000;
+const AUTO_KEY = "adminAutoRefresh";
+let autoTimer = null;
+let autoBusy = false;      // ยังมีรอบก่อนค้างอยู่ — กันยิงทับ
+let autoBlocked = false;   // เจอ 401 แล้ว: หยุดถาวรจนล็อกอินใหม่
+
+/**
+ * อ่าน/เขียนสวิตช์ลง localStorage — **คีย์เดียวและเป็น "1"/"0" เท่านั้น**
+ * ห้ามเพิ่มอะไรที่เกี่ยวกับผู้ใช้/เซสชัน/เนื้อข้อมูลลงที่นี่
+ * (``tests/test_admin.py`` ไล่ดูคีย์ที่ไฟล์นี้ใช้จริงเทียบ allowlist —
+ *  เพิ่มคีย์ใหม่แล้วเทสจะแดงจนกว่าจะไปเพิ่มใน allowlist พร้อมเหตุผล)
+ */
+function autoWanted() {
+  try { return localStorage.getItem(AUTO_KEY) !== "0"; }
+  catch (error) { return true; }
+}
+
+function autoRemember(on) {
+  try { localStorage.setItem(AUTO_KEY, on ? "1" : "0"); }
+  catch (error) { /* โหมดส่วนตัว/storage ปิด — ไม่จำก็ไม่เป็นไร */ }
+}
+
+function autoStatus(text) {
+  el("autowhen").textContent = text;
+}
+
+function autoStamp() {
+  const now = new Date();
+  autoStatus("อัปเดตล่าสุด " + now.toLocaleTimeString("th-TH",
+    { hour: "2-digit", minute: "2-digit" }));
+}
+
+/** อยู่กลางมือผู้ใช้ไหม — ถ้าใช่ ข้ามรอบนี้ไปรอบหน้า ไม่วาดหน้าใหม่ทับ */
+function autoWouldInterrupt() {
+  const node = document.activeElement;
+  if (node && node !== el("autotoggle")) {
+    const tag = node.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (node.isContentEditable) return true;
+  }
+  if (document.querySelector("dialog[open]")) return true;
+  return hasDraft();
+}
+
+async function autoTick() {
+  if (autoBlocked || autoBusy || document.hidden) return;
+  if (!adminUser || state === null) return;
+  if (autoWouldInterrupt()) return;
+  autoBusy = true;
+  const top = window.scrollY;
+  try {
+    await reload();
+    autoStamp();
+    // render() ล้าง #view ก่อนวาดใหม่ ความสูงหน้าจึงหายไปชั่วขณะและเบราว์เซอร์
+    // หนีบ scroll ลงมา — คืนค่าทั้งทันทีและอีกครั้งในเฟรมถัดไปหลัง layout จริง
+    window.scrollTo(0, top);
+    window.requestAnimationFrame(() => window.scrollTo(0, top));
+  } catch (error) {
+    if (error && error.message === EXPIRED_TEXT) {
+      // api() เปิดกล่องล็อกอินซ้อนให้แล้ว (ไม่รีโหลด ร่างไม่หาย) — ที่นี่แค่
+      // หยุด timer ไม่ให้ยิง 401 ซ้ำทุกนาที
+      autoBlocked = true;
+      autoStop();
+      autoStatus("หยุดโหลดเอง — เซสชันหมดอายุ");
+    }
+    // เน็ตสะดุดชั่วคราว: เงียบไว้ ไม่เด้ง error ข้อความ "อัปเดตล่าสุด" ที่ค้าง
+    // อยู่คือสัญญาณเองว่าข้อมูลเก่ากี่นาทีแล้ว
+  } finally {
+    autoBusy = false;
+  }
+}
+
+function autoStop() {
+  if (autoTimer !== null) {
+    window.clearInterval(autoTimer);
+    autoTimer = null;
+  }
+}
+
+function autoStart() {
+  autoStop();
+  if (autoBlocked || !el("autotoggle").checked || document.hidden) return;
+  autoTimer = window.setInterval(autoTick, AUTO_MS);
+}
+
+/** โชว์แถบสวิตช์และตั้งค่าตามที่จำไว้ — เรียกทุกครั้งที่ล็อกอินสำเร็จรอบใหม่ */
+function autoReveal() {
+  el("autobar").hidden = false;
+  el("autotoggle").checked = autoWanted();
+  autoBlocked = false;
+}
+
+/** ผูก listener ของสวิตช์และของ visibilitychange — ครั้งเดียวต่อการเปิดหน้า */
+function wireAuto() {
+  const toggle = el("autotoggle");
+  toggle.addEventListener("change", () => {
+    autoRemember(toggle.checked);
+    if (toggle.checked) {
+      autoBlocked = false;
+      autoStart();
+    } else {
+      autoStop();
+    }
+  });
+  // แท็บถูกซ่อน = หยุด timer ไม่ยิง request ทิ้งเปล่า ๆ กลับมาแล้วเริ่มใหม่
+  // และถ้าซ่อนนานเกินหนึ่งรอบ ให้โหลดทันทีหนึ่งครั้ง (ยังผ่านด่านเดิมทุกข้อ)
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { autoStop(); return; }
+    autoStart();
+    if (autoTimer !== null) autoTick();
+  });
+}
+
+// ── เริ่มทำงาน ──────────────────────────────────────────────────────────────
+
+function setWho(message, tone) {
+  el("whotext").textContent = message;
+  el("statedot").className = "dot" + (tone ? " dot--" + tone : "");
+}
+
+async function start() {
+  wireGate();
+  setWho("กำลังตรวจการตั้งค่าของเซิร์ฟเวอร์…");
+  let config = null;
+  try {
+    // GET ตัวเดียวในหน้านี้ และเป็นตัวเดียวที่เรียกได้ก่อนล็อกอิน
+    const res = await fetch("/api/admin/config", { credentials: "same-origin" });
+    config = await res.json();
+  } catch (error) {
+    setWho("ติดต่อเซิร์ฟเวอร์ไม่ได้", "off");
+    el("view").textContent = "";
+    notice("ติดต่อเซิร์ฟเวอร์ไม่ได้", "err",
+      "ตรวจว่าเซิร์ฟเวอร์ยังรันอยู่ แล้วโหลดหน้านี้ใหม่");
+    return;
+  }
+  el("view").textContent = "";
+  if (config && config.program_code) {
+    el("gatesub").textContent = "ผู้ดูแลหลักสูตร " + config.program_code;
+  }
+  setWho("ยังไม่ได้เข้าสู่ระบบ", "off");
+  if (config && config.configured === false) {
+    // fail closed: บอกตั้งแต่เปิดหน้า ไม่ใช่ให้คนพิมพ์รหัสก่อนแล้วค่อยรู้ว่า
+    // ไม่มีใครเข้าได้อยู่แล้ว
+    showGate({
+      text: "เซิร์ฟเวอร์ยังไม่มีบัญชีผู้ดูแลที่ใช้งานอยู่ — ล็อกอินจะถูกปฏิเสธทุกคน",
+      kind: "warn",
+      detail: "ให้ผู้ดูแลสร้างบัญชีที่เครื่องเซิร์ฟเวอร์ด้วยคำสั่ง " +
+        "python scripts/admin_user.py --username <ชื่อ>",
+    });
+    return;
+  }
+  showGate(null);
+}
+
+/** โหลดข้อมูลครั้งแรกหลังล็อกอินผ่าน */
+async function afterLogin() {
+  renderSkeleton();
+  setWho("กำลังโหลดข้อมูล…");
+  try {
+    await reload();
+  } catch (error) {
+    setWho("โหลดข้อมูลไม่สำเร็จ", "off");
+    el("view").textContent = "";
+    notice("โหลดข้อมูลไม่สำเร็จ", "err", error.message);
+    return;
+  }
+  setWho(whoLine(), "on");
+  el("refresh").hidden = false;
+  el("logout").hidden = false;
+  autoReveal();
+  autoStamp();
+  wireApp();
+  autoStart();
+  watchSession();
+}
+
+function wireApp() {
+  if (appWired) return;   // ล็อกอินได้หลายรอบในหน้าเดียว — ผูก listener ครั้งเดียว
+  appWired = true;
+  el("refresh").addEventListener("click", onRefresh);
+  el("logout").addEventListener("click", doLogout);
+  wireAuto();
+}
+
+async function onRefresh() {
+  const refresh = el("refresh");
+  setBusy(refresh, true);
+  clearNotices();
+  try {
+    await reload();
+    notice("โหลดข้อมูลใหม่แล้ว", "ok");
+    autoStamp();
+    autoStart();   // กดเองแล้วเริ่มนับ 60 วินาทีใหม่ ไม่ใช่โหลดซ้ำอีกใน 2 วินาที
+  } catch (error) {
+    notice("โหลดใหม่ไม่สำเร็จ", "err", error.message);
+  } finally {
+    setBusy(refresh, false);
+  }
+}
+
+/**
+ * ออกจากระบบ — ยิง /logout ให้เซิร์ฟเวอร์ลบ cookie แล้วกลับมาหน้าล็อกอิน
+ * ถามก่อนถ้ามีอะไรพิมพ์ค้าง (กดพลาดแล้วเสียของที่พิมพ์ไว้คือเรื่องที่แก้ยาก)
+ */
+async function doLogout() {
+  const button = el("logout");
+  if (hasDraft()) {
+    const okay = await confirmAction({
+      title: "ออกจากระบบเลยไหม",
+      text: "ยังมีข้อความที่พิมพ์ค้างอยู่ในฟอร์มและยังไม่ได้กดบันทึก " +
+        "ออกจากระบบแล้วข้อความนั้นจะหาย",
+      keyline: "ข้อมูลที่บันทึกแล้วไม่หาย — หายเฉพาะที่ยังไม่ได้กดบันทึก",
+      yesLabel: "ออกจากระบบ",
+    });
+    if (!okay) return;
+  }
+  setBusy(button, true);
+  try {
+    await fetch("/api/admin/logout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: "{}",
+    });
+  } catch (error) {
+    /* เซิร์ฟเวอร์ไม่ตอบก็ยังต้องกลับไปหน้าล็อกอิน — cookie จะหมดอายุเองอยู่ดี */
+  } finally {
+    setBusy(button, false);
+  }
+  // ล้างของในหน้าให้หมด ไม่ให้ข้อมูลของหลักสูตรค้างอยู่บนจอหลังออกจากระบบ
+  autoStop();
+  el("autobar").hidden = true;
+  autoStatus("ยังไม่ได้โหลดใหม่");
+  adminUser = null;
+  sessionExpiresAt = null;
+  expiryWarned = false;
+  state = null;
+  chatLogs = null;
+  editingKey = null;
+  el("view").textContent = "";
+  el("tabbar").hidden = true;
+  el("refresh").hidden = true;
+  el("logout").hidden = true;
+  clearNotices();
+  setWho("ออกจากระบบแล้ว", "off");
+  showGate({
+    text: "ออกจากระบบแล้ว",
+    kind: "info",
+    detail: "เข้าสู่ระบบอีกครั้งเพื่อใช้งานต่อ",
+  });
+}
+
+start();
+</script>
+</body>
+</html>

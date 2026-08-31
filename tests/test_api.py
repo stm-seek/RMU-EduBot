@@ -282,6 +282,103 @@ def test_liff_page_is_served_without_secrets(make_client) -> None:
     assert "getIDToken" in response.text, "ต้องส่ง ID token ไม่ใช่ userId"
 
 
+def test_liff_line_me_link_lands_on_the_page_it_asked_for(make_client) -> None:
+    """
+    ลิงก์ ``liff.line.me/<id>/admin`` มาถึงเราเป็น ``/?liff.state=%2Fadmin``
+
+    ก่อนมีเราท์นี้ รากเป็น 404 → คนกดลิงก์เห็นแค่ ``{"detail":"Not Found"}``
+    """
+    client = make_client(liff_settings())
+
+    response = client.get(
+        "/", params={"liff.state": "/admin"}, follow_redirects=False
+    )
+
+    assert response.status_code in (302, 307)
+    assert response.headers["location"] == "/admin"
+
+
+def test_login_code_is_carried_over_to_the_target_page(make_client) -> None:
+    """``code``/``state`` หายไป = หน้าปลายทางเริ่มล็อกอินใหม่เป็นวงไม่จบ"""
+    client = make_client(liff_settings())
+
+    response = client.get(
+        "/",
+        params={"liff.state": "/liff?tab=done", "code": "abc123", "state": "xyz"},
+        follow_redirects=False,
+    )
+
+    location = response.headers["location"]
+    assert location.startswith("/liff?")
+    for expected in ("tab=done", "code=abc123", "state=xyz"):
+        assert expected in location
+
+
+def test_liff_state_cannot_point_off_site(make_client) -> None:
+    """
+    query string ปลอมได้ ถ้าเด้งตามที่บอกจะได้ open redirect —
+    ลิงก์โดเมนเราที่พาไปเว็บหลอกลวง (น่าเชื่อกว่าลิงก์แปลกหน้ามาก)
+    """
+    client = make_client(liff_settings())
+
+    for evil in ("https://evil.example/steal", "//evil.example", "/../admin"):
+        response = client.get(
+            "/", params={"liff.state": evil}, follow_redirects=False
+        )
+        assert response.status_code == 404, evil
+        assert "location" not in response.headers
+
+
+def test_double_encoded_liff_state_still_lands_on_the_page(make_client) -> None:
+    """
+    บางเส้นทาง LINE ส่ง ``liff.state`` มา encode ซ้อนสองชั้น
+
+    เห็นจาก ``liffRedirectUri`` ที่ LINE แนบมาเองว่าเป็น ``%252Fadmin`` — parse
+    query string ถอดให้ชั้นเดียวเหลือ ``%2Fadmin`` ซึ่งเทียบ allowlist ไม่ผ่าน
+    แล้วกลายเป็น 404 ทั้งที่ปลายทางถูกต้อง
+    """
+    client = make_client(liff_settings())
+
+    response = client.get(
+        "/", params={"liff.state": "%2Fadmin"}, follow_redirects=False
+    )
+
+    assert response.status_code in (302, 307)
+    assert response.headers["location"] == "/admin"
+
+
+def test_decoding_liff_state_does_not_allow_going_off_site(make_client) -> None:
+    """
+    ถอด encoding ไม่ใช่การอนุญาต — ค่าที่ถอดแล้วต้องผ่าน allowlist เหมือนกัน
+
+    ไม่มีเทสตัวนี้ การถอดชั้นที่สองจะกลายเป็นทางอ้อมรอบ allowlist ทันที
+    """
+    client = make_client(liff_settings())
+
+    for evil in ("%2F%2Fevil.example", "https%3A%2F%2Fevil.example%2Fsteal"):
+        response = client.get(
+            "/", params={"liff.state": evil}, follow_redirects=False
+        )
+
+        assert response.status_code == 404, evil
+        assert "location" not in response.headers
+
+
+def test_opening_the_bare_domain_says_the_server_is_up(make_client) -> None:
+    """
+    ไม่มี ``liff.state`` = ไม่รู้ว่าอยากไปไหน แต่ต้องไม่ทำให้คนคิดว่าเซิร์ฟเวอร์พัง
+
+    เดิมตอบ 404 เป็น JSON แล้วคนตั้งระบบไปไล่แก้ tunnel/webhook ทั้งที่ไม่มี
+    อะไรพัง — และยังต้อง**ไม่บอกว่ามีหน้า /admin อยู่**
+    """
+    client = make_client(liff_settings())
+
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "admin" not in response.text.lower()
+
+
 def test_liff_state_requires_database(make_client) -> None:
     """ไม่มี DB = ยังเก็บ/อ่านข้อมูลไม่ได้ → 503 (ปัญหาของเซิร์ฟเวอร์)"""
     recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))

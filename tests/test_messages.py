@@ -165,3 +165,64 @@ def test_no_data_message_names_the_missing_topic() -> None:
     message = msg.no_data_message("เบอร์โทรอาจารย์")
     assert_line_limits([message])
     assert "เบอร์โทรอาจารย์" in message["text"]
+
+
+# ── แบบประเมินระบบ (งานวิจัย) ────────────────────────────────────────────────
+
+
+def test_survey_message_carries_the_full_official_titles() -> None:
+    """
+    ชื่อแบบประเมินต้องตรงกับใบจริงทุกตัวอักษร เพราะเป็นหลักฐานในเล่มธีสิสว่า
+    เก็บข้อมูลจากเครื่องมือใบไหน — ย่อชื่อในแชทแล้วผู้ตอบจะไม่รู้ว่ากรอกใบไหนไป
+    """
+    message = msg.survey_message()
+
+    assert_line_limits([message])
+    assert msg.SURVEY_EXPERT_TITLE in message["text"]
+    assert msg.SURVEY_STUDENT_TITLE in message["text"]
+
+
+def test_survey_urls_have_no_editor_only_query_string() -> None:
+    """
+    ลิงก์ที่ก๊อปจากหน้าแก้ฟอร์มติด ``?usp=header`` / ``?usp=publish-editor`` มา
+    ซึ่งเป็นพารามิเตอร์ของฝั่งเจ้าของฟอร์ม ไม่ใช่ของผู้ตอบ — ต้องเป็น
+    ``/viewform`` เปล่า ๆ
+    """
+    for url in (msg.SURVEY_EXPERT_URL, msg.SURVEY_STUDENT_URL):
+        assert url.startswith("https://docs.google.com/forms/d/e/")
+        assert url.endswith("/viewform")
+        assert "?" not in url
+
+
+def test_survey_buttons_are_links_not_postbacks() -> None:
+    """
+    ต้องเป็น ``uri`` action — ``postback`` เปิดหน้าเว็บไม่ได้ ผู้ประเมินจะกดแล้ว
+    ไม่เกิดอะไรขึ้น (เหตุผลเดียวกับปุ่ม LIFF บนเมนูต้อนรับ)
+    """
+    items = msg.survey_message()["quickReply"]["items"]
+    first_two = [item["action"] for item in items[:2]]
+
+    assert [action["type"] for action in first_two] == ["uri", "uri"]
+    assert [action["label"] for action in first_two] == [
+        "สำหรับผู้เชี่ยวชาญ",
+        "สำหรับนักศึกษา",
+    ]
+    for action in first_two:
+        assert len(action["label"]) <= msg.MAX_LABEL_LENGTH
+
+
+def test_survey_message_keeps_a_way_back_to_the_menu() -> None:
+    """ปุ่มลิงก์ออกนอกแอปสองปุ่มแล้วจบ = ผู้ใช้ค้างอยู่กับฟอง ต้องมีเมนูต่อท้าย"""
+    items = msg.survey_message()["quickReply"]["items"]
+    data = [item["action"].get("data") for item in items]
+
+    assert all(action["data"] in data for action in msg.MAIN_MENU_ACTIONS)
+
+
+def test_main_menu_has_a_survey_entry() -> None:
+    """
+    แบบประเมินคือเครื่องมือเก็บข้อมูลของธีสิส ถ้าไม่มีปุ่มบนเมนูหลักก็ไม่มี
+    ทางเข้าเลย (ต้องส่งลิงก์ให้เป็นราย ๆ ซึ่งทำกับนักศึกษาทั้งชั้นไม่ได้)
+    """
+    data = [action["data"] for action in msg.MAIN_MENU_ACTIONS]
+    assert "action=survey" in data

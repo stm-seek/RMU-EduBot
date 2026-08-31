@@ -1,0 +1,1232 @@
+"""
+เทสหน้า admin — ทั้ง SQL และด่านตรวจสิทธิ์ (username + password)
+
+หน้านี้เป็นที่เดียวในระบบที่ **เขียน** ข้อมูลที่บอทเอาไปตอบนักศึกษา และเปิดออก
+อินเทอร์เน็ตผ่าน cloudflared → เทสไฟล์นี้จึงเน้นสามเรื่องที่พลาดแล้วเสียหายจริง:
+
+1. **ด่านตรวจสิทธิ์ fail closed** — ไม่มีบัญชีที่เปิดใช้ = ไม่มีใครเข้าได้ และ
+   ``ADMIN_SESSION_SECRET`` ว่าง = ล็อกอินไม่ได้เลย ถ้าวันหนึ่งมีคนแก้เป็น
+   "ว่าง = เข้าได้หมด" เทสในนี้จะแดงทันที
+2. **ไม่รั่วอะไรที่ช่วยคนเดา** — ข้อความปฏิเสธเหมือนกันเป๊ะทุกกรณี, ไม่มี
+   รหัสผ่าน/hash หลุดออกไปทาง response หรือ log, และมีเพดานจำนวนครั้งที่เดาได้
+3. **SQL ปลอดภัยเชิงโครงสร้าง** — ไม่มี ``DELETE``, ไม่มี f-string, ชื่อตาราง
+   มีจริงใน migration, และ ``ON CONFLICT DO UPDATE`` ไม่แตะ ``is_active``
+   (ถ้าแตะ การกดบันทึกจะปลุกแถวที่คนตั้งใจปิดไว้กลับมาเงียบ ๆ)
+
+สิ่งที่เทสไม่ได้ที่นี่และต้องรันกับ Postgres จริง: ``ON CONFLICT (lower(username))``
+ทำงานถูกไหม และ ``coalesce(admin_username, left(admin_hash, 12))`` คืนค่าอย่างที่
+คิดกับแถวเก่าที่มีแต่ hash (ดู ``tests/integration/``)
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from pathlib import Path
+
+import pytest
+import sqlglot
+from sqlglot import exp
+
+from app import admin, admin_repo, main
+from app.config import REPO_ROOT
+
+from .helpers import FakeWriteDatabase, make_settings
+
+MIGRATIONS_DIR = Path(REPO_ROOT, "db", "migrations")
+
+# ค่าที่ใช้ตลอดไฟล์ — เป็นของปลอมทั้งหมด ห้ามเอาค่าจริงมาใส่
+TEST_SECRET = "กุญแจเซ็นเซสชันสำหรับเทสเท่านั้น-ไม่ใช่ค่าจริง"
+ADMIN_USERNAME = "somchai"
+ADMIN_PASSWORD = "รหัสผ่านที่ยาวพอสมควรสำหรับเทส"
+# hash จริง (scrypt) ไม่ใช่ค่าปลอม — คำนวณครั้งเดียวไว้ใช้ทุกเทส เพราะ scrypt
+# ตัวหนึ่งกินเวลา ~46 ms ถ้าคำนวณใหม่ทุกเทสไฟล์นี้จะช้าขึ้นเป็นวินาที
+ADMIN_HASH = admin.hash_password(ADMIN_PASSWORD)
+
+
+@pytest.fixture(autouse=True)
+def clean_lockouts():
+    """
+    ตัวนับความล้มเหลวเป็น **ตัวแปรระดับโมดูล** (อยู่ใน memory ของ process)
+
+    ไม่ล้างระหว่างเทส = เทสที่ยิงรหัสผิดจะทำให้เทสตัวถัดไปได้ 429 แบบสุ่มตาม
+    ลำดับการรัน ซึ่งเป็นความแดงที่หาสาเหตุยากที่สุดแบบหนึ่ง
+    """
+    admin.reset_failed_logins()
+    yield
+    admin.reset_failed_logins()
+
+
+def admin_settings(**overrides):
+    """settings ที่ตั้งกุญแจเซ็นเซสชันไว้แล้ว (ทางที่ล็อกอินได้)"""
+    values = {"admin_session_secret": TEST_SECRET}
+    values.update(overrides)
+    return make_settings(**values)
+
+
+def admin_db(
+    faq_row: dict | None = None,
+    *,
+    account: dict | None | str = "default",
+    active_accounts: int = 1,
+) -> FakeWriteDatabase:
+    """
+    DB ปลอมที่ตอบพอให้ล็อกอินและ ``/state`` ทำงาน
+
+    ``rules`` จับด้วย substring **ตามลำดับ** → ตัวที่เฉพาะเจาะจงต้องมาก่อนตัวที่
+    กว้างกว่า (เช่น ``WHERE intent_key = %s`` ต้องมาก่อน ``FROM faqs`` ไม่งั้น
+    การอ่านค่าเก่าก่อนเขียนจะได้แถวจากรายการทั้งตารางมาแทน)
+
+    ``account="default"`` = มีบัญชี ``somchai`` ที่เปิดใช้และรหัสตรงกับ
+    :data:`ADMIN_PASSWORD`; ส่ง ``None`` = ไม่มีบัญชีชื่อที่ถูกค้น
+    """
+    if account == "default":
+        account = {
+            "username": ADMIN_USERNAME,
+            "password_hash": ADMIN_HASH,
+            "is_active": True,
+        }
+    return FakeWriteDatabase(
+        {
+            "count(*) AS active_count": {"active_count": active_accounts},
+            "SELECT username, password_hash": account,
+            "WHERE intent_key = %s": faq_row,
+            "count(*) FROM faqs": {"faqs": 1, "faqs_active": 1, "unanswered": 2},
+            "FROM faqs": [{"intent_key": "drop_course", "is_active": True}],
+            "FROM documents": [],
+            "FROM instructors": [],
+            "FROM curriculum_rules": [],
+            "FROM prerequisites": [],
+            "FROM admin_audit_logs": [],
+        }
+    )
+
+
+def login(client, password: str = ADMIN_PASSWORD, username: str = ADMIN_USERNAME):
+    """ยิง ``/login`` — cookie ที่ได้จะติดอยู่กับ ``client`` เองต่อจากนี้"""
+    return client.post(
+        "/api/admin/login", json={"username": username, "password": password}
+    )
+
+
+def logged_in(make_client, monkeypatch, database=None, settings=None):
+    """client ที่ล็อกอินสำเร็จแล้ว + DB ปลอมที่ผูกอยู่ (คู่ที่ทุกเทสเขียนต้องใช้)"""
+    database = database if database is not None else admin_db()
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(settings or admin_settings())
+    assert login(client).status_code == 200
+    # ตัวการล็อกอินเองก็เขียน DB (``last_login_at``) — ล้างรอยทิ้งเพื่อให้เทสที่
+    # ยืนยันว่า "ถูกปฏิเสธแล้วต้องไม่เขียนอะไร" อ่านได้ตรง ๆ ว่า ``executed == []``
+    database.calls.clear()
+    database.executed.clear()
+    return client, database
+
+
+def schema_tables() -> set[str]:
+    """ชื่อตารางจากทุก migration — 008 ต้องอยู่ในนี้ด้วย"""
+    tables: set[str] = set()
+    for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        sql = migration.read_text(encoding="utf-8")
+        tables.update(re.findall(r"CREATE TABLE (?:IF NOT EXISTS )?(\w+)", sql))
+    return tables
+
+
+def normalize(sql: str) -> str:
+    return sql.replace("%s", "1").replace("%%", "%")
+
+
+# ── รหัสผ่าน: scrypt ────────────────────────────────────────────────────────
+
+
+def test_scrypt_accepts_the_right_password_and_rejects_the_wrong_one() -> None:
+    """
+    ปักพฤติกรรมพื้นฐานของ KDF ไว้ — ถ้าวันหนึ่งมีคนเปลี่ยนไปใช้ ``==`` หรือ
+    เปลี่ยน scheme แล้วลืมทาง verify เทสตัวนี้จะจับได้ก่อนใครล็อกอินไม่ได้จริง
+    """
+    stored = admin.hash_password("a-long-enough-password")
+
+    assert admin.verify_password("a-long-enough-password", stored) is True
+    assert admin.verify_password("a-long-enough-passwore", stored) is False
+    assert admin.verify_password("", stored) is False
+
+
+def test_hashing_the_same_password_twice_gives_different_results() -> None:
+    """
+    salt ต้องสุ่มใหม่ทุกครั้ง — ถ้า hash ซ้ำกัน หมายถึงไม่มี salt จริง แล้ว
+    ตารางสำเร็จรูป (rainbow table) ใช้ได้ทันที และคนที่หลุด DB ออกไปจะเห็นด้วยว่า
+    admin สองคนใช้รหัสเดียวกัน
+    """
+    first = admin.hash_password(ADMIN_PASSWORD)
+    second = admin.hash_password(ADMIN_PASSWORD)
+
+    assert first != second
+    assert admin.verify_password(ADMIN_PASSWORD, first)
+    assert admin.verify_password(ADMIN_PASSWORD, second)
+
+
+def test_stored_hash_never_contains_the_password() -> None:
+    """
+    เทสที่ดูเหมือนไร้สาระแต่จำเป็น: ถ้ามีคนเปลี่ยนไปเก็บ plaintext (หรือเก็บ
+    "เผื่อไว้" ข้าง hash) DB ที่หลุดออกไปครั้งเดียวจะให้รหัสของทุกคนทันที
+    """
+    stored = admin.hash_password(ADMIN_PASSWORD)
+
+    assert ADMIN_PASSWORD not in stored
+    assert stored.startswith("scrypt$")
+
+
+def test_a_broken_stored_string_is_a_failed_login_not_a_crash() -> None:
+    """
+    แถวใน DB ถูกแก้มือได้ (และ migration ที่พลาดก็ทำให้คอลัมน์เพี้ยนได้)
+    ถ้า verify ระเบิดจะกลายเป็น 500 ที่บอกคนนอกว่าเราเก็บอะไรไว้รูปแบบไหน
+    """
+    for broken in ("", "plaintext", "scrypt$ไม่ใช่เลข$8$1$aa$bb", "bcrypt$x$y$z$w$v"):
+        assert admin.verify_password(ADMIN_PASSWORD, broken) is False
+
+
+# ── เซสชัน: cookie ที่เซ็นด้วย HMAC ─────────────────────────────────────────
+
+
+def test_a_session_token_round_trips_with_the_same_secret() -> None:
+    token = admin.make_session_token(ADMIN_USERNAME, TEST_SECRET, 60)
+
+    assert admin.read_session_token(token, TEST_SECRET) == ADMIN_USERNAME
+
+
+def test_a_token_signed_with_another_secret_is_rejected() -> None:
+    """
+    นี่คือกลไก "เตะทุกคนออก": เปลี่ยน ``ADMIN_SESSION_SECRET`` แล้วรีสตาร์ต
+    cookie ทุกใบที่ออกไปแล้วต้องใช้ไม่ได้ทันที
+    """
+    token = admin.make_session_token(ADMIN_USERNAME, TEST_SECRET, 60)
+
+    assert admin.read_session_token(token, "กุญแจใหม่หลังเปลี่ยน") is None
+
+
+def test_a_tampered_token_is_rejected() -> None:
+    """
+    username อยู่ใน token แบบอ่านออก (base64) → ถ้าไม่ตรวจลายเซ็น ใครก็แก้ชื่อ
+    ตัวเองเป็นชื่อ admin ได้ ตัวที่กันคืน HMAC ไม่ใช่ความยากของการอ่าน
+    """
+    token = admin.make_session_token(ADMIN_USERNAME, TEST_SECRET, 60)
+    body, signature = token.rsplit(".", 1)
+    forged = f"{admin._b64(b'attacker')}.{body.split('.')[1]}.{signature}"
+
+    assert admin.read_session_token(forged, TEST_SECRET) is None
+
+
+def test_an_expired_token_is_rejected_even_though_the_signature_is_valid() -> None:
+    """
+    ถ้าตรวจแค่ลายเซ็น อายุ cookie จะไม่มีความหมายเลย — ``Max-Age`` เป็นคำขอต่อ
+    เบราว์เซอร์ที่ผู้ใช้ลบทิ้งได้ ตัวที่บังคับจริงคือเวลาที่ฝังใน token
+    """
+    stale = admin.make_session_token(ADMIN_USERNAME, TEST_SECRET, -1)
+
+    assert admin.read_session_token(stale, TEST_SECRET) is None
+
+
+# ── /login และ /logout ──────────────────────────────────────────────────────
+
+
+def test_login_with_the_right_password_sets_an_httponly_cookie(
+    make_client, monkeypatch
+) -> None:
+    """
+    ทางที่สำเร็จ: ได้ cookie ที่ JS อ่านไม่ได้ + บอกอายุเซสชันให้หน้าเว็บรู้
+
+    ``HttpOnly`` เป็นหัวใจของการเลือกใช้ cookie แทน token ใน localStorage —
+    XSS ในหน้านี้ต้องขโมย token ออกไปใช้ที่อื่นไม่ได้ ถ้าวันหนึ่งมีคนเอาแฟล็กนี้ออก
+    เพื่อให้ JS อ่านชื่อผู้ใช้ได้สะดวก เทสตัวนี้ต้องแดง
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    response = login(client)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "success": True,
+        "username": ADMIN_USERNAME,
+        "expires_in": 8 * 60 * 60,
+    }
+    cookie = response.headers["set-cookie"]
+    assert admin.SESSION_COOKIE in cookie
+    assert "HttpOnly" in cookie
+    assert "samesite=lax" in cookie.lower()
+    assert "Path=/" in cookie
+
+
+def test_login_over_plain_http_does_not_set_the_secure_flag(
+    make_client, monkeypatch
+) -> None:
+    """
+    ตอน dev เปิด ``http://127.0.0.1:8001`` — ติด ``Secure`` ตายแล้วเบราว์เซอร์จะ
+    ทิ้ง cookie ทั้งใบ อาการคือล็อกอินผ่านแต่ทุก request ถัดไป 401 วนไปเรื่อย
+    (ผ่าน cloudflared เข้ามาเป็น https จึงได้แฟล็กนี้เอง — เทสตัวถัดไป)
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    assert "Secure" not in login(client).headers["set-cookie"]
+
+
+def test_login_behind_a_https_proxy_sets_the_secure_flag(
+    make_client, monkeypatch
+) -> None:
+    """
+    ใช้จริงผ่าน cloudflared: ผู้ใช้ต่อ https แต่ cloudflared ต่อกับเราด้วย http
+    → ต้องดู ``X-Forwarded-Proto`` ไม่ใช่ scheme ของ request ที่เราเห็น ไม่งั้น
+    cookie ของหน้าที่เปิดออกอินเทอร์เน็ตจะเดินทางแบบไม่บังคับ TLS
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    response = client.post(
+        "/api/admin/login",
+        json={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
+        headers={"X-Forwarded-Proto": "https"},
+    )
+
+    assert "Secure" in response.headers["set-cookie"]
+
+
+def test_login_response_and_log_never_contain_the_password(
+    make_client, monkeypatch, caplog
+) -> None:
+    """
+    รหัสผ่านและ hash ห้ามออกจากเซิร์ฟเวอร์ทุกทาง — log ของโปรเจกต์นี้ถูกก๊อป
+    ไปแปะในรายงาน/ธีสิสอยู่แล้ว หลุดครั้งเดียวคือหลุดตลอด
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    with caplog.at_level(logging.DEBUG):
+        response = login(client)
+
+    for secret in (ADMIN_PASSWORD, ADMIN_HASH):
+        assert secret not in response.text
+        assert secret not in response.headers["set-cookie"]
+        assert secret not in caplog.text
+    assert "password" not in response.text
+
+
+def test_a_wrong_password_and_an_unknown_username_look_identical(
+    make_client, monkeypatch
+) -> None:
+    """
+    ข้อความต่างกันแม้นิดเดียว = หน้านี้กลายเป็นเครื่องมือไล่ตรวจว่าใครเป็น admin
+    (พิมพ์ชื่อไปเรื่อย ๆ ดูว่าอันไหนตอบไม่เหมือนกัน) จึงเทียบ **ทั้งไบต์** ของ
+    body ไม่ใช่แค่ status code
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    wrong_password = login(client, password="รหัสผิดแต่ยาวพอ")
+    monkeypatch.setattr(main, "_db", admin_db(account=None))
+    unknown_user = login(client, username="ไม่มีคนนี้")
+
+    assert wrong_password.status_code == 401
+    assert unknown_user.status_code == 401
+    assert wrong_password.content == unknown_user.content
+    assert wrong_password.json()["detail"] == "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง"
+
+
+def test_an_unknown_username_still_pays_for_one_hash(
+    make_client, monkeypatch
+) -> None:
+    """
+    ไม่มีบัญชีชื่อนั้นก็ต้อง hash หลอกหนึ่งครั้ง ไม่งั้นเวลาตอบจะเร็วกว่ากรณี
+    "รหัสผิด" ราว 46 ms ซึ่งจับเวลาแยกได้ง่ายจากภายนอก ทั้งที่ข้อความเหมือนกันเป๊ะ
+
+    วัดเวลาในเทสไม่ได้ (ไม่เสถียรบนเครื่องที่รันงานอื่นด้วย) → เทสว่ามีการเรียก
+    ``verify_password`` เกิดขึ้นจริงแทน ซึ่งเป็นเงื่อนไขที่ทำให้เวลาเท่ากัน
+    """
+    monkeypatch.setattr(main, "_db", admin_db(account=None))
+    calls: list[str] = []
+    real_verify = admin.verify_password
+
+    def spy(password: str, stored: str) -> bool:
+        calls.append(stored)
+        return real_verify(password, stored)
+
+    monkeypatch.setattr(admin, "verify_password", spy)
+    client = make_client(admin_settings())
+
+    assert login(client, username="ไม่มีคนนี้").status_code == 401
+    assert calls == [admin._DUMMY_HASH]
+
+
+def test_a_deactivated_account_cannot_log_in(make_client, monkeypatch) -> None:
+    """
+    ``--deactivate`` ต้องมีผลจริง และต้องตอบเหมือนกรณีรหัสผิดเป๊ะ — คนที่ถูกถอน
+    สิทธิ์ไม่ควรแยกออกได้ว่าตัวเองถูกปิดหรือแค่จำรหัสผิด (ปิดแล้วยังบอกว่า
+    "บัญชีถูกปิด" คือการยืนยันว่าบัญชีนี้มีอยู่)
+    """
+    database = admin_db(
+        account={
+            "username": ADMIN_USERNAME,
+            "password_hash": ADMIN_HASH,
+            "is_active": False,
+        }
+    )
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(admin_settings())
+
+    response = login(client)
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง"
+    assert admin.SESSION_COOKIE not in response.headers.get("set-cookie", "")
+
+
+def test_nobody_can_log_in_when_there_is_no_active_account(
+    make_client, monkeypatch, caplog
+) -> None:
+    """
+    fail closed: ไม่มีบัญชีที่เปิดใช้ = **ไม่มีใครเข้าได้** ไม่ใช่เข้าได้ทุกคน
+
+    และข้อความที่ส่งออกไปห้ามบอกว่าระบบยังตั้งไม่เสร็จ (คนนอกที่รู้ว่ายังไม่มี
+    บัญชีจะรู้ด้วยว่ามีหน้าต่างเวลาให้ชิงสร้างบัญชีก่อนเจ้าของ) — log ฝั่งเราบอกตรง ๆ
+    """
+    monkeypatch.setattr(main, "_db", admin_db(active_accounts=0))
+    client = make_client(admin_settings())
+
+    with caplog.at_level(logging.WARNING):
+        response = login(client)
+
+    assert response.status_code == 403
+    for leak in ("บัญชี", "admin_accounts", "admin_user", "ยังไม่ได้ตั้ง", "scripts"):
+        assert leak not in response.text, leak
+    assert "admin_accounts" in caplog.text
+    assert "scripts/admin_user.py" in caplog.text
+
+
+def test_login_is_impossible_when_the_session_secret_is_unset(
+    make_client, monkeypatch, caplog
+) -> None:
+    """
+    ออก cookie ที่เซ็นด้วยกุญแจว่างไม่ได้ (ใครก็ปลอมได้) → ต้อง 503 ไม่ใช่ปล่อยผ่าน
+
+    ที่นี่ **บอกชื่อตัวแปร** ออกไปได้ ต่างจากกรณีไม่มีบัญชี: มันเป็นชื่อไม่ใช่ค่า
+    และคนที่เจอ error นี้คือคนตั้งระบบที่ต้องรู้ว่าต้องไปเติมอะไร
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings(admin_session_secret=""))
+
+    with caplog.at_level(logging.WARNING):
+        response = login(client)
+
+    assert response.status_code == 503
+    assert "ADMIN_SESSION_SECRET" in response.json()["detail"]
+    assert "ADMIN_SESSION_SECRET" in caplog.text
+
+
+def test_five_wrong_passwords_lock_the_account_even_for_the_right_one(
+    make_client, monkeypatch, caplog
+) -> None:
+    """
+    หน้านี้เปิดออกอินเทอร์เน็ต ไม่มีเพดาน = ปล่อยให้ยิงเดารหัสได้ไม่จำกัด
+
+    ครั้งที่ 6 ในเทสนี้ใส่รหัส **ถูก** โดยเจตนา: ถ้าล็อกแล้วยังปล่อยคนที่เดาถูกเข้า
+    การล็อกก็ไม่ได้กันอะไรเลย และข้อความต้องบอกว่าเหลืออีกกี่นาที ไม่ใช่ปฏิเสธเฉย ๆ
+    (ไม่งั้นเจ้าตัวที่พิมพ์ผิดเองจะยิงซ้ำต่อไปเรื่อย ๆ)
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(admin.MAX_FAILED_ATTEMPTS):
+            assert login(client, password="รหัสผิดแต่ยาวพอ").status_code == 401
+        blocked = login(client)
+
+    assert blocked.status_code == 429
+    assert "15 นาที" in blocked.json()["detail"]
+    assert ADMIN_USERNAME in caplog.text, "log ต้องบอกว่าบัญชีไหนถูกล็อก"
+    assert ADMIN_PASSWORD not in caplog.text
+    assert "รหัสผิดแต่ยาวพอ" not in caplog.text
+
+
+def test_a_successful_login_clears_the_failure_counter(
+    make_client, monkeypatch
+) -> None:
+    """
+    พิมพ์ผิดสองครั้งแล้วพิมพ์ถูก ต้องไม่ทำให้ครั้งที่ผิดในวันหลังสะสมต่อจนล็อก
+    ตัวเอง — ไม่ล้างตัวนับ = คนที่พิมพ์ผิดบ่อย ๆ จะถูกล็อกทั้งที่ไม่มีใครโจมตี
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    for _ in range(admin.MAX_FAILED_ATTEMPTS - 1):
+        assert login(client, password="รหัสผิดแต่ยาวพอ").status_code == 401
+    assert login(client).status_code == 200
+
+    for _ in range(admin.MAX_FAILED_ATTEMPTS - 1):
+        assert login(client, password="รหัสผิดแต่ยาวพอ").status_code == 401
+    assert login(client).status_code == 200
+
+
+def test_logout_clears_the_cookie(make_client, monkeypatch) -> None:
+    """
+    ยกเลิก token ฝั่งเซิร์ฟเวอร์ไม่ได้ (stateless) สิ่งที่ทำได้จริงคือบอกเบราว์เซอร์
+    ให้ลบใบที่ถืออยู่ — เทสตัวนี้ปักไว้ว่า ``/logout`` ต้องทำอย่างน้อยเท่านั้น
+    """
+    client, _ = logged_in(make_client, monkeypatch)
+
+    response = client.post("/api/admin/logout")
+
+    assert response.status_code == 200
+    assert 'admin_session=""' in response.headers["set-cookie"] or (
+        "admin_session=;" in response.headers["set-cookie"]
+    )
+    assert client.post("/api/admin/state", json={}).status_code == 401
+
+
+# ── ด่าน cookie ของทุก endpoint ─────────────────────────────────────────────
+
+
+def test_state_without_a_cookie_is_rejected(make_client, monkeypatch) -> None:
+    """ยิงตรงจาก curl/สคริปต์โดยไม่ล็อกอิน = 401 ไม่ใช่ได้ข้อมูลทั้งตาราง"""
+    database = admin_db()
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(admin_settings())
+
+    response = client.post("/api/admin/state", json={})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "เซสชันหมดอายุ — กรุณาเข้าสู่ระบบใหม่"
+    assert database.calls == [], "ถูกปฏิเสธแล้วต้องไม่แตะ DB เลย"
+
+
+def test_a_forged_cookie_is_rejected(make_client, monkeypatch) -> None:
+    """
+    cookie แก้มือได้ทุกไบต์ — ถ้าเซิร์ฟเวอร์เชื่อ username ที่อยู่ในนั้นโดยไม่ตรวจ
+    ลายเซ็น ใครก็ตั้งค่า cookie เป็นชื่อ admin แล้วเข้าได้เลย
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+    client.cookies.set(admin.SESSION_COOKIE, "c29tY2hhaQ.9999999999.this-is-not-a-real-signature")
+
+    assert client.post("/api/admin/state", json={}).status_code == 401
+
+
+def test_a_correctly_signed_but_expired_cookie_is_rejected(
+    make_client, monkeypatch
+) -> None:
+    """
+    ลายเซ็นถูกแต่หมดอายุต้องเข้าไม่ได้ — ไม่งั้นอายุเซสชันไม่มีความหมายและ cookie
+    ที่หลุดออกไปจะใช้ได้ตลอดกาล
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+    client.cookies.set(
+        admin.SESSION_COOKIE,
+        admin.make_session_token(ADMIN_USERNAME, TEST_SECRET, -1),
+    )
+
+    assert client.post("/api/admin/state", json={}).status_code == 401
+
+
+def test_a_cookie_signed_with_the_old_secret_is_rejected(
+    make_client, monkeypatch
+) -> None:
+    """
+    นี่คือทางเดียวที่ "เตะทุกคนออก" ได้: เปลี่ยน ``ADMIN_SESSION_SECRET`` แล้ว
+    รีสตาร์ต — เทสตัวนี้ยืนยันว่ามันได้ผลจริง (เพราะเป็นสิ่งที่เอกสารบอกให้ทำ
+    เวลาสงสัยว่า cookie หลุด)
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings(admin_session_secret="กุญแจใหม่หลังเปลี่ยน"))
+    client.cookies.set(
+        admin.SESSION_COOKIE,
+        admin.make_session_token(ADMIN_USERNAME, TEST_SECRET, 3_600),
+    )
+
+    assert client.post("/api/admin/state", json={}).status_code == 401
+
+
+def test_every_admin_endpoint_checks_the_cookie() -> None:
+    """
+    ไล่ทุก route ใน ``/api/admin`` ว่าเรียก ``require_admin`` จริง
+
+    เพิ่ม endpoint ใหม่แล้วลืมเรียกด่านตรวจสิทธิ์ = ไม่มีอะไรฟ้อง หน้านั้นจะเปิด
+    ให้ใครก็ได้เขียนข้อมูลเงียบ ๆ — ตรวจจาก source เพราะเป็นการเรียกในฟังก์ชัน
+    (ไม่ใช่ dependency) จึงไม่มี metadata ให้ตรวจแบบอื่น
+    """
+    import inspect
+
+    public = {"/api/admin/login", "/api/admin/logout", "/api/admin/config"}
+    checked = 0
+    for route in main.app.routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/api/admin") or path in public:
+            continue
+        source = inspect.getsource(route.endpoint)
+        assert "require_admin(request, settings)" in source, path
+        checked += 1
+    assert checked >= 7, f"ตรวจไปแค่ {checked} route — ทะเบียน route เพี้ยนหรือเปล่า"
+
+
+# ── /config ─────────────────────────────────────────────────────────────────
+
+
+def test_config_no_longer_leaks_a_liff_id(make_client, monkeypatch) -> None:
+    """
+    หน้านี้เลิกใช้ LINE Login แล้ว — ``liff_id`` ที่ค้างอยู่จะทำให้คนอ่านโค้ด
+    (และหน้าเว็บ) คิดว่ายังต้องมี LIFF app ใบที่สองสำหรับ admin ซึ่งไม่จริงแล้ว
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    body = client.get("/api/admin/config").json()
+
+    assert "liff_id" not in body
+    assert body == {"program_code": "643170151", "configured": True}
+
+
+def test_config_reports_when_nobody_can_log_in_yet(make_client, monkeypatch) -> None:
+    """
+    ``configured: false`` ให้หน้าเว็บบอกคนตั้งระบบว่าต้องรันสคริปต์สร้างบัญชีก่อน
+
+    ที่นี่บอกได้ (ต่างจาก ``/login``) เพราะเป็นสถานะการตั้งค่า ไม่ใช่รายชื่อ —
+    และถ้าไม่บอก คนตั้งระบบจะเห็นแค่ "รหัสไม่ถูกต้อง" โดยไม่รู้ว่ายังไม่มีบัญชี
+    """
+    monkeypatch.setattr(main, "_db", admin_db(active_accounts=0))
+    client = make_client(admin_settings())
+
+    assert client.get("/api/admin/config").json()["configured"] is False
+
+
+def test_config_does_not_break_when_the_database_is_asleep(
+    make_client, monkeypatch
+) -> None:
+    """
+    หน้าเว็บเรียก ``/config`` เป็นอย่างแรก — ถ้าตอบ 503 ตอน Neon cold start
+    คนจะเห็นหน้าขาว ๆ แทนฟอร์มล็อกอิน
+    """
+    monkeypatch.setattr(main, "_db", None)
+    client = make_client(admin_settings())
+
+    response = client.get("/api/admin/config")
+
+    assert response.status_code == 200
+    assert response.json()["configured"] is False
+
+
+# ── หน้า HTML ───────────────────────────────────────────────────────────────
+
+
+# ── storage: allowlist ของคีย์ ───────────────────────────────────────────────
+# ห้ามเก็บรหัสผ่าน/ชื่อผู้ใช้/เซสชันลง localStorage — XSS ครั้งเดียวได้ไปทั้งชุด
+# ทั้งที่จุดประสงค์ของ cookie แบบ HttpOnly คือให้ JS แตะไม่ได้เลย
+#
+# เคยเช็กด้วยการแบนสตริง ``localStorage.setItem`` ตรง ๆ ซึ่ง**คุมผิดจุด**:
+# เขียน ``localStorage[KEY] = v`` ก็รอดเทสไปได้ทั้งที่เก็บของจริงเหมือนกัน
+# จึงเปลี่ยนมาไล่หา *คีย์* ที่หน้าเว็บใช้จริงแล้วเทียบกับ allowlist แทน
+# คีย์ที่อ่านค่าไม่ออก (มาจากตัวแปรที่หา ``const X = "…"`` ไม่เจอ) นับเป็นไม่ผ่าน
+# เพราะเทสต้องไม่ปล่อยผ่านสิ่งที่มันตรวจไม่ได้
+
+STORAGE_KEY_ALLOWLIST = {"adminAutoRefresh"}
+
+_STORAGE_METHODS = {"getItem", "setItem", "removeItem", "clear", "key", "length"}
+_STORAGE_ACCESS = re.compile(
+    r"""(?:local|session)Storage\s*(?:
+          \.\s*(?:get|set|remove)Item\s*\(\s*(?P<call>"[^"]*"|'[^']*'|[A-Za-z_$][\w$]*)
+        | \[\s*(?P<index>"[^"]*"|'[^']*'|[A-Za-z_$][\w$]*)\s*\]
+        | \.\s*(?P<prop>[A-Za-z_$][\w$]*)
+        )""",
+    re.VERBOSE,
+)
+_JS_CONST = re.compile(
+    r"""(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"""
+    r"""(?P<value>"[^"]*"|'[^']*')""",
+)
+
+
+def storage_keys_used(page: str) -> set[str]:
+    """คีย์ทุกตัวที่หน้าเว็บอ่าน/เขียนใน localStorage หรือ sessionStorage
+
+    ``"?"`` = อ่านค่าคีย์ไม่ออก ซึ่งจะไม่อยู่ใน allowlist เสมอ (fail closed)
+    """
+    literals = {
+        match.group("name"): match.group("value")[1:-1]
+        for match in _JS_CONST.finditer(page)
+    }
+    keys: set[str] = set()
+    for match in _STORAGE_ACCESS.finditer(page):
+        token = match.group("call") or match.group("index")
+        if token is None:
+            prop = match.group("prop")
+            if prop in _STORAGE_METHODS:
+                continue          # เรียกเมธอดโดยไม่มีวงเล็บตาม เช่นส่งเป็น callback
+            keys.add(prop)
+            continue
+        if token[:1] in {'"', "'"}:
+            keys.add(token[1:-1])
+        else:
+            keys.add(literals.get(token, "?"))
+    return keys
+
+
+def test_admin_page_has_no_line_login_left_and_stores_no_password(
+    make_client, monkeypatch
+) -> None:
+    """
+    หน้าเว็บต้องเลิกโหลด LIFF SDK และ **ห้ามเก็บรหัสผ่าน/เซสชันลง storage**
+
+    เก็บลง localStorage = XSS ครั้งเดียวได้ทั้งรหัสผ่าน (ซึ่งใช้ซ้ำที่อื่นได้ด้วย)
+    ทั้งที่จุดประสงค์ของการใช้ cookie แบบ HttpOnly คือให้ JS แตะไม่ได้เลย
+
+    (ไฟล์ ``web/admin/index.html`` อยู่นอกความรับผิดชอบของเทสชุดนี้โดยตรง —
+    เทสตัวนี้คือสัญญาระหว่างหน้าเว็บกับ API ที่ทั้งสองฝั่งต้องรักษา)
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    page = client.get("/admin")
+
+    assert page.status_code == 200
+    assert "liff" not in page.text.lower(), "ไม่ควรมี LIFF SDK / liff.init เหลืออยู่"
+    assert "getIDToken" not in page.text
+    assert storage_keys_used(page.text) <= STORAGE_KEY_ALLOWLIST, (
+        "หน้า admin เขียน storage ด้วยคีย์ที่ไม่ได้อนุญาต: "
+        f"{sorted(storage_keys_used(page.text) - STORAGE_KEY_ALLOWLIST)}"
+    )
+
+
+def test_storage_allowlist_catches_bracket_writes() -> None:
+    """เทส allowlist ต้องจับ ``localStorage[KEY] = v`` ได้ ไม่ใช่แค่ ``setItem``
+
+    เขียนไว้เพราะเทสรุ่นก่อนแบนแค่สตริง ``localStorage.setItem`` ซึ่งเลี่ยงได้ง่าย
+    ถ้าเทสตัวนี้แดง แปลว่าเครื่องตรวจกลับไปคุมผิดจุดอีกแล้ว
+    """
+    assert storage_keys_used('localStorage.setItem("token", t)') == {"token"}
+    assert storage_keys_used('sessionStorage["token"] = t') == {"token"}
+    assert storage_keys_used("localStorage.token = t") == {"token"}
+    tracked = 'const K = "adminAutoRefresh"; localStorage[K] = "1"'
+    assert storage_keys_used(tracked) == {"adminAutoRefresh"}
+    # คีย์ที่ตามรอยไม่ได้ต้องกลายเป็น "?" (ไม่มีทางอยู่ใน allowlist)
+    assert storage_keys_used("localStorage[whatever] = v") == {"?"}
+
+
+def test_admin_page_search_boxes_and_auto_refresh_are_present(
+    make_client, monkeypatch
+) -> None:
+    """ช่องค้นหาต้องได้สไตล์ชุดเดียวกับ input อื่น และมีสวิตช์โหลดเองในหน้า
+
+    ผู้ใช้แจ้งว่าช่องค้นหา "ไม่มี style เลย" เพราะกฎ CSS ลิสต์ ``type`` ไว้ทีละตัว
+    แล้วตกหล่น ``search`` — เทสนี้ตรึงไว้ว่าห้ามหลุดออกจากกฎนั้นอีก
+    """
+    monkeypatch.setattr(main, "_db", admin_db())
+    client = make_client(admin_settings())
+
+    page = client.get("/admin").text
+
+    # ช่องค้นหาถูกสร้างด้วย JS จึงเช็กที่ซอร์ส ไม่ใช่ HTML ที่ render แล้ว
+    assert "input[type=search]" in page, "ช่องค้นหาหลุดจากกฎ CSS ของ input อีกแล้ว"
+    assert ".searchfield" in page, "ไม่มีสไตล์ของกล่องช่องค้นหา"
+    assert 'wrap.className = "searchfield"' in page, "ช่องค้นหาไม่ได้ใส่ class ให้"
+    assert 'id="autotoggle"' in page, "ไม่มีสวิตช์เปิด/ปิดการโหลดเอง"
+    assert "ล้างคำค้น" in page, "ปุ่มล้างคำค้นต้องมีชื่อให้ screen reader"
+
+
+# ── endpoints: อ่าน ─────────────────────────────────────────────────────────
+
+
+def test_state_requires_a_database(make_client, monkeypatch) -> None:
+    """ไม่มี DB = ยังอ่านไม่ได้ → 503 (ปัญหาของเซิร์ฟเวอร์ ไม่ใช่ของคนกด)"""
+    client, _ = logged_in(make_client, monkeypatch)
+    monkeypatch.setattr(main, "_db", None)
+
+    assert client.post("/api/admin/state", json={}).status_code == 503
+
+
+def test_state_returns_every_editable_table_in_one_request(
+    make_client, monkeypatch
+) -> None:
+    """หน้าเว็บเป็นไฟล์เดียวไม่มี router — โหลดครั้งเดียวต้องได้ทุกแท็บ"""
+    client, _ = logged_in(make_client, monkeypatch)
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    for key in ("counts", "faqs", "documents", "instructors",
+                "curriculum_rules", "prerequisites", "audit"):
+        assert key in body, key
+    assert body["program_code"] == "643170151"
+
+
+def test_state_works_with_no_body_at_all(make_client, monkeypatch) -> None:
+    """
+    เลิกใช้ ``id_token`` แล้ว → body ของ ``/state`` ไม่มีช่องที่ต้องกรอกเลย
+
+    หน้าเว็บบางที่ยิงมาโดยไม่ใส่ body — ถ้า schema ยังบังคับให้มี body จะได้ 422
+    ที่หน้าเว็บอ่านไม่ออก (มันรอ 401/200 เท่านั้น)
+    """
+    client, _ = logged_in(make_client, monkeypatch)
+
+    assert client.post("/api/admin/state").status_code == 200
+
+
+# ── endpoints: ทางเขียน ─────────────────────────────────────────────────────
+#
+# ทุกตัวคืนโครงเดียวกัน ``{"ok", "action", "changes"}`` — เทสตรงนี้ปักโครงนั้นไว้
+# เพราะหน้าเว็บมีตัวจัดการผลลัพธ์ตัวเดียวสำหรับทุกฟอร์ม เปลี่ยนโครงที่ตัวใด
+# ตัวหนึ่งแล้วฟอร์มนั้นจะเงียบ ๆ ไม่บอกว่าบันทึกอะไรไป
+
+FAQ_BODY = {
+    "intent_key": "drop_course",
+    "question": "ดรอปวิชาทำยังไง",
+    "answer": "ยื่นคำร้องที่งานทะเบียนภายในสัปดาห์ที่ 10",
+    "variants": ["ถอนรายวิชา", " ", "ดรอปเรียน"],
+}
+
+
+def test_saving_a_faq_writes_the_row_and_the_audit(make_client, monkeypatch) -> None:
+    """
+    การบันทึกหนึ่งครั้ง = เขียนแถว **และ** เขียน audit เสมอ
+
+    audit เป็นที่เดียวที่เก็บคำตอบเวอร์ชันก่อนหน้าไว้ — ไม่มีมันแล้วคำตอบที่ผิด
+    ย้อนกลับไม่ได้เลย
+    """
+    client, database = logged_in(make_client, monkeypatch)
+
+    body = client.post("/api/admin/faq", json=FAQ_BODY).json()
+
+    assert body["ok"] is True
+    assert body["action"] == "create"
+    assert body["changes"]["answer"]["to"] == FAQ_BODY["answer"]
+    # คำพ้องที่เป็นช่องว่างต้องถูกตัดออกก่อนลง TEXT[] (ไม่งั้นได้ตัวที่แมตช์ทุกอย่าง)
+    assert database.executed_for("INSERT INTO faqs")[4] == ["ถอนรายวิชา", "ดรอปเรียน"]
+    assert database.executed_for("INSERT INTO admin_audit_logs")[1] == "create"
+
+
+def test_the_audit_records_the_username_of_whoever_saved(
+    make_client, monkeypatch
+) -> None:
+    """
+    ``admin_username`` ต้องเป็นชื่อคนที่ล็อกอินอยู่จริง ไม่ใช่ค่าที่ส่งมาจากฟอร์ม
+
+    ทั้งหน้านี้มีไว้แก้คำตอบที่บอทเอาไปตอบนักศึกษา — ถ้า audit ไม่รู้ว่าใครแก้
+    ประวัติก็ไร้ประโยชน์ (และเป็นเหตุผลที่ 008 ไม่มี DELETE ให้ลบบัญชี)
+    """
+    client, database = logged_in(make_client, monkeypatch)
+
+    client.post("/api/admin/faq", json=FAQ_BODY)
+
+    assert database.executed_for("INSERT INTO admin_audit_logs")[0] == ADMIN_USERNAME
+    # ``updated_by`` ของแถวข้อมูลเองก็ต้องเป็นชื่อเดียวกัน (ไม่ใช่ hash 12 ตัวแล้ว)
+    assert ADMIN_USERNAME in database.executed_for("INSERT INTO faqs")
+
+
+def test_saving_over_an_existing_faq_records_the_old_answer(
+    make_client, monkeypatch
+) -> None:
+    """คำตอบเก่าต้องถูกเก็บไว้ใน ``changes`` ไม่งั้นแก้ผิดแล้วย้อนไม่ได้"""
+    old = {
+        "intent_key": "drop_course",
+        "question": "ดรอปวิชาทำยังไง",
+        "answer": "คำตอบเก่าที่ผิด",
+        "category": None,
+        "variants": ["ถอนรายวิชา", "ดรอปเรียน"],
+        "source_url": None,
+        "is_active": True,
+    }
+    client, _ = logged_in(make_client, monkeypatch, admin_db(faq_row=old))
+
+    body = client.post("/api/admin/faq", json=FAQ_BODY).json()
+
+    assert body["action"] == "update"
+    assert body["changes"]["answer"]["from"] == "คำตอบเก่าที่ผิด"
+    # ช่องที่ไม่ได้เปลี่ยนต้องไม่โผล่ใน changes ไม่งั้น audit อ่านไม่ออกว่าแก้อะไร
+    assert "question" not in body["changes"]
+
+
+def test_saving_a_faq_without_logging_in_writes_nothing(
+    make_client, monkeypatch
+) -> None:
+    """คนนอกต้องเขียนอะไรไม่ได้เลย ไม่ใช่เขียนได้แต่ไม่ถูกบันทึกว่าใครเขียน"""
+    database = admin_db()
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(admin_settings())
+
+    response = client.post("/api/admin/faq", json=FAQ_BODY)
+
+    assert response.status_code == 401
+    assert database.executed == [], "ถูกปฏิเสธแล้วต้องไม่มีการเขียนใด ๆ"
+
+
+def test_a_too_long_answer_is_rejected_before_it_reaches_line(
+    make_client, monkeypatch
+) -> None:
+    """
+    LINE จำกัด 5,000 ตัวอักษรต่อข้อความและ **reject ทั้ง request** ถ้าเกิน
+
+    ปล่อยให้บันทึกได้จะไปโผล่เป็น "บอทเงียบ" ตอนตอบ ไม่ใช่ error ตอนบันทึก
+    """
+    client, database = logged_in(make_client, monkeypatch)
+
+    response = client.post("/api/admin/faq", json={**FAQ_BODY, "answer": "ก" * 4_001})
+
+    assert response.status_code == 422
+    assert database.executed == []
+
+
+def test_curriculum_rule_rejects_a_course_code_that_is_not_seven_digits(
+    make_client, monkeypatch
+) -> None:
+    """รหัสเต็มในช่อง 7 หลัก = JOIN courses ไม่เจอชื่อวิชา โดยไม่มี error อะไรเลย"""
+    client, _ = logged_in(make_client, monkeypatch)
+
+    response = client.post(
+        "/api/admin/curriculum_rule",
+        json={
+            "program_code": "643170151",
+            "course_code": "7071102-60",
+            "std_year": 1,
+            "std_semester": 1,
+            "source": "มคอ.2 หน้า 42",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_saving_an_instructor_that_does_not_exist_is_a_404(
+    make_client, monkeypatch
+) -> None:
+    """
+    ชื่ออาจารย์เป็น **กุญแจ ไม่ใช่ช่องแก้** — พิมพ์ชื่อผิดคือกรอกผิด (404)
+    ไม่ใช่คำสั่งสร้างอาจารย์คนใหม่ที่ไม่มี ``name_normalized`` ให้บอทค้นเจอ
+    """
+    client, _ = logged_in(make_client, monkeypatch)
+
+    response = client.post(
+        "/api/admin/instructor",
+        json={"full_name": "อาจารย์ที่ไม่มีในระบบ", "phone": "043-000000"},
+    )
+
+    assert response.status_code == 404
+
+
+# ── endpoints: ปุ่มปิด (แทนการลบ) ────────────────────────────────────────────
+
+
+def test_toggle_rejects_a_table_that_is_not_on_the_allowlist(
+    make_client, monkeypatch
+) -> None:
+    """ชื่อตารางมาจากหน้าเว็บ → ต้องเทียบกับ ``TABLE_KEYS`` ไม่ใช่เชื่อตามที่ส่งมา"""
+    client, database = logged_in(make_client, monkeypatch)
+
+    response = client.post(
+        "/api/admin/toggle",
+        json={"table": "app_users", "key": ["x"], "is_active": False},
+    )
+
+    assert response.status_code == 400
+    assert database.executed == []
+
+
+def test_toggle_rejects_an_incomplete_key(make_client, monkeypatch) -> None:
+    """
+    กุญแจไม่ครบ = ``UPDATE`` ที่ขาดเงื่อนไข = ปิดทั้งตารางในคลิกเดียว
+    ต้องหยุดก่อนแตะฐานข้อมูล
+    """
+    client, database = logged_in(make_client, monkeypatch)
+
+    response = client.post(
+        "/api/admin/toggle",
+        json={"table": "prerequisites", "key": ["643170151"], "is_active": False},
+    )
+
+    assert response.status_code == 400
+    assert "3" in response.json()["detail"], "ข้อความต้องบอกว่าต้องมีกี่ช่อง"
+    assert database.executed == []
+
+
+def test_toggling_a_row_that_does_not_exist_is_a_404(make_client, monkeypatch) -> None:
+    """แถวที่อ้างถึงไม่มี = คนกรอกผิด (404) ไม่ใช่ระบบพัง (500)"""
+    client, database = logged_in(make_client, monkeypatch, admin_db(faq_row=None))
+
+    response = client.post(
+        "/api/admin/toggle",
+        json={"table": "faqs", "key": ["ไม่มีคีย์นี้"], "is_active": False},
+    )
+
+    assert response.status_code == 404
+    assert database.executed == []
+
+
+def test_toggling_a_row_off_updates_only_that_row(make_client, monkeypatch) -> None:
+    """
+    ``UPDATE`` ต้องมีกุญแจครบใน ``WHERE`` และบันทึกชื่อคนที่กดไว้ใน ``updated_by``
+    """
+    client, database = logged_in(
+        make_client,
+        monkeypatch,
+        admin_db(faq_row={"intent_key": "drop_course", "is_active": True}),
+    )
+
+    body = client.post(
+        "/api/admin/toggle",
+        json={"table": "faqs", "key": ["drop_course"], "is_active": False},
+    ).json()
+
+    assert body["action"] == "toggle"
+    assert body["changes"]["is_active"] == {"from": True, "to": False}
+    params = database.executed_for("UPDATE faqs SET is_active")
+    assert params[0] is False
+    assert params[1] == ADMIN_USERNAME
+    assert params[-1] == "drop_course"
+
+
+# ── endpoints: chat_logs (อ่านอย่างเดียว) ────────────────────────────────────
+
+
+def test_chat_logs_are_not_loaded_with_the_rest_of_the_page(
+    make_client, monkeypatch
+) -> None:
+    """
+    ตารางเดียวที่โตเรื่อย ๆ และเป็นข้อความที่นักศึกษาพิมพ์เอง — ต้องแยก endpoint
+    ให้ต้อง "กดดู" ไม่ใช่มาพร้อม ``/state`` ทุกครั้งที่เปิดหน้า
+
+    (``/state`` นับจำนวนที่ตอบไม่ได้ได้ เพราะเป็นตัวเลข ไม่ใช่ข้อความของใคร)
+    """
+    client, database = logged_in(make_client, monkeypatch)
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    assert "chat_logs" not in body
+    assert all(
+        "FROM chat_logs" not in sql
+        for sql, _ in database.calls
+        if "count(*)" not in sql
+    )
+
+
+def test_chat_logs_default_to_the_unanswered_ones(make_client, monkeypatch) -> None:
+    """หน้านี้มีอยู่เพื่ออ่านคำถามที่บอทตอบไม่ได้ ไม่ใช่ไล่ดูว่าใครคุยอะไร"""
+    client, database = logged_in(make_client, monkeypatch)
+
+    body = client.post("/api/admin/chat_logs", json={}).json()
+
+    assert body["unanswered_only"] is True
+    assert database.params_for("WHERE answered_by IN") == (100,)
+
+
+def test_chat_logs_can_show_everything_when_asked(make_client, monkeypatch) -> None:
+    """ตัวเลือก "ดูทั้งหมด" ต้องส่งถึงชั้น SQL จริง (ไม่ใช่กรองที่หน้าเว็บ)"""
+    client, database = logged_in(make_client, monkeypatch)
+
+    body = client.post(
+        "/api/admin/chat_logs", json={"unanswered_only": False, "limit": 10}
+    ).json()
+
+    assert body["unanswered_only"] is False
+    assert database.params_for("FROM chat_logs") == (10,)
+
+
+def test_chat_logs_limit_has_a_ceiling(make_client, monkeypatch) -> None:
+    """ไม่มีเพดาน = กดครั้งเดียวลากทั้งตารางมาที่เบราว์เซอร์"""
+    client, _ = logged_in(make_client, monkeypatch)
+
+    response = client.post("/api/admin/chat_logs", json={"limit": 10_000})
+
+    assert response.status_code == 422
+
+
+# ── SQL: โครงสร้าง ──────────────────────────────────────────────────────────
+#
+# เทสกลุ่มนี้อ่าน **ตัวสตริง SQL** ไม่ได้ต่อ Postgres จริง — จับได้เฉพาะความผิด
+# เชิงโครงสร้าง (ลบข้อมูล, f-string, ตารางผี, ปลุกแถวที่ปิดไว้) ซึ่งเป็นชนิดที่
+# ถ้าหลุดขึ้น production แล้วมองไม่เห็นจนข้อมูลหาย ส่วนความถูกต้องเชิงความหมาย
+# อยู่ใน ``tests/integration/``
+
+
+def test_every_query_is_registered() -> None:
+    """เพิ่ม query ใหม่แล้วลืมลงทะเบียน = ไม่มีเทสตัวไหนตรวจ SQL นั้นเลย"""
+    declared = {
+        name for name in dir(admin_repo) if name.startswith("SQL_") and name != "SQL_"
+    }
+    assert declared == set(admin_repo.ALL_QUERIES)
+
+
+@pytest.mark.parametrize("name", sorted(admin_repo.ALL_QUERIES))
+def test_query_parses_as_postgres(name: str) -> None:
+    """parse ไม่ผ่าน = พิมพ์ SQL ผิด ซึ่งจะโผล่เป็น 500 ตอนมีคนกดปุ่มนั้นครั้งแรก"""
+    tree = sqlglot.parse_one(
+        normalize(admin_repo.ALL_QUERIES[name]), dialect="postgres"
+    )
+    assert tree is not None, f"{name} parse ไม่ได้"
+
+
+@pytest.mark.parametrize("name", sorted(admin_repo.ALL_QUERIES))
+def test_query_only_uses_existing_tables(name: str) -> None:
+    """
+    ชื่อตารางต้องมีจริงใน ``db/migrations`` — รวมถึง ``admin_accounts`` ของ 008
+
+    query ที่อ้างตารางผีจะพังตอนรันจริงเท่านั้น (ตอน import ไม่มีอะไรฟ้อง)
+    """
+    tree = sqlglot.parse_one(
+        normalize(admin_repo.ALL_QUERIES[name]), dialect="postgres"
+    )
+    used = {table.name for table in tree.find_all(exp.Table)}
+    unknown = used - schema_tables()
+
+    assert not unknown, f"{name} อ้างตารางที่ไม่มีใน migration: {sorted(unknown)}"
+
+
+@pytest.mark.parametrize("name", sorted(admin_repo.ALL_QUERIES))
+def test_query_has_no_string_interpolation(name: str) -> None:
+    """
+    ค่าจากฟอร์มต้องเข้ามาทาง ``%s`` เท่านั้น — ``{`` = มีคนเผลอเขียน f-string
+
+    หน้านี้เปิดออกอินเทอร์เน็ต ช่องกรอกทุกช่องคือ input ของคนนอกที่เดารหัสถูก
+    """
+    assert "{" not in admin_repo.ALL_QUERIES[name]
+
+
+@pytest.mark.parametrize("name", sorted(admin_repo.ALL_QUERIES))
+def test_no_query_deletes_anything(name: str) -> None:
+    """
+    ทั้งหน้านี้ไม่มี DELETE — ปุ่มลบคือปุ่มปิด (``is_active``)
+
+    เหตุผลอยู่ใน 006_admin.sql: scraper เขียนทับตารางเหล่านี้ ลบจริงแล้วรอบ
+    scrape ถัดไปจะเอาแถวกลับมาเงียบ ๆ คนที่ลบจะไม่รู้เลย
+
+    กับ ``admin_accounts`` ของ 008 มีเหตุผลเพิ่ม: ลบบัญชีทิ้งแล้ว audit ที่อ้าง
+    ชื่อนั้นจะกลายเป็นชื่อที่ไม่มีเจ้าของ — ``--deactivate`` เท่านั้น
+    """
+    sql = admin_repo.ALL_QUERIES[name]
+    assert "DELETE" not in sql.upper()
+    assert "TRUNCATE" not in sql.upper()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SQL_ADMIN_UPSERT_FAQ",
+        "SQL_ADMIN_UPSERT_DOCUMENT",
+        "SQL_ADMIN_UPSERT_CURRICULUM_RULE",
+        "SQL_ADMIN_UPSERT_PREREQUISITE",
+        "SQL_ADMIN_UPDATE_INSTRUCTOR",
+    ],
+)
+def test_saving_a_row_never_reactivates_it(name: str) -> None:
+    """
+    ``DO UPDATE SET`` ห้ามมี ``is_active`` — ไม่งั้นการกดบันทึกจะปลุกแถวที่คน
+    ตั้งใจปิดไว้กลับมาใช้งาน โดยที่คนกดไม่ได้สั่งและไม่เห็น
+    """
+    sql = admin_repo.ALL_QUERIES[name]
+    after_conflict = sql.split("DO UPDATE", 1)[-1] if "DO UPDATE" in sql else sql
+    assert "is_active" not in after_conflict, name
+
+
+def test_setting_a_password_reactivates_the_account_on_purpose() -> None:
+    """
+    บัญชีเป็น **ข้อยกเว้น** ของกฎ "บันทึกแล้วห้ามปลุกแถวที่ปิดไว้" ข้างบน
+
+    ตั้งรหัสใหม่ให้บัญชีที่ถูก ``--deactivate`` = คืนสิทธิ์ให้คนนั้น ซึ่งเป็นสิ่งที่
+    คนรันคำสั่งตั้งใจอยู่แล้ว (และ ``scripts/admin_user.py`` พิมพ์บอกว่าเปิดใช้ให้)
+    ถ้าไม่ปลุก คนตั้งระบบจะตั้งรหัสสำเร็จแต่ล็อกอินไม่ได้ โดยไม่มีอะไรอธิบาย
+
+    ที่ยอมได้เพราะคำสั่งนี้รันบนเครื่องเท่านั้น — ทาง ``/toggle`` ของหน้าเว็บแตะ
+    ตาราง ``admin_accounts`` ไม่ได้เลย (ดูเทส allowlist ข้างล่าง)
+    """
+    after_conflict = admin_repo.ALL_QUERIES["SQL_ADMIN_ACCOUNT_UPSERT"].split(
+        "DO UPDATE", 1
+    )[-1]
+
+    assert "is_active = TRUE" in after_conflict
+
+
+def test_no_query_ever_selects_a_password_hash_for_display() -> None:
+    """
+    ``password_hash`` ออกจาก DB ได้ที่เดียว: query ที่ล็อกอินใช้ตรวจรหัส
+
+    ถ้ามันไปโผล่ในตัวที่ทำรายการบัญชี (``--list``) หรือใน ``/state`` แปลว่า hash
+    ของทุกคนเดินทางไปถึงเบราว์เซอร์แล้ว — ที่เดียวที่รับได้คือใน process นี้
+    """
+    allowed = {"SQL_ADMIN_ACCOUNT_BY_USERNAME", "SQL_ADMIN_ACCOUNT_UPSERT"}
+    for name, sql in admin_repo.ALL_QUERIES.items():
+        if name in allowed:
+            continue
+        assert "password_hash" not in sql, name
+
+
+def test_chat_log_queries_never_select_the_user_hash() -> None:
+    """
+    หน้านี้มีไว้อ่าน "คำถามแบบไหนที่ตอบไม่ได้" ไม่ใช่ไล่ดูว่าใครถามอะไร
+
+    ``user_id`` เป็น hash แล้วก็จริง แต่ hash เดียวกันตามคนได้ข้ามวัน — ส่งออก
+    ไปหน้าเว็บแล้วมันจะกลายเป็นเครื่องมือสอดส่องทันที
+    """
+    for name in ("SQL_ADMIN_CHAT_LOGS", "SQL_ADMIN_CHAT_LOGS_UNANSWERED"):
+        assert "user_id" not in admin_repo.ALL_QUERIES[name], name
+
+
+def test_the_audit_list_shows_a_username_and_never_a_full_hash() -> None:
+    """
+    audit เก็บ ``admin_username`` แล้ว แต่แถวเก่า (ยุค LINE token) มีแต่
+    ``admin_hash`` → ต้องอ่านได้ทั้งสองยุคด้วย ``coalesce`` ตัวเดียว
+
+    และ hash ตัวเต็มห้ามออกจาก DB: ทุกที่ที่พูดถึง ``admin_hash`` ต้องอยู่ใน
+    วงเล็บของ ``left(...)`` เท่านั้น
+    """
+    sql = admin_repo.ALL_QUERIES["SQL_ADMIN_AUDIT_RECENT"]
+
+    assert "coalesce(admin_username, left(admin_hash, 12))" in sql
+    assert sql.count("admin_hash") == 1
+
+
+# ── ทะเบียนตาราง ────────────────────────────────────────────────────────────
+
+
+def test_table_registries_cover_the_same_tables() -> None:
+    """
+    สามทะเบียนต้องมีคีย์ตรงกันเป๊ะ — ขาดตัวใดตัวหนึ่งแล้วปุ่มเปิด/ปิดของตาราง
+    นั้นจะพังด้วย ``KeyError`` (500) ตอนมีคนกด ไม่ใช่ตอนรันเทส
+    """
+    assert set(admin_repo.TABLE_KEYS) == set(admin_repo.TABLE_ROW_SQL)
+    assert set(admin_repo.TABLE_KEYS) == set(admin_repo.TABLE_TOGGLE_SQL)
+
+
+def test_admin_accounts_is_not_editable_from_the_web_page() -> None:
+    """
+    ``TABLE_KEYS`` คือ allowlist ของ ``/toggle`` — ถ้ามี ``admin_accounts`` อยู่
+    ด้วย คนที่ล็อกอินได้จะปิดบัญชีคนอื่น (หรือปลุกบัญชีที่ถูกปิด) จากหน้าเว็บได้
+    การเปิด/ปิดบัญชีต้องอยู่ที่ ``scripts/admin_user.py`` บนเครื่องเท่านั้น
+    """
+    assert "admin_accounts" not in admin_repo.TABLE_KEYS
+
+
+@pytest.mark.parametrize("table", sorted(admin_repo.TABLE_KEYS))
+def test_toggle_sql_takes_exactly_the_key_columns(table: str) -> None:
+    """
+    ``%s`` ของ toggle = is_active + updated_by + กุญแจทุกช่อง
+
+    ถ้าจำนวนไม่ตรง หมายถึง ``WHERE`` ขาดคอลัมน์ = ปิดหลายแถวในคลิกเดียว
+    """
+    sql = admin_repo.TABLE_TOGGLE_SQL[table]
+    assert sql.count("%s") == 2 + len(admin_repo.TABLE_KEYS[table]), table
+    for column in admin_repo.TABLE_KEYS[table]:
+        assert f"{column} = %s" in sql, (table, column)
+
+
+def test_row_sql_selects_is_active_for_every_table() -> None:
+    """หน้าเว็บต้องรู้ว่าแถวนั้นเปิดหรือปิด เพื่อขึ้นปุ่มให้ถูกด้าน"""
+    for table, sql in admin_repo.TABLE_ROW_SQL.items():
+        assert "is_active" in sql, table
+
+
+def test_the_accounts_migration_has_no_default_account() -> None:
+    """
+    008 ต้องไม่ ``INSERT`` บัญชีตั้งต้น — บัญชีที่มาพร้อม schema คือรหัสที่ใคร
+    อ่าน repo ก็รู้ และคนตั้งระบบมักไม่รู้ว่าต้องไปเปลี่ยน (fail closed คือ
+    ไม่มีบัญชีเลยจนกว่าจะรัน ``scripts/admin_user.py`` เอง)
+    """
+    files = sorted(MIGRATIONS_DIR.glob("008_*.sql"))
+    assert files, "ไม่เจอ migration 008 — ตาราง admin_accounts มาจากไหน"
+    sql = files[0].read_text(encoding="utf-8")
+
+    assert "admin_accounts" in sql
+    assert "INSERT INTO admin_accounts" not in sql

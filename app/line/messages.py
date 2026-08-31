@@ -10,6 +10,7 @@
 * text message ยาวสุด **5,000 ตัวอักษร**
 * Quick Reply สูงสุด **13 ปุ่ม** และ **แสดงผลได้แค่ iOS/Android ไม่ขึ้นบน Desktop**
 * label ของ action ยาวสุด 20 ตัวอักษร, postback data ยาวสุด 300 ตัวอักษร
+* Flex Message (ข้อจำกัดของมันแยกอยู่ที่ :mod:`app.line.flex`)
 """
 
 from __future__ import annotations
@@ -138,7 +139,68 @@ MAIN_MENU_ACTIONS = [
     postback_action("เอกสาร/คำร้อง", "action=documents"),
     postback_action("ติดต่ออาจารย์", "action=instructors"),
     postback_action("ทุน/กู้ยืม", "action=loan"),
+    # แบบประเมินระบบ (งานวิจัย/ธีสิส) — ต้องอยู่ในเมนูหลัก เพราะทั้งอาจารย์
+    # ผู้เชี่ยวชาญและนักศึกษาต้องเข้าถึงได้เองโดยไม่ต้องให้ใครส่งลิงก์ให้
+    # 7 ปุ่มยังห่างเพดาน 13 ของ LINE (ที่เหลือเผื่อปุ่มพิเศษ เช่น LIFF/ปรึกษา AI)
+    postback_action("แบบประเมิน", "action=survey"),
 ]
+
+# ── แบบประเมินระบบ (งานวิจัย) ────────────────────────────────────────────────
+# เก็บ URL ไว้ที่เดียว: ลิงก์ฟอร์มยาวและก๊อปผิดง่าย ถ้ากระจายหลายที่แล้ว
+# เปลี่ยนฟอร์มทีหลังจะเหลือลิงก์เก่าค้างอยู่จุดใดจุดหนึ่งแน่นอน
+#
+# ตัด ``?usp=header`` / ``?usp=publish-editor`` ที่ติดมาจากหน้าแก้ฟอร์มออกแล้ว
+# — พารามิเตอร์นั้นไม่จำเป็นสำหรับคนตอบแบบประเมิน
+
+SURVEY_EXPERT_URL = (
+    "https://docs.google.com/forms/d/e/"
+    "1FAIpQLSd8bpokRe6f0Tl9RLFddC1zYRsRWGyu1fknhIYdG_J4PQgH2A/viewform"
+)
+SURVEY_STUDENT_URL = (
+    "https://docs.google.com/forms/d/e/"
+    "1FAIpQLSea1Tcb0p6LI6QCr01ACnjDaOSEPC2tjth1NyH-tagSp2Heig/viewform"
+)
+
+SURVEY_EXPERT_TITLE = (
+    "แบบประเมินคุณภาพระบบแชทบอทให้คำปรึกษาด้านการเรียนด้วย AI สำหรับผู้เชี่ยวชาญ"
+)
+SURVEY_STUDENT_TITLE = (
+    "แบบประเมินความพึงพอใจและการยอมรับเทคโนโลยี (TAM) ของแชทบอท AI "
+    "ให้คำปรึกษาด้านการเรียน สำหรับนักศึกษา"
+)
+
+
+def survey_message() -> dict:
+    """
+    แบบประเมินระบบ 2 ใบ — ผู้เชี่ยวชาญ / นักศึกษา
+
+    ใส่ **ทั้งชื่อเต็มและ URL ไว้ในตัวข้อความ** ไม่พึ่งแค่ปุ่ม เพราะ Quick Reply
+    ไม่ขึ้นบน LINE เดสก์ท็อป (และหายไปเมื่อผู้ใช้พิมพ์ข้อความอื่นต่อ) —
+    อาจารย์ที่เปิดบนคอมต้องก๊อปลิงก์ไปเองได้
+
+    >>> SURVEY_EXPERT_URL in survey_message()['text']
+    True
+    >>> [i['action']['type'] for i in survey_message()['quickReply']['items']][:2]
+    ['uri', 'uri']
+    """
+    return text_message(
+        "แบบประเมินระบบ (สำหรับงานวิจัย)\n\n"
+        "ขอความกรุณาช่วยประเมินระบบนี้ครับ เลือกใบที่ตรงกับท่าน\n\n"
+        "1) สำหรับอาจารย์/ผู้เชี่ยวชาญ\n"
+        f"{SURVEY_EXPERT_TITLE}\n"
+        f"{SURVEY_EXPERT_URL}\n\n"
+        "2) สำหรับนักศึกษา\n"
+        f"{SURVEY_STUDENT_TITLE}\n"
+        f"{SURVEY_STUDENT_URL}\n\n"
+        "กดปุ่มด้านล่าง หรือก๊อปลิงก์ไปเปิดในเบราว์เซอร์ได้เลยครับ",
+        quick_reply(
+            [
+                uri_action("สำหรับผู้เชี่ยวชาญ", SURVEY_EXPERT_URL),
+                uri_action("สำหรับนักศึกษา", SURVEY_STUDENT_URL),
+                *MAIN_MENU_ACTIONS,
+            ]
+        ),
+    )
 
 # ── โหมดปรึกษา AI ───────────────────────────────────────────────────────────
 # LLM ตอบเฉพาะเมื่อ user "เข้าโหมด" แล้ว (กันเสีย token ฟรีกับทุก search miss)

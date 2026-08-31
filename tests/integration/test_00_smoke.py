@@ -43,13 +43,17 @@ EXPECTED_SEED_ROWS = {
 # ของ 643170151 นำเข้าจริง 32 แถว (ดู db/seed/003_curriculum_rules.sql)
 # ส่วน ``prerequisites`` ยังว่างอยู่ เพราะระบบทะเบียนไม่เผยแพร่วิชาบังคับก่อน
 # ต้องกรอกจากเล่ม มคอ.2 ซึ่งยังไม่มี — planner รู้ตัวและบอกผู้ใช้ตรง ๆ
+#
+# ``user_completed_courses`` **ออกจากลิสต์นี้แล้ว** ตั้งแต่ 23 ส.ค. 2026:
+# หน้า LIFF ติ๊กวิชา (``POST /api/liff/completed_courses``) ขึ้นจริงแล้ว
+# และมีผู้ใช้จริงบันทึกวิชาที่ผ่าน — ตารางนี้รับ traffic จริงเหมือน
+# ``chat_logs`` จึงย้ายไปตรวจแค่ "ไม่มีแถวทดสอบค้าง" ข้างล่างแทน
 EXPECTED_EMPTY = (
     "prerequisites",
     "faqs",
     "rag_chunks",
     "scrape_runs",
     "liff_sessions",
-    "user_completed_courses",
 )
 
 # ตารางปฏิบัติการที่รับ traffic จริงได้ทันทีที่บอททำงาน (มี user เทสต์จริง
@@ -58,6 +62,9 @@ EXPECTED_EMPTY = (
 OPERATIONAL_LEFTOVER_CHECKS = {
     "app_users": "line_user_hash LIKE 'itest-%'",
     "chat_logs": (
+        "user_id IN (SELECT id FROM app_users WHERE line_user_hash LIKE 'itest-%')"
+    ),
+    "user_completed_courses": (
         "user_id IN (SELECT id FROM app_users WHERE line_user_hash LIKE 'itest-%')"
     ),
 }

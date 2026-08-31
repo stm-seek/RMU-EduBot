@@ -14,10 +14,16 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
+import pytest
+
 from app import router as bot_router
+from app.config import REPO_ROOT
 from app.line import messages as msg
 
-from .helpers import FakeDatabase, assert_line_limits
+from .helpers import FakeDatabase, assert_line_limits, make_settings
 
 # ── ข้อมูลตัวอย่างที่สะท้อนของจริงใน knowledge base ──────────────────────────
 
@@ -99,7 +105,9 @@ def documents_db() -> FakeDatabase:
 def instructors_db() -> FakeDatabase:
     return FakeDatabase(
         {
-            "GROUP BY group_name": GROUP_ROWS,
+            # ต้องมี ``a.`` ตามที่ SQL ใช้จริง — query นี้ JOIN instructors เพื่อ
+            # กรอง ``is_active`` (006_admin.sql) แล้วจึงต้อง alias ทุกคอลัมน์
+            "GROUP BY a.group_name": GROUP_ROWS,
             "JOIN instructor_affiliations": INSTRUCTOR_ROWS,
             "with_email": CONTACT_COVERAGE,
         }
@@ -279,14 +287,122 @@ async def test_document_categories_offer_buttons_with_a_way_back() -> None:
     assert "action=menu" in data
 
 
-async def test_documents_list_includes_titles_urls_and_notes() -> None:
+def _flex_parts(message: dict) -> tuple[list[str], list[str]]:
+    """
+    เก็บ ``ข้อความ`` และ ``uri`` จากทุกกล่องในฟองของ flex message
+
+    คำตอบเอกสารย้ายจาก ``text`` เดียวมาเป็นแถวในฟอง ข้อมูลที่เคยอยู่รวมกัน
+    จึงกระจายอยู่ตามกล่อง (``action`` อยู่บนกล่องแถว — แตะเปิดทั้งแถว)
+    """
+    texts: list[str] = []
+    urls: list[str] = []
+
+    def walk(node: dict) -> None:
+        if node.get("text"):
+            texts.append(node["text"])
+        if node.get("type") in ("button", "box") and node.get("action"):
+            urls.append(node["action"]["uri"])
+        for child in node.get("contents", []) or []:
+            walk(child)
+        for part in ("header", "hero", "body", "footer"):
+            if node.get(part):
+                walk(node[part])
+
+    walk(message["contents"])
+    return texts, urls
+
+
+async def test_documents_list_is_one_bubble_with_a_row_per_document() -> None:
+    """
+    คำตอบรายหมวดเป็น **ฟองเดียว แถวละฉบับ** — แต่ละฉบับต้องมีแถวที่แตะ
+    เปิดลิงก์ของตัวเอง ถ้าแถวน้อยกว่าจำนวนฉบับ = มีเอกสารเข้าไม่ถึง
+    (บั๊กเดิมที่เจอกับหมวด ``loan``)
+
+    หมายเหตุ: ``note`` ของคลังไม่แสดงใน design นี้ (ผู้ใช้เลือกแบบแถว) —
+    ยังอยู่ใน DB + ``citations`` และรอใช้ตอนคำตอบจากการค้นหาเป็นการ์ด
+    """
     result = await bot_router._documents_answer(documents_db(), "registration")
+    message = result.messages[0]
 
     assert_line_limits(result.messages)
-    text = result.messages[0]["text"]
-    assert "เอกสารขอเพิ่มรายวิชาเรียน" in text
-    assert "https://sci.rmu.ac.th/wp-content/uploads/2024/08/add.pdf" in text
-    assert "ต้องให้อาจารย์ที่ปรึกษาเซ็นก่อน" in text
+    assert message["type"] == "flex"
+    assert message["altText"], "flex ต้องมี altText (ข้อความในรายการแชท)"
+
+    bubble = message["contents"]
+    assert bubble["type"] == "bubble"
+    assert bubble["size"] == "mega"
+
+    rows = [
+        content for content in bubble["body"]["contents"]
+        if content.get("type") == "box" and content.get("action")
+    ]
+    assert len(rows) == len(DOCUMENT_ROWS)
+
+    texts, urls = _flex_parts(message)
+    assert "เอกสารขอเพิ่มรายวิชาเรียน" in "\n".join(texts)
+    assert "https://sci.rmu.ac.th/wp-content/uploads/2024/08/add.pdf" in urls
+
+
+async def test_documents_flex_names_the_category_in_alt_text_and_header() -> None:
+    """
+    หัวฟองและ ``altText`` ต้องบอกทั้งหมวดและจำนวน — ผู้ใช้เห็นในรายการ
+    แชท (และก่อนเปิดดู) แล้วรู้ทันทีว่าได้คำตอบอะไร
+    """
+    result = await bot_router._documents_answer(documents_db(), "registration")
+    message = result.messages[0]
+
+    assert "ลงทะเบียน" in message["altText"], "ต้องแปลรหัสหมวดเป็นภาษาไทย"
+    assert f"{len(DOCUMENT_ROWS)} ฉบับ" in message["altText"]
+    header_text = message["contents"]["header"]["contents"][0]["text"]
+    assert "ลงทะเบียน" in header_text
+
+
+async def test_documents_flex_keeps_the_way_back() -> None:
+    """
+    การ์ดไม่พาหนีจากเมนู — ปุ่ม "หมวดอื่น" (ทางกลับไปหน้ารายการหมวด)
+    ต้องตามมาด้วย และปุ่มเมนูหลักยังครบชุด
+    """
+    result = await bot_router._documents_answer(documents_db(), "registration")
+    data = [
+        item["action"]["data"]
+        for item in result.messages[0]["quickReply"]["items"]
+    ]
+
+    assert data.count("action=documents") >= 1, "ต้องมีทางกลับไปหน้าหมวด"
+    assert all(
+        action["data"] in data for action in msg.MAIN_MENU_ACTIONS
+    ), "ปุ่มเมนูหลักต้องยังอยู่ครบ"
+
+
+async def test_documents_over_the_row_limit_are_announced_not_dropped() -> None:
+    """
+    เกินเพดานแถวต่อหนึ่งคำตอบ → แสดงเท่าที่ได้ แล้วมีบรรทัดบอกจำนวนทั้งหมด
+    ชี้ให้พิมพ์คำค้น — ไม่ตัดชื่อทิ้งเงียบ ๆ
+    """
+    from app.line import flex as bot_flex
+
+    rows = [
+        {
+            "title": f"แบบฟอร์ม {index}",
+            "url": f"https://example.com/form{index}.pdf",
+            "doc_type": "pdf",
+            "note": None,
+        }
+        for index in range(bot_flex.MAX_ROWS + 4)
+    ]
+    db = FakeDatabase({"WHERE category = %s": rows})
+
+    result = await bot_router._documents_answer(db, "loan")
+    contents = result.messages[0]["contents"]["body"]["contents"]
+
+    action_rows = [c for c in contents if c.get("type") == "box" and c.get("action")]
+    assert len(action_rows) == bot_flex.MAX_ROWS
+
+    notice = contents[-1]
+    assert notice["type"] == "text"
+    assert f"แสดง {bot_flex.MAX_ROWS} จาก {bot_flex.MAX_ROWS + 4} รายการ" in notice["text"]
+    # ``citations`` ยังต้องครบทุกฉบับ แม้แถวจะแสดงเท่าเพดาน
+    assert len(result.citations) == bot_flex.MAX_ROWS + 4
 
 
 async def test_documents_list_records_citations() -> None:
@@ -651,6 +767,63 @@ async def test_menu_button_reuses_the_welcome_message_but_not_its_label() -> Non
     assert tapped.messages == (await bot_router.handle_follow()).messages
 
 
+async def test_welcome_offers_the_liff_button_when_configured() -> None:
+    """
+    ทางเข้าหน้า LIFF ต้องอยู่บนเมนูต้อนรับ — Rich Menu ทั้ง 6 ช่องเป็น
+    postback ล้วน เปิดหน้า LIFF ไม่ได้ (LINE ต้องใช้ ``uri`` action)
+    ถ้าไม่มีปุ่มนี้ ผู้ใช้ใหม่จะไปถึงหน้าติ๊กวิชาได้ก็ต่อเมื่อเผอิญถามเรื่อง
+    ความก้าวหน้าก่อน
+    """
+    settings = make_settings(liff_id="1234-abcd")
+    result = await bot_router.handle_follow(settings=settings)
+
+    assert_line_limits(result.messages)
+    items = result.messages[0]["quickReply"]["items"]
+    first = items[0]["action"]
+
+    # ต้องเป็นปุ่มแรก ไม่ให้ถูกดันตกท้ายแถวจนต้องเลื่อนหา
+    assert first["type"] == "uri"
+    assert first["label"] == bot_router.LIFF_MENU_LABEL
+    assert first["uri"] == "https://liff.line.me/1234-abcd"
+    assert len(first["label"]) <= 20, "label ของ quick reply ยาวได้ 20 ตัวอักษร"
+
+    # ข้อความต้องบอกว่าปุ่มนี้ทำอะไร ไม่ใช่โผล่มาเฉย ๆ
+    assert bot_router.LIFF_MENU_LABEL in result.messages[0]["text"]
+
+
+async def test_welcome_hides_the_liff_button_and_its_line_together() -> None:
+    """
+    ยังไม่ตั้ง ``LIFF_ID`` → ต้องไม่มีทั้งปุ่มและบรรทัดที่ชวนกดปุ่ม
+
+    ครึ่งใดครึ่งหนึ่งหลุดมาแย่กว่าไม่มีเลย: ถ้าข้อความชวนกดแต่ไม่มีปุ่ม
+    ผู้ใช้จะหาปุ่มที่ไม่มีอยู่
+    """
+    result = await bot_router.handle_follow(settings=make_settings(liff_id=""))
+
+    text = result.messages[0]["text"]
+    actions = [item["action"] for item in result.messages[0]["quickReply"]["items"]]
+
+    assert all(action["type"] == "postback" for action in actions)
+    assert bot_router.LIFF_MENU_LABEL not in text
+    assert result.messages == (await bot_router.handle_follow()).messages
+
+
+async def test_menu_postback_carries_settings_to_the_liff_button() -> None:
+    """
+    กด "เมนูหลัก" ต้องได้ปุ่ม LIFF ด้วย — เส้นทางนี้ผ่าน ``handle_postback``
+    ซึ่งเคยไม่ส่ง ``settings`` ต่อ ทำให้ปุ่มโผล่แค่ตอนเพิ่มเพื่อนครั้งแรก
+    """
+    result = await bot_router.handle_postback(
+        "action=menu", None, settings=make_settings(liff_id="1234-abcd")
+    )
+
+    labels = [
+        item["action"]["label"] for item in result.messages[0]["quickReply"]["items"]
+    ]
+    assert bot_router.LIFF_MENU_LABEL in labels
+    assert result.intent_key == "menu"
+
+
 # ── RouteResult ─────────────────────────────────────────────────────────────
 
 
@@ -870,3 +1043,302 @@ async def test_documents_answer_asks_for_more_than_the_repository_default() -> N
     assert bot_router.DOCUMENTS_PER_CATEGORY > max(
         row["total"] for row in CATEGORY_ROWS
     ), "เพดานต้องมากกว่าหมวดที่ใหญ่สุด ไม่งั้นบั๊กเดิมกลับมา"
+
+
+# ── ชั้นที่ 2: FAQ ที่คนเขียนคำตอบไว้ ────────────────────────────────────────
+
+FAQ_ROWS = [
+    {
+        "intent_key": "leave_of_absence",
+        "question": "อยากพักการเรียนต้องทำยังไง",
+        "answer": (
+            "ยื่นคำร้องขอลาพักการศึกษาที่งานทะเบียน\n"
+            "พร้อมใบเสร็จรักษาสภาพนักศึกษา"
+        ),
+        "category": "registration",
+        "quick_replies": None,
+        "source_url": "https://regis.rmu.ac.th/leave.pdf",
+        "score": 0.95,
+    }
+]
+
+
+def faq_db(faqs=None, documents=None, instructors=None) -> FakeDatabase:
+    """
+    fake ที่แยกสาม query ค้นหาออกจากกัน — ทั้งสามมี ``word_similarity`` เหมือนกัน
+
+    ``FROM faqs f`` ต้องอยู่**ก่อน**สองตัวที่เหลือใน dict เพราะ
+    :class:`FakeDatabase` แมตช์ด้วย substring ตามลำดับที่ใส่
+    """
+    return FakeDatabase(
+        {
+            "FROM faqs f": faqs or [],
+            "FROM instructors i": instructors or [],
+            "FROM documents d": documents or [],
+        }
+    )
+
+
+async def test_faq_answers_the_exact_question() -> None:
+    result = await bot_router.handle_text(
+        "อยากพักการเรียนต้องทำยังไง", faq_db(FAQ_ROWS)
+    )
+
+    assert_line_limits(result.messages)
+    assert result.answered_by == "faq"
+    assert result.intent_key == "faq:leave_of_absence"
+    # ``confidence`` ต้องเป็นคะแนนจริงจาก pg_trgm ไม่ใช่ 1.0 แปะไว้เฉย ๆ
+    assert result.confidence == 0.95
+    text = result.messages[0]["text"]
+    assert "ยื่นคำร้องขอลาพักการศึกษาที่งานทะเบียน" in text
+    assert "https://regis.rmu.ac.th/leave.pdf" in text, "ต้องบอกแหล่งอ้างอิง"
+    assert result.citations[0]["url"] == "https://regis.rmu.ac.th/leave.pdf"
+
+
+async def test_faq_matches_by_variants_not_only_the_question() -> None:
+    """
+    คำพ้องที่ admin ใส่ไว้ต้องแมตช์ได้ด้วย — ของจริงเทียบใน SQL
+    (``unnest(f.variants)``) เทสนี้จึงยืนยันว่าคำที่ *ไม่* อยู่ใน ``question``
+    เลยก็ยังถูกส่งไปให้ query ตัวนั้นและคำตอบเดินมาถึงผู้ใช้
+    """
+    db = faq_db(FAQ_ROWS)
+
+    result = await bot_router.handle_text("ดรอปเรียน", db)
+
+    assert result.answered_by == "faq"
+    assert db.params_for("FROM faqs f")[0] == "ดรอปเรียน"
+
+
+async def test_faq_below_the_threshold_does_not_answer() -> None:
+    """
+    **เทสที่สำคัญที่สุดของชั้นนี้**: เกณฑ์ต้องเป็นตัวตัดสิน ไม่ใช่ตอบใบที่ใกล้สุด
+
+    ของจริงการกรองอยู่ใน SQL (``WHERE score >= %s``) → เทสยืนยันสองอย่าง:
+    ค่าเกณฑ์ที่ส่งลงไปมาจาก ``settings.faq_match_threshold`` และเมื่อ query
+    คืน 0 แถว router ต้องไหลไปชั้นถัดไป ไม่ใช่ตอบ FAQ เปล่า ๆ
+    """
+    db = faq_db(faqs=[], documents=SEARCH_DOCUMENT_ROWS)
+
+    result = await bot_router.handle_text(
+        "วันนี้กินอะไรดี", db, settings=make_settings(faq_match_threshold=0.9)
+    )
+
+    assert result.answered_by != "faq"
+    assert db.params_for("FROM faqs f")[4] == 0.9
+
+
+async def test_faq_threshold_defaults_when_settings_is_missing() -> None:
+    """เทสเดิมเรียก ``handle_text(text, db)`` โดยไม่ส่ง settings — ต้องไม่พัง"""
+    db = faq_db(FAQ_ROWS)
+
+    result = await bot_router.handle_text("อยากพักการเรียน", db)
+
+    assert result.answered_by == "faq"
+    assert db.params_for("FROM faqs f")[4] == bot_router.repo.FAQ_MIN_SCORE
+
+
+async def test_faq_wins_over_document_search() -> None:
+    """
+    **ลำดับสำคัญ**: คำตอบที่คนเขียนเองต้องชนะผลค้นอัตโนมัติ
+
+    คนเขียน FAQ ขึ้นมาเพราะรายการลิงก์เอกสารยังตอบไม่พอ ถ้า search ตอบก่อน
+    หน้า /admin ก็กรอกไปเปล่า ๆ (คำถามที่มี FAQ มักมีเอกสารชื่อคล้ายด้วย)
+    """
+    db = faq_db(
+        faqs=FAQ_ROWS,
+        documents=SEARCH_DOCUMENT_ROWS,
+        instructors=SEARCH_INSTRUCTOR_ROWS,
+    )
+
+    result = await bot_router.handle_text("อยากพักการเรียนต้องทำยังไง", db)
+
+    assert result.answered_by == "faq"
+    assert [sql for sql, _ in db.calls if "FROM documents d" in sql] == [], (
+        "เจอ FAQ แล้วไม่ต้องยิง query ค้นเอกสาร/อาจารย์อีก"
+    )
+
+
+async def test_course_code_takes_priority_over_faq() -> None:
+    """รหัสวิชา 7 หลักคำนวณได้แน่นอน — ห้ามให้ FAQ แย่งตอบ"""
+    db = faq_db(FAQ_ROWS)
+
+    await bot_router.handle_text("1234567", db)
+
+    assert [sql for sql, _ in db.calls if "FROM faqs f" in sql] == []
+
+
+async def test_faq_quick_replies_become_buttons() -> None:
+    """``quick_replies`` (JSONB) ที่กรอกไว้ต้องกลายเป็นปุ่มจริง + ปุ่มกลับเมนู"""
+    rows = [dict(FAQ_ROWS[0], quick_replies=[{"label": "ค่าธรรมเนียม", "text": "ค่าเทอม"}])]
+
+    result = await bot_router.handle_text("อยากพักการเรียนต้องทำยังไง", faq_db(rows))
+
+    assert_line_limits(result.messages)
+    labels = [
+        item["action"]["label"] for item in result.messages[0]["quickReply"]["items"]
+    ]
+    assert labels == ["ค่าธรรมเนียม", "เมนูหลัก"]
+
+
+async def test_faq_with_broken_quick_replies_still_answers() -> None:
+    """
+    JSON เสียรูปต้องไม่ทำให้คำตอบหาย — ถอยไปใช้เมนูหลัก ไม่ใช่ 500
+
+    (หน้า admin แก้คอลัมน์นี้ไม่ได้ แต่กรอกด้วยมือผ่าน SQL ได้)
+    """
+    rows = [dict(FAQ_ROWS[0], quick_replies="{ไม่ใช่ JSON")]
+
+    result = await bot_router.handle_text("อยากพักการเรียนต้องทำยังไง", faq_db(rows))
+
+    assert_line_limits(result.messages)
+    assert result.answered_by == "faq"
+    assert "quickReply" in result.messages[0]
+
+
+async def test_faq_is_skipped_without_a_database() -> None:
+    result = await bot_router.handle_text("อยากพักการเรียนต้องทำยังไง", None)
+
+    assert result.answered_by != "faq"
+
+
+# ── แบบประเมินระบบ (งานวิจัย) ────────────────────────────────────────────────
+
+
+def allowed_answered_by() -> set[str]:
+    """
+    ค่าที่ ``chat_logs.answered_by`` ยอมรับ — อ่านจาก CHECK constraint ตัวจริง
+
+    อ่านจากไฟล์ migration ไม่ใช่ก๊อปลิสต์มาไว้ในเทส เพราะจุดที่พังคือ "โค้ด
+    ผลิตค่าที่ constraint ไม่รู้จัก" → ลิสต์ในเทสต้องเป็นตัวเดียวกับใน DB
+    """
+    sql = Path(
+        REPO_ROOT, "db", "migrations", "007_answered_by_faq.sql"
+    ).read_text(encoding="utf-8")
+    body = sql.split("answered_by IN (", 1)[1].split("));", 1)[0]
+    return set(re.findall(r"'(\w+)'", body))
+
+
+async def test_survey_button_gives_both_forms() -> None:
+    """
+    ปุ่ม "แบบประเมิน" คือ **ทางเข้าเดียว** ที่ผู้เชี่ยวชาญ/นักศึกษาจะไปถึง
+    แบบประเมินได้เอง (ก่อนหน้านี้ต้องส่งลิงก์ให้เป็นราย ๆ)
+
+    ต้องมี URL ทั้งสองใบอยู่ **ในตัวข้อความ** ไม่ใช่แค่ในปุ่ม เพราะ Quick Reply
+    ไม่ขึ้นบน LINE เดสก์ท็อป — อาจารย์ที่เปิดบนคอมต้องก๊อปลิงก์ได้
+    """
+    result = await bot_router.handle_postback("action=survey", None)
+
+    assert_line_limits(result.messages)
+    text = result.messages[0]["text"]
+    assert msg.SURVEY_EXPERT_URL in text
+    assert msg.SURVEY_STUDENT_URL in text
+    assert msg.SURVEY_EXPERT_TITLE in text
+    assert msg.SURVEY_STUDENT_TITLE in text
+    assert result.intent_key == "survey"
+
+
+async def test_survey_needs_no_database() -> None:
+    """ลิงก์แบบประเมินเป็นค่าคงที่ในโค้ด — DB ล่มก็ต้องยังตอบได้ ห้าม no_data"""
+    result = await bot_router.handle_postback("action=survey", None)
+
+    assert result.answered_by == "quick_reply"
+    assert result.answered_by not in ("no_data", "db_error", "fallback")
+
+
+async def test_typing_survey_keywords_gives_the_same_answer() -> None:
+    """
+    อาจารย์บางท่านพิมพ์แทนการกดปุ่ม (และปุ่มไม่ขึ้นบนเดสก์ท็อป) →
+    คำที่พิมพ์ต้องได้ข้อความเดียวกันเป๊ะกับที่กดปุ่ม
+    """
+    by_button = await bot_router.handle_postback("action=survey", None)
+
+    for word in ["แบบประเมิน", "ประเมิน", "แบบสอบถาม", "ขอแบบประเมินระบบครับ"]:
+        typed = await bot_router.handle_text(word, None)
+        assert typed.messages == by_button.messages, word
+        assert typed.intent_key == "survey", word
+
+
+async def test_survey_keywords_beat_faq_and_search() -> None:
+    """
+    คำว่า "แบบประเมิน" ไปตรงกับชื่อเอกสาร/FAQ ในคลังได้ง่าย (เช่นแบบประเมิน
+    การฝึกงาน) ถ้าปล่อยให้ชั้นค้นตอบก่อน ผู้ประเมินจะได้ลิงก์ผิดใบ
+    """
+    db = faq_db(FAQ_ROWS, documents=DOCUMENT_ROWS)
+
+    result = await bot_router.handle_text("แบบประเมิน", db)
+
+    assert msg.SURVEY_EXPERT_URL in result.messages[0]["text"]
+    assert db.calls == [], "ต้องตอบก่อนแตะ DB เลย"
+
+
+async def test_survey_does_not_hijack_an_open_consult_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    คนที่อยู่ในโหมดปรึกษาแล้วพูดคำว่า "ประเมิน" (เช่น "ช่วยประเมินแผนการเรียน
+    ให้หน่อย") ต้องได้คำตอบจาก AI ไม่ใช่ถูกลิงก์แบบประเมินแย่งเทิร์นไป
+
+    นี่คือเหตุผลที่ :data:`app.router.SURVEY_PATTERN` ถูกวางไว้ **หลัง**
+    ``ai_chat.dispatch`` ไม่ใช่ต้นทางข้อความ
+    """
+    from app import ai_chat
+
+    asked: list[str] = []
+
+    async def fake_dispatch(settings, llm, db, user_hash, text, **kwargs):
+        asked.append(text)
+        return bot_router.RouteResult(
+            messages=[msg.text_message("คำตอบจาก AI")], answered_by="ai_chat"
+        )
+
+    monkeypatch.setattr(ai_chat, "dispatch", fake_dispatch)
+    result = await bot_router.handle_text("ช่วยประเมินแผนการเรียนให้หน่อย", None)
+
+    assert asked == ["ช่วยประเมินแผนการเรียนให้หน่อย"]
+    assert result.answered_by == "ai_chat"
+
+
+async def test_survey_answered_by_passes_the_check_constraint() -> None:
+    """
+    ``chat_logs.answered_by`` มี CHECK constraint — ค่าที่ไม่อยู่ในลิสต์ทำให้
+    **เขียน log ล้มทุกครั้งที่ปุ่มถูกกด** (คำตอบถึงผู้ใช้ แต่วัดผลไม่ได้)
+    รวมถึงป้ายชั่วคราว ``BUTTON_ANSWER`` ที่ไม่มีใครแทนให้ในเส้นทางข้อความ
+    """
+    allowed = allowed_answered_by()
+    assert bot_router.BUTTON_ANSWER not in allowed, "ป้ายชั่วคราวต้องไม่ใช่ค่าที่ log ได้"
+
+    results = [
+        await bot_router.handle_postback("action=survey", None),
+        await bot_router.handle_postback("action=survey&src=rich", None),
+        await bot_router.handle_text("แบบประเมิน", None),
+    ]
+    for result in results:
+        assert result.answered_by in allowed, result.answered_by
+
+
+async def test_survey_buttons_stay_within_line_limits() -> None:
+    """
+    ปุ่มแบบประเมิน 2 ปุ่ม + เมนูหลักต้องไม่ทะลุ 13 ปุ่มของ LINE และ label
+    ต้องไม่เกิน 20 ตัวอักษร — เกินแล้ว LINE reject **ทั้ง request**
+    ผู้ใช้จึงไม่ได้คำตอบเลย ไม่ใช่แค่ปุ่มหาย
+    """
+    result = await bot_router.handle_postback("action=survey", None)
+    items = result.messages[0]["quickReply"]["items"]
+
+    assert_line_limits(result.messages)
+    assert len(items) == 2 + len(msg.MAIN_MENU_ACTIONS)
+    assert len(items) <= msg.MAX_QUICK_REPLY_ITEMS
+    # สองปุ่มแรกต้องเป็นลิงก์ฟอร์ม ไม่ให้ถูกปุ่มเมนูดันตกท้ายแถวจนต้องเลื่อนหา
+    assert [item["action"]["type"] for item in items[:2]] == ["uri", "uri"]
+    assert [item["action"]["uri"] for item in items[:2]] == [
+        msg.SURVEY_EXPERT_URL,
+        msg.SURVEY_STUDENT_URL,
+    ]
+
+
+async def test_welcome_message_mentions_the_survey_button() -> None:
+    """ปุ่มที่ไม่มีใครบอกว่ามี = ไม่มีใครกด — ข้อความต้อนรับต้องพูดถึงด้วย"""
+    result = await bot_router.handle_follow()
+
+    assert "แบบประเมิน" in result.messages[0]["text"]
+    assert_line_limits(result.messages)

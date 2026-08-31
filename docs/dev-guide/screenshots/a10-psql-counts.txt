@@ -1,0 +1,17 @@
+           tbl           | count 
+-------------------------+-------
+ programs                |     2
+ courses                 |   145
+ program_courses         |   125
+ offerings               |   337
+ offering_slots          |   292
+ documents               |    33
+ instructors             |    28
+ instructor_affiliations |    33
+ curriculum_rules        |    32
+ categories              |    26
+ faqs                    |     1
+ rag_chunks              |     0
+ prerequisites           |     0
+(13 rows)
+

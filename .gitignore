@@ -57,3 +57,7 @@ RMU_LOGIN_FLOW_BREAKDOWN.md
 # snapshot ของหน้า "วิชาบังคับก่อน" มีชื่อ-รหัส นศ. และเกรดติดมาด้วย
 # (snapshot_curriculum_plan.txt ไม่มี จึง commit ได้ — ใช้เป็นที่มาของ seed 003)
 snapshot_prerequisites.txt
+
+# ไฟล์ชั่วคราวจากการเปิด tunnel / ทดลองในเบราว์เซอร์
+.tunnel_url
+_stub.js

@@ -18,6 +18,7 @@ import json
 import httpx
 
 from app.config import Settings
+from app.line import flex
 from app.line import messages as msg
 
 # ── ค่าคงที่สำหรับเทส (ห้ามใช้ค่าจริง) ────────────────────────────────────────
@@ -221,6 +222,9 @@ def assert_line_limits(messages: list[dict]) -> None:
             assert message["text"], "text message ว่างไม่ได้"
             assert len(message["text"]) <= msg.MAX_TEXT_LENGTH
 
+        if message["type"] == "flex":
+            _assert_flex_limits(message)
+
         quick = message.get("quickReply")
         if quick is None:
             continue
@@ -233,3 +237,40 @@ def assert_line_limits(messages: list[dict]) -> None:
             assert len(action["label"]) <= msg.MAX_LABEL_LENGTH
             if action["type"] == "postback":
                 assert len(action["data"]) <= msg.MAX_POSTBACK_DATA_LENGTH
+
+
+def _assert_flex_limits(message: dict) -> None:
+    """
+    ข้อจำกัดของ Flex Message ที่ถ้าผิด LINE จะ reject ทั้ง request
+
+    * ``altText`` ต้องมีและยาวไม่เกิน 400 ตัวอักษร
+    * ``action`` ในแถวเอกสาร — ``uri`` ยาวไม่เกิน 1,000 ตัวอักษร และต้องเป็น
+      ``https`` (แตะแล้วเปิดไม่ได้ = จุดประสงค์ของแถวเสียทั้งแถว)
+    """
+    alt_text = message.get("altText")
+    assert alt_text, "flex message ต้องมี altText (ข้อความในรายการแชท)"
+    assert len(alt_text) <= flex.MAX_ALT_TEXT_LENGTH
+
+    contents = message.get("contents") or {}
+    actions = _iter_actions(contents)
+    assert actions, "flex ของเอกสารต้องมีอย่างน้อย 1 ปุ่มเปิดลิงก์"
+    for action in actions:
+        assert action["type"] == "uri"
+        assert len(action["uri"]) <= flex.MAX_URI_LENGTH
+        assert action["uri"].startswith("https://"), (
+            f"ลิงก์เอกสารต้องเป็น https: {action['uri'][:60]}"
+        )
+
+
+def _iter_actions(node: dict) -> list[dict]:
+    """เดินโครงสร้างฟองเก็บทุก action — ทั้งปุ่ม (``button``) และกล่องที่มี
+    ``action`` ตั้งตรง ๆ (แถวเอกสารแตะเปิดทั้งแถว)"""
+    actions: list[dict] = []
+    if node.get("action") and node.get("type") in ("button", "icon", "image", "box"):
+        actions.append(node["action"])
+    for child in node.get("contents", []) or []:
+        actions.extend(_iter_actions(child))
+    for part in ("header", "hero", "body", "footer"):
+        if node.get(part):
+            actions.extend(_iter_actions(node[part]))
+    return actions

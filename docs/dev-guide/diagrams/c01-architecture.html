@@ -1,0 +1,47 @@
+<!doctype html><html lang="th"><head><meta charset="utf-8">
+<style>body{margin:0;padding:24px;background:#fff;font-family:"Sarabun","Tahoma",sans-serif}</style>
+</head><body>
+<pre class="mermaid">
+flowchart TB
+  U["นักศึกษา — แอป LINE บนมือถือ"]
+  subgraph IN[" ช่องทางเข้า "]
+    direction LR
+    RM["Rich Menu / Quick Reply<br/>(postback)"]
+    TX["พิมพ์ข้อความ<br/>(webhook)"]
+    LF["หน้า LIFF<br/>(เว็บในแอป)"]
+  end
+  TN["cloudflared tunnel — HTTPS"]
+  API["FastAPI · app/main.py<br/>1) ตรวจลายเซ็น X-Line-Signature<br/>2) ตอบ HTTP 200 ให้ LINE ทันที<br/>3) ทำงานต่อใน BackgroundTasks"]
+  RT{"Router · app/router.py<br/>ตัดสินว่าคำถามนี้ตอบด้วยชั้นไหน"}
+  subgraph LAY[" ลำดับการตอบ: ชั้นที่ถูกและแม่นทำงานก่อนเสมอ "]
+    direction LR
+    L1["ชั้นที่ 1 — ตอบจากฐานข้อมูล<br/>SQL + pg_trgm<br/>เร็ว ไม่มีค่าใช้จ่าย แม่น 100%"]
+    L2["ชั้นที่ 2 — FAQ ที่คนเขียนไว้<br/>word_similarity ถึงเกณฑ์<br/>ไม่เรียก LLM"]
+    L3["ชั้นที่ 3 — AI Chat / RAG<br/>เรียก LLM<br/>มีค่าใช้จ่าย + ช้ากว่า"]
+    FB["Fallback<br/>บอกตรง ๆ ว่ายังตอบไม่ได้<br/>ไม่เดาคำตอบ"]
+    L1 -->|"ไม่เข้าเงื่อนไข"| L2 -->|"ไม่ถึงเกณฑ์"| L3 -->|"ไม่มั่นใจ"| FB
+  end
+  DB[("Postgres 17<br/>pgvector + pg_trgm<br/>22 ตาราง")]
+  LOG["chat_logs — บันทึกทุกครั้ง<br/>พร้อมป้าย answered_by"]
+  OUT["ตอบกลับผู้ใช้ผ่าน reply token"]
+
+  U --> IN --> TN --> API --> RT --> LAY
+  L1 <--> DB
+  L2 <--> DB
+  L3 <--> DB
+  LAY --> OUT
+  LAY --> LOG
+  LOG --> DB
+
+  classDef free fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+  classDef paid fill:#fff3e0,stroke:#ef6c00,color:#e65100
+  classDef sys  fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+  classDef data fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+  class L1,L2 free
+  class L3,FB paid
+  class API,RT,TN sys
+  class DB,LOG data
+</pre>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:"base",flowchart:{htmlLabels:true,nodeSpacing:35,rankSpacing:45,curve:"basis"},themeVariables:{fontFamily:'Sarabun,Tahoma,sans-serif',fontSize:'15px'}});</script>
+</body></html>
