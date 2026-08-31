@@ -11,6 +11,9 @@
 #
 # migration ใน db/migrations/ จะรัน *อัตโนมัติครั้งแรกที่สร้าง volume*
 # ถ้าแก้ไฟล์ SQL แล้วอยากรันใหม่: docker compose down -v && docker compose up -d
+# ชื่อกลุ่มที่โชว์ในหน้า Containers ของ Docker Desktop
+# ไม่ตั้งไว้ compose จะใช้ชื่อโฟลเดอร์ (line-bot-jang) และรับแค่ a-z 0-9 - _
+name: rmu-edubot
 
 services:
   db:
