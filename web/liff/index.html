@@ -13,6 +13,11 @@
     * ไม่เก็บ token ลง localStorage — อยู่ในหน่วยความจำของหน้านี้เท่านั้น
     * ตัวเลขสรุปทั้งหมดมาจาก backend ไม่คำนวณซ้ำในหน้าเว็บ (สองฝั่งคิดเองแล้ว
       ไม่ตรงกันคือบั๊กที่ผู้ใช้เห็นก่อนเรา)
+
+  โครงหน้า: สรุป → เลือกเสรี → วิชาบังคับ (จัดตามเทอม) → วิชาเลือก (จัดตามหมวด)
+  วิชาเลือกใน DB มี std_year/std_semester เป็น NULL (ลงเทอมไหนก็ได้) จึงแยกสอง
+  ส่วนด้วย std_year > 0 — ถ้าเอาวิชาเลือกไปจัดตามเทอมเหมือนวิชาบังคับ หัวข้อ
+  จะกลายเป็นปี/ภาคเรียนที่ศูนย์ ซึ่งไม่มีอยู่จริงในหลักสูตร
 -->
 <style>
   :root { color-scheme: light dark; }
@@ -33,12 +38,19 @@
   .stat span { font-size: .74rem; color: #5b6472; }
   .bar { height: 8px; border-radius: 99px; background: #e6e9ee; margin-top: 10px; }
   .bar > i { display: block; height: 100%; border-radius: 99px; background: #06c755; }
+  .bar.sm { height: 5px; margin-top: 4px; }
+  .groups { margin-top: 14px; border-top: 1px solid #eef0f4; padding-top: 10px; }
+  .grow { margin-top: 8px; }
+  .gtop { display: flex; justify-content: space-between; gap: 8px; font-size: .78rem; }
+  .gtop b { font-variant-numeric: tabular-nums; color: #2c333d; }
+  .gtop span { color: #5b6472; }
   .warn {
     background: #fff8e1; border: 1px solid #f2d98a; color: #6b4e00;
     border-radius: 10px; padding: 10px 12px; font-size: .8rem; margin-bottom: 12px;
   }
   .err { background: #fdecea; border-color: #f3b7b1; color: #7d221a; }
   h2 { font-size: .9rem; margin: 0 0 8px; color: #2c333d; }
+  h2.section { margin: 18px 2px 8px; font-size: .82rem; color: #5b6472; }
   label {
     display: flex; gap: 10px; align-items: flex-start;
     padding: 9px 4px; border-top: 1px solid #eef0f4; cursor: pointer;
@@ -48,6 +60,19 @@
   .code { font-variant-numeric: tabular-nums; color: #5b6472; font-size: .78rem; }
   .name { font-size: .9rem; }
   .done .name { color: #6b7280; text-decoration: line-through; }
+  .hint { font-size: .78rem; color: #5b6472; margin: 0 0 10px; }
+  .numrow { display: flex; align-items: center; gap: 10px; }
+  .numrow input {
+    width: 92px; padding: 9px 10px; font-size: 1rem; text-align: right;
+    border: 1px solid #d3d8df; border-radius: 8px; background: #fff; color: inherit;
+  }
+  .numrow span { font-size: .82rem; color: #5b6472; }
+  #search {
+    width: 100%; padding: 11px 12px; font-size: .92rem;
+    border: 1px solid #d3d8df; border-radius: 10px; background: #fff; color: inherit;
+  }
+  details.card > summary { cursor: pointer; font-size: .86rem; color: #2c333d; }
+  details.card[open] > summary { margin-bottom: 6px; }
   footer {
     position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 14px 14px;
     background: rgba(246,247,249,.96); border-top: 1px solid #e3e6ea;
@@ -65,7 +90,28 @@
 <div class="sub" id="sub">กำลังโหลด…</div>
 <div id="notices"></div>
 <div id="summary"></div>
+<div class="card" id="free-card" hidden>
+  <h2>หมวดวิชาเลือกเสรี</h2>
+  <p class="hint">
+    หมวดนี้ลงวิชาของคณะไหนก็ได้ หลักสูตรจึงไม่ได้ระบุรายวิชาไว้ให้ติ๊ก
+    <b>ระบบไม่รู้ว่าคุณลงวิชาอะไร</b> จึงต้องกรอกจำนวนหน่วยกิตหมวดเลือกเสรี
+    ที่ผ่านแล้วเอง (ดูจากใบผลการเรียนในช่อง “เลือกเสรี”)
+  </p>
+  <div class="numrow">
+    <input type="number" id="free" min="0" max="60" step="1" inputmode="numeric"
+           aria-label="หน่วยกิตหมวดเลือกเสรีที่ผ่านแล้ว">
+    <span id="free-quota">หน่วยกิตที่ผ่านแล้ว</span>
+  </div>
+</div>
+<h2 class="section" id="terms-head" hidden>วิชาบังคับ (ตามแผนการเรียน)</h2>
 <div id="terms"></div>
+<div id="search-wrap" hidden>
+  <h2 class="section">วิชาเลือก (ตามหมวดในหลักสูตร)</h2>
+  <input type="search" id="search" autocomplete="off"
+         placeholder="ค้นหาวิชาเลือกจากชื่อหรือรหัสวิชา"
+         aria-label="ค้นหาวิชาเลือกจากชื่อหรือรหัสวิชา">
+</div>
+<div id="electives"></div>
 <footer>
   <button id="save" disabled>บันทึก</button>
   <div class="muted" id="status">ระบบไม่เก็บเกรดและไม่ขอรหัสผ่านระบบทะเบียน</div>
@@ -86,7 +132,6 @@ function notice(text, isError) {
   box.textContent = text;
   el("notices").appendChild(box);
 }
-
 async function api(path, body) {
   const res = await fetch(path, {
     method: "POST",
@@ -104,23 +149,79 @@ function termLabel(year, semester) {
   return `ปี ${year} ภาคเรียนที่ ${semester}`;
 }
 
+// แผนกำหนดเทอมไว้ = วิชาบังคับ / ไม่กำหนด (NULL ใน DB) = วิชาเลือก
+function hasTerm(course) {
+  return Number(course.std_year) > 0;
+}
+
+function dirty() {
+  el("save").disabled = false;
+  el("status").textContent = "ยังไม่ได้บันทึก";
+}
+
 function renderSummary(p) {
   const left =
     p.credits_left_to_graduate === null || p.credits_left_to_graduate === undefined
       ? "-"
       : p.credits_left_to_graduate;
+  const total =
+    p.total_credits_required === null || p.total_credits_required === undefined
+      ? "-"
+      : p.total_credits_required;
+  // ทุกค่าที่โชว์ตรงนี้อ่านจาก payload ตรง ๆ — ไม่บวก ไม่หา % เอง เพราะวิชาเลือก
+  // ที่เก็บเกินโควตาหมวดหนึ่งนับให้ไม่เกินโควตานั้น (planner คิดเพดานมาแล้ว)
   el("summary").innerHTML = `
     <div class="card">
       <div class="summary">
-        <div class="stat"><b>${p.passed_courses}/${p.plan_courses}</b><span>วิชาที่ผ่าน</span></div>
-        <div class="stat"><b>${p.passed_credits}</b><span>หน่วยกิตที่ผ่าน</span></div>
-        <div class="stat"><b>${p.remaining_courses}</b><span>วิชาที่เหลือในแผน</span></div>
+        <div class="stat"><b>${p.counted_credits}/${total}</b><span>หน่วยกิตที่นับให้ตามหลักสูตร</span></div>
+        <div class="stat"><b>${p.percent_complete}%</b><span>ความก้าวหน้ารวม</span></div>
         <div class="stat"><b>${left}</b><span>หน่วยกิตที่ยังต้องเก็บ</span></div>
+        <div class="stat"><b>${p.passed_courses}</b><span>วิชาที่ติ๊กว่าผ่าน</span></div>
       </div>
       <div class="bar"><i style="width:${Math.min(100, p.percent_complete)}%"></i></div>
+      <div class="groups" id="group-bars"></div>
     </div>`;
+  const bars = el("group-bars");
+  if (!p.groups || !p.groups.length) {
+    bars.remove();
+    return;
+  }
+  for (const group of p.groups) {
+    const row = document.createElement("div");
+    row.className = "grow";
+    row.innerHTML =
+      `<div class="gtop"><span></span><b></b></div><div class="bar sm"><i></i></div>`;
+    row.querySelector("span").textContent =
+      `${group.complete ? "✓ " : ""}${group.group_label}`;
+    row.querySelector("b").textContent =
+      `${group.counted_credits}/${group.required_credits} นก.`;
+    row.querySelector(".bar > i").style.width = `${Math.min(100, group.percent)}%`;
+    bars.appendChild(row);
+  }
 }
 
+function courseRow(course) {
+  const row = document.createElement("label");
+  row.className = course.passed ? "done" : "";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = course.passed;
+  box.dataset.code = course.course_code;
+  box.addEventListener("change", () => {
+    row.className = box.checked ? "done" : "";
+    dirty();
+  });
+  const text = document.createElement("div");
+  text.innerHTML = `<div class="name"></div><div class="code"></div>`;
+  text.querySelector(".name").textContent = course.name || "(ไม่มีชื่อวิชาในคลังข้อมูล)";
+  text.querySelector(".code").textContent =
+    `${course.course_code_full || course.course_code} · ${course.credits_text || (course.credits ?? "-") + " หน่วยกิต"}`;
+  row.append(box, text);
+  // เก็บคำค้นไว้ตอน render ทีเดียว — ตอนพิมพ์จะได้ไม่ต้องอ่าน DOM ทุกตัวอักษร
+  row.dataset.search =
+    `${course.course_code} ${course.course_code_full || ""} ${course.name || ""}`.toLowerCase();
+  return row;
+}
 function renderPlan(plan) {
   const groups = new Map();
   for (const course of plan) {
@@ -131,6 +232,7 @@ function renderPlan(plan) {
 
   const root = el("terms");
   root.textContent = "";
+  el("terms-head").hidden = groups.size === 0;
   for (const [key, courses] of groups) {
     const [year, semester] = key.split("-");
     const card = document.createElement("div");
@@ -141,27 +243,64 @@ function renderPlan(plan) {
     card.appendChild(head);
 
     for (const course of courses) {
-      const row = document.createElement("label");
-      row.className = course.passed ? "done" : "";
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = course.passed;
-      box.dataset.code = course.course_code;
-      box.addEventListener("change", () => {
-        row.className = box.checked ? "done" : "";
-        el("save").disabled = false;
-        el("status").textContent = "ยังไม่ได้บันทึก";
-      });
-      const text = document.createElement("div");
-      text.innerHTML =
-        `<div class="name"></div><div class="code"></div>`;
-      text.querySelector(".name").textContent = course.name || "(ไม่มีชื่อวิชาในคลังข้อมูล)";
-      text.querySelector(".code").textContent =
-        `${course.course_code_full || course.course_code} · ${course.credits_text || (course.credits ?? "-") + " หน่วยกิต"}`;
-      row.append(box, text);
-      card.appendChild(row);
+      card.appendChild(courseRow(course));
     }
     root.appendChild(card);
+  }
+}
+
+function renderElectives(plan, progress) {
+  const root = el("electives");
+  root.textContent = "";
+  const electives = plan.filter((course) => !hasTerm(course));
+  el("search-wrap").hidden = electives.length === 0;
+  if (!electives.length) return;
+
+  const byGroup = new Map();
+  for (const course of electives) {
+    const key = course.group_code || "";
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(course);
+  }
+
+  // ลำดับหมวดมาจาก progress.groups (= sort_order ที่ผู้ดูแลตั้งไว้) ไม่เรียงใหม่ที่นี่
+  const ordered = [];
+  for (const group of progress.groups || []) {
+    if (byGroup.has(group.group_code)) {
+      ordered.push([group, byGroup.get(group.group_code)]);
+      byGroup.delete(group.group_code);
+    }
+  }
+  for (const courses of byGroup.values()) ordered.push([null, courses]);
+  for (const [group, courses] of ordered) {
+    // ปิดไว้ทุกหมวดเป็นค่าเริ่มต้น: หมวดเดียวมีได้ถึง 29 วิชา เปิดหมดแล้วหน้า
+    // ยาวจนเลื่อนหาวิชาบังคับไม่เจอ (หมวดที่ครบโควตาแล้วยิ่งไม่ต้องเปิด)
+    const box = document.createElement("details");
+    box.className = "card";
+    const head = document.createElement("summary");
+    head.textContent = group
+      ? `${group.complete ? "✓ " : ""}${group.group_label}` +
+        ` · เลือกให้ครบ ${group.required_credits} นก.` +
+        ` (ผ่าน ${group.passed_credits}) — ${courses.length} วิชา`
+      : `วิชาเลือกที่ยังไม่ระบุหมวดในหลักสูตร — ${courses.length} วิชา`;
+    box.appendChild(head);
+    for (const course of courses) box.appendChild(courseRow(course));
+    root.appendChild(box);
+  }
+}
+
+function applyFilter() {
+  const query = el("search").value.trim().toLowerCase();
+  for (const box of document.querySelectorAll("#electives details")) {
+    let hits = 0;
+    for (const row of box.querySelectorAll("label")) {
+      const match = !query || row.dataset.search.includes(query);
+      row.hidden = !match;
+      if (match) hits += 1;
+    }
+    box.hidden = query !== "" && hits === 0;
+    // พิมพ์แล้วต้องเห็นผลทันที — ไม่เปิดหมวดให้ ผู้ใช้จะคิดว่าไม่มีวิชาที่ตรงกัน
+    box.open = query !== "" && hits > 0;
   }
 }
 
@@ -171,12 +310,40 @@ function checkedCodes() {
   );
 }
 
+function freeCredits() {
+  const raw = el("free").value.trim();
+  // ว่าง = ผู้ใช้ไม่ได้ตอบ → ไม่ส่งคีย์นี้เลย (backend จะไม่แก้ค่าที่เคยกรอกไว้)
+  if (raw === "") return undefined;
+  return Number(raw);
+}
+// หมวดเลือกเสรี = หมวดที่ให้เลือกได้แต่ไม่มีวิชาในแผนชี้มาเลย (ลงคณะไหนก็ได้)
+// เงื่อนไขเดียวกับที่ planner ใช้ตัดสินว่าจะเอา free_elective_credits ไปนับให้
+// หมวดไหน — ที่นี่ใช้แค่บอกโควตาให้ผู้ใช้เห็น ไม่ได้คิดเลขใหม่
+function freeElectiveGroup(next) {
+  const used = new Set(next.plan.map((course) => course.group_code).filter(Boolean));
+  return (
+    (next.progress.groups || []).find(
+      (group) => group.is_choice && !used.has(group.group_code)
+    ) || null
+  );
+}
+
 function applyState(next) {
   state = next;
   el("sub").textContent =
     `${next.program_name || ""} (${next.program_code}) · ${next.plan.length} วิชาในแผน`.trim();
   renderSummary(next.progress);
-  renderPlan(next.plan);
+  renderPlan(next.plan.filter(hasTerm));
+  renderElectives(next.plan, next.progress);
+
+  const quota = freeElectiveGroup(next);
+  el("free").value = next.progress.free_elective_credits ?? 0;
+  el("free-quota").textContent = quota
+    ? `หน่วยกิต จากโควตา ${quota.required_credits} หน่วยกิต`
+    : "หน่วยกิตที่ผ่านแล้ว";
+  el("free-card").hidden = false;
+  applyFilter();
+
   if (!next.progress.prereq_known) {
     notice(
       "ระบบยังไม่มีข้อมูลวิชาบังคับก่อน (ระบบทะเบียนไม่เผยแพร่) " +
@@ -197,6 +364,7 @@ async function save() {
       id_token: idToken,
       course_codes: checkedCodes(),
       program_code: state ? state.program_code : undefined,
+      free_elective_credits: freeCredits(),
     });
     el("notices").textContent = "";
     applyState(result);
@@ -207,7 +375,6 @@ async function save() {
     button.disabled = false;
   }
 }
-
 async function start() {
   try {
     const config = await fetch("/api/liff/config").then((res) => res.json());
@@ -225,6 +392,8 @@ async function start() {
     }
     applyState(await api("/api/liff/state", { id_token: idToken }));
     el("save").addEventListener("click", save);
+    el("search").addEventListener("input", applyFilter);
+    el("free").addEventListener("input", dirty);
     el("status").textContent = "ติ๊กแล้วกดบันทึก";
   } catch (error) {
     el("sub").textContent = "";

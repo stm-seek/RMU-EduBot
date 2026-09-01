@@ -45,7 +45,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel, Field
 
-from . import admin, planner
+from . import admin, admin_activities, planner
 from . import router as bot_router
 from .config import Settings, get_settings
 from .db import Database, SupportsExecute, SupportsQuery
@@ -656,6 +656,7 @@ async def liff_page() -> HTMLResponse:
 ADMIN_PAGE = Path(__file__).resolve().parent.parent / "web" / "admin" / "index.html"
 
 app.include_router(admin.router)
+app.include_router(admin_activities.router)
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -789,6 +790,13 @@ class LiffSaveRequest(BaseModel):
     course_codes: list[str] = Field(default_factory=list, max_length=400)
     program_code: str | None = Field(default=None, max_length=20)
     study_year: int | None = Field(default=None, ge=1, le=8)
+    # หน่วยกิตหมวดเลือกเสรีที่ผู้ใช้กรอกเอง — หลักสูตรไม่ระบุรายวิชาให้ติ๊ก
+    #
+    # ขอบเขต 0–60 ต้องอยู่ที่ชั้นนี้ ไม่ใช่ปล่อยให้ CHECK constraint ของ
+    # ``app_users`` เป็นคนปฏิเสธ: ค่านอกช่วงจะกลายเป็น 500 (ความผิดของเรา)
+    # ทั้งที่มันคือ input ที่ผู้ใช้ส่งผิด (422) — และ ``None`` ยังต่างจาก 0
+    # เพราะ 0 = "ยังไม่ผ่านเลย" แต่ ``None`` = "ฟอร์มนี้ไม่ได้ถาม"
+    free_elective_credits: int | None = Field(default=None, ge=0, le=60)
 
 
 def _require_writable_db() -> SupportsExecute:
@@ -798,26 +806,56 @@ def _require_writable_db() -> SupportsExecute:
     return db
 
 
-def _plan_payload(plan_rows: list[dict], passed: set[str]) -> list[dict]:
-    """แผนการเรียนในรูปที่หน้าเว็บ render เป็น checkbox ได้ตรง ๆ"""
-    return [
-        {
-            "course_code": row["course_code"],
-            "course_code_full": row.get("course_code_full"),
-            "name": row.get("name_th"),
-            "credits": row.get("credits"),
-            "credits_text": row.get("credits_text"),
-            "std_year": row.get("std_year"),
-            "std_semester": row.get("std_semester"),
-            "note": row.get("note"),
-            "passed": row["course_code"] in passed,
-        }
-        for row in plan_rows
-    ]
+def _plan_payload(
+    plan_rows: list[dict], passed: set[str], group_rows: list[dict] | None = None
+) -> list[dict]:
+    """
+    แผนการเรียนในรูปที่หน้าเว็บ render เป็น checkbox ได้ตรง ๆ
+
+    ต้องแนบ ``group_label`` มาด้วย ไม่ใช่แค่ ``group_code``: วิชาเลือกมี
+    ``std_year``/``std_semester`` เป็น NULL (อ่านออกมาเป็น 0) หน้าเว็บจึงจัด
+    กลุ่มตามหมวดแทนเทอม และ "ชื่อหมวด" คือหัวข้อที่ผู้ใช้ต้องเห็นแทนคำว่า
+    "ปี 0 เทอม 0" ที่ไม่มีอยู่จริงในหลักสูตร — join ที่นี่ทีเดียวเพื่อไม่ให้
+    หน้าเว็บต้องถือตารางแปลรหัสหมวดของตัวเอง
+    """
+    labels = {
+        str(row["group_code"]): str(row.get("group_label") or row["group_code"])
+        for row in (group_rows or [])
+    }
+    payload = []
+    for row in plan_rows:
+        code = row.get("group_code")
+        code = str(code) if code else None
+        payload.append(
+            {
+                "course_code": row["course_code"],
+                "course_code_full": row.get("course_code_full"),
+                "name": row.get("name_th"),
+                "credits": row.get("credits"),
+                "credits_text": row.get("credits_text"),
+                "std_year": row.get("std_year"),
+                "std_semester": row.get("std_semester"),
+                "note": row.get("note"),
+                "passed": row["course_code"] in passed,
+                "group_code": code,
+                "group_label": labels.get(code) if code else None,
+            }
+        )
+    return payload
 
 
 def _progress_payload(progress: planner.Progress) -> dict:
-    """สรุปตัวเลขจาก :class:`app.planner.Progress` ให้หน้าเว็บแสดงหัวข้อสรุป"""
+    """
+    สรุปตัวเลขจาก :class:`app.planner.Progress` ให้หน้าเว็บแสดงหัวข้อสรุป
+
+    ทุกตัวเลขในนี้ **อ่านมาจาก planner ตรง ๆ** ไม่มีการคิดซ้ำที่ชั้นนี้ (เช่น
+    ไม่ min() หน่วยกิตเอง) เพราะถ้าคิดสองที่ วันหนึ่งสูตรจะเพี้ยนกันแล้ว
+    ตัวเลขที่ผู้ใช้เห็นจะไม่ตรงกับตัวเลขที่บอทตอบใน LINE
+
+    ``groups`` เรียงตามลำดับที่ planner ให้มา (ซึ่งมาจาก ``sort_order`` ใน
+    ``curriculum_groups``) — ห้ามเรียงใหม่ที่นี่ ลำดับหมวดคือสิ่งที่ผู้ดูแล
+    ตั้งไว้จากหน้า /admin
+    """
     return {
         "program_code": progress.program_code,
         "plan_courses": progress.plan_courses,
@@ -831,11 +869,28 @@ def _progress_payload(progress: planner.Progress) -> dict:
         # หน้าเว็บต้องบอกผู้ใช้ตรง ๆ ว่ายังไม่มีข้อมูลวิชาบังคับก่อน
         "prereq_known": progress.prereq_known,
         "passed_outside_plan": list(progress.passed_outside_plan),
+        "free_elective_credits": progress.free_elective_credits,
+        # ต่างจาก passed_credits เมื่อเก็บวิชาเลือกเกินโควตาหมวด
+        "counted_credits": progress.counted_credits,
+        "groups": [
+            {
+                "group_code": group.group_code,
+                "group_label": group.group_label,
+                "required_credits": group.required_credits,
+                "passed_credits": group.passed_credits,
+                "counted_credits": group.counted_credits,
+                "is_choice": group.is_choice,
+                "complete": group.complete,
+                "percent": group.percent,
+                "sort_order": group.sort_order,
+            }
+            for group in progress.groups
+        ],
     }
 
 
 async def _load_state(db: SupportsExecute, user_hash: str, program_code: str) -> dict:
-    """อ่านสถานะทั้งหมดที่หน้า LIFF ต้องใช้ใน 5 คิวรี (ไม่ขึ้นกับจำนวนวิชา)"""
+    """อ่านสถานะทั้งหมดที่หน้า LIFF ต้องใช้ใน 6 คิวรี (ไม่ขึ้นกับจำนวนวิชา)"""
     from . import repository as repo
 
     user_id = await repo.ensure_user(db, user_hash)
@@ -847,6 +902,9 @@ async def _load_state(db: SupportsExecute, user_hash: str, program_code: str) ->
     passed = {row["course_code"] for row in done_rows}
     program = await repo.program_info(db, chosen)
     prereq_rows = await repo.prerequisites_for_program(db, chosen)
+    # โควตารายหมวด — หลักสูตรที่ยังไม่ได้กรอกจะได้ลิสต์ว่าง แล้ว planner
+    # ถอยไปใช้สูตรนับจำนวนวิชาเอง (ไม่พัง แต่ตัวเลขหยาบกว่า)
+    group_rows = await repo.curriculum_groups(db, chosen)
 
     progress = planner.evaluate(
         chosen,
@@ -854,12 +912,14 @@ async def _load_state(db: SupportsExecute, user_hash: str, program_code: str) ->
         passed,
         prereq_rows=prereq_rows,
         total_credits_required=(program or {}).get("total_credits"),
+        group_rows=group_rows,
+        free_elective_credits=profile.get("free_elective_credits") or 0,
     )
     return {
         "program_code": chosen,
         "program_name": (program or {}).get("program_name"),
         "study_year": profile.get("study_year"),
-        "plan": _plan_payload(plan_rows, passed),
+        "plan": _plan_payload(plan_rows, passed, group_rows),
         "progress": _progress_payload(progress),
     }
 
@@ -896,12 +956,19 @@ async def liff_save_completed(
     from . import repository as repo
 
     user_id = await repo.ensure_user(db, user.user_hash)
-    if payload.program_code or payload.study_year:
+    # เทียบ ``is not None`` กับ free_elective_credits ไม่ใช่ truthy: ส่ง 0 มา
+    # คือ "แก้ให้เป็น 0" (ผู้ใช้ลบตัวเลขที่เคยกรอกไว้) ต้องบันทึกด้วย
+    if (
+        payload.program_code
+        or payload.study_year
+        or payload.free_elective_credits is not None
+    ):
         await repo.set_user_program(
             db,
             user.user_hash,
             program_code=payload.program_code,
             study_year=payload.study_year,
+            free_elective_credits=payload.free_elective_credits,
         )
 
     # กันขยะเข้าตาราง: รับเฉพาะรหัส 7 หลักที่อยู่ในหลักสูตรจริง

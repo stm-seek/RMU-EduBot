@@ -41,6 +41,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 import secrets
 import time
 from typing import Annotated
@@ -616,6 +617,37 @@ class CurriculumRuleSaveRequest(AdminRequest):
     is_fixed_term: bool = False
     note: str | None = Field(default=None, max_length=500)
     source: str = Field(min_length=2, max_length=200)
+    # หมวดที่วิชานี้สังกัด — ว่างได้ (แถวเก่าก่อน 010 ว่างจริง) แต่ถ้าใส่มา
+    # endpoint จะเช็คว่ามีหมวดนั้นในหลักสูตรจริง ไม่ปล่อยให้พิมพ์ผิดแล้ววิชา
+    # หลุดออกจากทุกหมวดแบบไม่มีใครรู้ (วิชาไร้หมวด = 0 นก. ในทุกโควตา)
+    group_code: str | None = Field(default=None, max_length=20)
+
+
+class CurriculumGroupSaveRequest(AdminRequest):
+    """
+    โควตาหน่วยกิตของหมวดหนึ่ง
+
+    ``group_code`` เป็นครึ่งหนึ่งของ PK และเป็นค่าที่ ``curriculum_rules``
+    ทุกแถวชี้มาโดย **ไม่มี FK** (ตั้งใจ ดูหัวไฟล์ 010_electives.sql) การ
+    "แก้รหัสหมวด" จึงไม่ใช่การเปลี่ยนชื่อ แต่เป็นการสร้างหมวดใหม่ทิ้งวิชาเดิม
+    ไว้กลางอากาศ → ฟอร์มส่ง ``original_group_code`` มาด้วยตอนกดแก้แถวเดิม
+    และ endpoint ปฏิเสธถ้าสองค่าไม่ตรงกัน
+
+    ``required_credits`` เพดาน 300: ตาราง SMALLINT รับได้ถึง 32767 แต่ตัวเลข
+    ระดับนั้นคือพิมพ์ผิด (หลักสูตรทั้งใบ 120 นก.) — จับที่ฟอร์มดีกว่าให้ CHECK
+    ของ Postgres เด้งเป็น 500 ใส่หน้าคนกรอก
+    """
+
+    program_code: str = Field(min_length=3, max_length=20)
+    group_code: str = Field(min_length=1, max_length=20)
+    original_group_code: str | None = Field(default=None, max_length=20)
+    group_label: str = Field(min_length=2, max_length=200)
+    required_credits: int = Field(ge=0, le=300)
+    is_choice: bool = False
+    sort_order: int = Field(default=0, ge=0, le=9_999)
+    source: str = Field(min_length=2, max_length=300)
+    # ชื่อคนที่เทียบโควตากับ มคอ.2 แล้ว — ว่าง = ยังไม่มีใครยืนยัน (ตอนนี้ว่างทั้ง 9 หมวด)
+    verified_by: str | None = Field(default=None, max_length=200)
 
 
 class PrerequisiteSaveRequest(AdminRequest):
@@ -720,18 +752,216 @@ async def admin_state(
     program = payload.program_code or settings.default_program_code
     log.info("admin เปิดหน้า: username=%r", admin)
     prompt_rules = await admin_repo.list_prompt_rules(db)
+    rules = await admin_repo.list_curriculum_rules(db, program)
+    groups = await admin_repo.list_curriculum_groups(db, program)
+    stock = await admin_repo.curriculum_group_stock(db, program)
+    total_credits = await admin_repo.program_total_credits(db, program)
     return {
         "program_code": program,
         "counts": await admin_repo.counts(db),
         "faqs": await admin_repo.list_faqs(db),
         "documents": await admin_repo.list_documents(db),
         "instructors": await admin_repo.list_instructors(db),
-        "curriculum_rules": await admin_repo.list_curriculum_rules(db, program),
+        "curriculum_rules": rules,
+        "curriculum_groups": groups,
+        "program_total_credits": total_credits,
+        # คำเตือนคำนวณฝั่งเซิร์ฟเวอร์ ไม่ให้หน้าเว็บบวกเลขเอง — ตัวเลขชุดนี้
+        # ตัดสินว่าเปอร์เซ็นต์จบการศึกษาที่นักศึกษาเห็นถูกหรือผิด สองที่คำนวณ
+        # แยกกันแล้วไม่ตรงกันคือสิ่งที่แก้ยากที่สุดเวลามีคนถามว่า "ทำไมไม่ตรง"
+        "curriculum_group_warnings": curriculum_group_warnings(
+            groups, total_credits=total_credits, stock=stock
+        ),
+        "curriculum_rule_warnings": curriculum_rule_warnings(rules),
         "prerequisites": await admin_repo.list_prerequisites(db, program),
         "ai_prompt_rules": prompt_rules,
         "ai_prompt": _prompt_preview(prompt_rules),
         "audit": await admin_repo.list_audit(db),
     }
+
+
+# ── คำเตือนของแท็บหลักสูตร ──────────────────────────────────────────────────
+#
+# **ห้ามเอาคำเตือนสามข้อนี้ออก** (คำสั่งเดียวกันเขียนไว้ในหัว 010_electives.sql)
+# เหตุผล: โควตารายหมวดทั้งชุดมาจากใบผลการเรียนที่ระบบทะเบียนจัดหมวดให้ ไม่ใช่
+# จาก มคอ.2 ถ้าผลรวมโควตาไม่เท่าหน่วยกิตหลักสูตร หน้า /liff จะยังคิด
+# เปอร์เซ็นต์ออกมาสวย ๆ ได้อยู่ — ผิดแบบไม่มีใครเห็น ซึ่งแย่กว่าพังตรง ๆ
+#
+# เขียนเป็นฟังก์ชันบริสุทธิ์ (ไม่แตะ DB) เพื่อให้ข้อความไทยที่ผู้ใช้เห็นถูกเทส
+# ด้วย doctest ได้ตรง ๆ — คำเตือนที่ไม่มีใครเทสคือคำเตือนที่หายไปเงียบ ๆ ได้
+
+MAX_CODES_IN_WARNING = 10
+
+
+def _code_list(codes: list[str]) -> str:
+    """
+    รหัสไม่เกิน 10 ตัวต่อกัน — ยาวกว่านั้นตัดแล้วบอกว่าเหลืออีกเท่าไร
+
+    >>> _code_list(['2.2', '3.1'])
+    '2.2, 3.1'
+    >>> _code_list([str(i) for i in range(12)])
+    '0, 1, 2, 3, 4, 5, 6, 7, 8, 9 และอีก 2 รายการ'
+    """
+    head = ", ".join(codes[:MAX_CODES_IN_WARNING])
+    extra = len(codes) - MAX_CODES_IN_WARNING
+    if extra > 0:
+        return f"{head} และอีก {extra} รายการ"
+    return head
+
+
+def curriculum_group_warnings(
+    groups: list[dict], *, total_credits: int | None, stock: dict[str, dict]
+) -> list[dict]:
+    """
+    คำเตือนของแท็บโควตารายหมวด — คิดจากหมวดที่ ``is_active`` เท่านั้น
+
+    ``stock`` = ผลของ :func:`app.admin_repo.curriculum_group_stock`
+    หมวดที่ **ไม่มีคีย์ใน stock** คือหมวดที่ไม่มีรายวิชาชี้มาเลย ซึ่งเป็นเรื่อง
+    ปกติของวิชาเลือกเสรี (หลักสูตรไม่ระบุรายวิชา) → ต้องไม่เตือน ไม่งั้นคนดูแล
+    จะเห็นคำเตือนที่แก้ไม่ได้ทุกวันแล้วเลิกอ่านคำเตือนทั้งแท็บ
+
+    >>> groups = [
+    ...     {'group_code': '2.2', 'group_label': 'เลือกเฉพาะด้าน',
+    ...      'required_credits': 18, 'is_choice': True, 'is_active': True,
+    ...      'verified_by': 'ผู้ตรวจ'},
+    ...     {'group_code': '3.1', 'group_label': 'เลือกเสรี',
+    ...      'required_credits': 6, 'is_choice': True, 'is_active': True,
+    ...      'verified_by': 'ผู้ตรวจ'},
+    ... ]
+    >>> stock = {'2.2': {'course_count': 2, 'stock_credits': 6, 'unknown_credits': 0}}
+    >>> [w['kind'] for w in curriculum_group_warnings(
+    ...     groups, total_credits=120, stock=stock)]
+    ['credit_sum', 'stock_short']
+    >>> curriculum_group_warnings(groups, total_credits=24, stock={})
+    []
+    >>> [w['kind'] for w in curriculum_group_warnings(
+    ...     groups, total_credits=None, stock={})]
+    ['no_total']
+
+    หมวดที่ยังไม่มีใครยืนยันกับ มคอ.2 ถูกรวบเป็นคำเตือนข้อเดียว:
+
+    >>> rows = [{'group_code': '1.1.1', 'group_label': 'ภาษา',
+    ...          'required_credits': 24, 'is_choice': False, 'is_active': True,
+    ...          'verified_by': None}]
+    >>> warn = curriculum_group_warnings(rows, total_credits=24, stock={})
+    >>> warn[0]['kind'], '1.1.1' in warn[0]['text']
+    ('unverified', True)
+    """
+    active = [row for row in groups if row.get("is_active")]
+    if not active:
+        return []
+
+    warnings: list[dict] = []
+    quota_sum = sum(int(row.get("required_credits") or 0) for row in active)
+
+    if total_credits is None:
+        warnings.append({
+            "kind": "no_total",
+            "text": (
+                "ยังไม่มีหน่วยกิตรวมของหลักสูตรในตาราง programs — ตรวจให้ไม่ได้ว่า"
+                f"ผลรวมโควตา {quota_sum} หน่วยกิตตรงกับหลักสูตรหรือไม่"
+            ),
+        })
+    elif quota_sum != total_credits:
+        gap = quota_sum - total_credits
+        direction = "เกิน" if gap > 0 else "ขาด"
+        warnings.append({
+            "kind": "credit_sum",
+            "text": (
+                f"ผลรวมโควตาของหมวดที่เปิดใช้ = {quota_sum} หน่วยกิต "
+                f"แต่หลักสูตรกำหนด {total_credits} หน่วยกิต "
+                f"({direction} {abs(gap)} หน่วยกิต) — เปอร์เซ็นต์ความคืบหน้าที่"
+                "นักศึกษาเห็นในหน้าติ๊กวิชาจะผิดตามไปด้วย "
+                "แก้โควตาให้ผลรวมเท่ากับหลักสูตรก่อน"
+            ),
+        })
+
+    for row in active:
+        code = str(row.get("group_code") or "")
+        label = str(row.get("group_label") or "")
+        required = int(row.get("required_credits") or 0)
+        have = stock.get(code)
+        # ไม่มีวิชาชี้มาเลย = หมวดที่ไม่ระบุรายวิชาโดยเจตนา (เลือกเสรี) → ไม่เตือน
+        if not have or not have.get("course_count"):
+            continue
+        if have["stock_credits"] >= required:
+            continue
+        if have.get("unknown_credits"):
+            warnings.append({
+                "kind": "stock_unknown",
+                "text": (
+                    f"หมวด {code} “{label}” มี {have['unknown_credits']} วิชาที่ไม่มี"
+                    "หน่วยกิตในคลังข้อมูล — ตรวจไม่ได้ว่าคลังวิชา "
+                    f"{have['stock_credits']} หน่วยกิตพอกับโควตา {required} "
+                    "หน่วยกิตหรือไม่"
+                ),
+            })
+            continue
+        warnings.append({
+            "kind": "stock_short",
+            "text": (
+                f"หมวด {code} “{label}” โควตา {required} หน่วยกิต "
+                f"แต่รายวิชาที่ชี้มาที่หมวดนี้รวมได้แค่ {have['stock_credits']} "
+                f"หน่วยกิต ({have['course_count']} วิชา) — "
+                "นักศึกษาเลือกให้ครบโควตาไม่ได้"
+            ),
+        })
+
+    unverified = [
+        str(row.get("group_code") or "")
+        for row in active
+        if not (row.get("verified_by") or "").strip()
+    ]
+    if unverified:
+        warnings.append({
+            "kind": "unverified",
+            "text": (
+                f"{len(unverified)} หมวดยังไม่ได้ยืนยันกับ มคอ.2 "
+                f"(ช่อง verified_by ว่าง): {_code_list(unverified)} — "
+                "โควตาชุดนี้มาจากใบผลการเรียนที่ระบบทะเบียนจัดหมวดให้ ไม่ใช่จาก"
+                "เล่มหลักสูตร ใครเทียบกับ มคอ.2 แล้วให้กรอกชื่อตัวเองในช่อง "
+                "verified_by ของหมวดนั้น"
+            ),
+        })
+    return warnings
+
+
+def curriculum_rule_warnings(rules: list[dict]) -> list[dict]:
+    """
+    คำเตือนของแท็บแผนการเรียน — วิชาที่ยังไม่มีหมวด
+
+    วิชาที่ ``group_code`` ว่างจะไม่ถูกนับหน่วยกิตในโควตาหมวดใดเลย แต่ยังโผล่
+    ในหน้าติ๊กวิชาตามปกติ → นักศึกษาติ๊กแล้วเปอร์เซ็นต์ไม่ขยับ และไม่มีอะไร
+    บอกว่าทำไม (จึงต้องเตือนที่นี่ ไม่ใช่ปล่อยให้ไปงงกันปลายทาง)
+
+    >>> curriculum_rule_warnings([{'course_code': '7071101',
+    ...                            'group_code': '2.1', 'is_active': True}])
+    []
+    >>> warn = curriculum_rule_warnings([{'course_code': '7071101',
+    ...                                   'group_code': None, 'is_active': True}])
+    >>> warn[0]['kind'], '7071101' in warn[0]['text']
+    ('missing_group', True)
+
+    แถวที่ปิดไว้ไม่นับ — บอทไม่ได้ใช้ และคนดูแลไม่ต้องไล่แก้ของที่เลิกใช้แล้ว:
+
+    >>> curriculum_rule_warnings([{'course_code': '7071101',
+    ...                            'group_code': '', 'is_active': False}])
+    []
+    """
+    missing = [
+        str(row.get("course_code") or "")
+        for row in rules
+        if row.get("is_active") and not (row.get("group_code") or "").strip()
+    ]
+    if not missing:
+        return []
+    return [{
+        "kind": "missing_group",
+        "text": (
+            f"{len(missing)} วิชายังไม่ได้ระบุหมวด (group_code ว่าง): "
+            f"{_code_list(missing)} — วิชาที่ไม่มีหมวดจะไม่ถูกนับหน่วยกิตใน"
+            "โควตาหมวดใดเลย ทั้งที่ยังขึ้นให้ติ๊กในหน้าแผนการเรียนของนักศึกษา"
+        ),
+    }]
 
 
 def _prompt_preview(rows: list[dict]) -> dict:
@@ -884,10 +1114,24 @@ async def save_curriculum_rule(
     ว่าเทอมหน้าควรลงอะไร — ถ้าไม่รู้ว่าใครบอกมา ก็แก้กลับไม่ได้เมื่อผิด
     """
     admin = require_admin(request, settings)
+    program_code = payload.program_code.strip()
+    group_code = _clean_group_code(payload.group_code)
+    db = _writable_db()
+    # เช็คว่าหมวดมีจริงก่อนเขียน: ``curriculum_rules.group_code`` ไม่มี FK
+    # (ตั้งใจ ดูหัวไฟล์ 010) พิมพ์ '2,2' แทน '2.2' จึงบันทึกผ่านได้เงียบ ๆ แล้ว
+    # วิชานั้นหลุดจากทุกโควตา — หน้าเว็บส่งมาจาก dropdown แต่ curl ไม่ได้ส่ง
+    if group_code and not await admin_repo.fetch_row(
+        db, "curriculum_groups", (program_code, group_code)
+    ):
+        raise _http_error(
+            404,
+            f"ไม่มีหมวด {group_code} ในหลักสูตร {program_code} — "
+            f"สร้างหมวดในแท็บโควตารายหมวดก่อน",
+        )
     result = await admin_repo.save_curriculum_rule(
-        _writable_db(),
+        db,
         admin_username=admin,
-        program_code=payload.program_code.strip(),
+        program_code=program_code,
         course_code=payload.course_code,
         course_code_full=payload.course_code_full,
         std_year=payload.std_year,
@@ -895,6 +1139,79 @@ async def save_curriculum_rule(
         is_fixed_term=payload.is_fixed_term,
         note=payload.note,
         source=payload.source.strip(),
+        group_code=group_code,
+    )
+    return _saved(result)
+
+
+GROUP_CODE_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.\-]{0,19}$")
+
+
+def _clean_group_code(value: str | None) -> str | None:
+    """
+    รหัสหมวดที่ตัดช่องว่างแล้ว — ``None`` เมื่อไม่ได้ระบุ
+
+    บังคับรูปแบบเองที่นี่ ไม่ใช้ ``pattern`` ของ pydantic เพราะช่องนี้เป็น
+    ``str | None`` (แถวเก่าก่อน 010 ไม่มีหมวด) และเพราะทั้งสอง endpoint ที่รับ
+    รหัสหมวดต้องตัดช่องว่างแบบเดียวกัน — ' 2.2 ' กับ '2.2' ต้องไม่กลายเป็นสอง
+    หมวดที่หน้าตาเหมือนกันในตาราง
+
+    >>> _clean_group_code(' 2.2 ')
+    '2.2'
+    >>> _clean_group_code('  ') is None
+    True
+    """
+    if value is None:
+        return None
+    code = value.strip()
+    if not code:
+        return None
+    if not GROUP_CODE_RE.match(code):
+        raise _http_error(
+            422,
+            "รหัสหมวดใช้ได้เฉพาะตัวเลข ตัวอักษรอังกฤษ จุด และขีด (เช่น '2.2')",
+        )
+    return code
+
+
+@router.post("/curriculum_group")
+async def save_curriculum_group(
+    payload: CurriculumGroupSaveRequest, request: Request, settings: SettingsDep
+) -> dict:
+    """
+    เพิ่ม/แก้โควตาหน่วยกิตของหมวดหนึ่ง
+
+    แท็บนี้มีอยู่เพราะโควตาทั้ง 9 หมวดยัง **ไม่ได้ยืนยันกับ มคอ.2** (ที่มาคือ
+    ใบผลการเรียนที่ระบบทะเบียนจัดหมวดให้) คนที่เทียบเล่มหลักสูตรแล้วต้องแก้ได้
+    จากหน้าเว็บ ไม่ต้องรอใครเขียน migration ใหม่
+
+    **ไม่มี DELETE** เหมือนทุกแท็บ และเหตุผลที่นี่หนักกว่าที่อื่น: มี
+    ``curriculum_rules`` หลายสิบแถวชี้มาที่ ``group_code`` โดยไม่มี FK ลบหมวด
+    แล้ววิชาเหล่านั้นจะกลายเป็นวิชาที่ไม่มีโควตารองรับแบบไม่มี error ให้เห็น
+    """
+    admin = require_admin(request, settings)
+    group_code = _clean_group_code(payload.group_code)
+    if not group_code:
+        raise _http_error(422, "ต้องระบุรหัสหมวด (เช่น '2.2')")
+    original = _clean_group_code(payload.original_group_code)
+    if original and original != group_code:
+        raise _http_error(
+            400,
+            f"เปลี่ยนรหัสหมวดจาก {original} เป็น {group_code} ไม่ได้ — "
+            f"รหัสหมวดเป็นคีย์ที่รายวิชาในแผนการเรียนชี้มา ถ้าต้องเปลี่ยนจริง "
+            f"ให้สร้างหมวดใหม่ ย้ายรายวิชาไปหมวดใหม่ แล้วปิดหมวดเดิม",
+        )
+    result = await admin_repo.save_curriculum_group(
+        _writable_db(),
+        admin_username=admin,
+        program_code=payload.program_code.strip(),
+        group_code=group_code,
+        group_label=payload.group_label.strip(),
+        required_credits=payload.required_credits,
+        is_choice=payload.is_choice,
+        sort_order=payload.sort_order,
+        source=payload.source.strip(),
+        verified_by=(payload.verified_by or "").strip() or None,
     )
     return _saved(result)
 

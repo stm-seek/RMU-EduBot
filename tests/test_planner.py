@@ -246,3 +246,253 @@ def test_suggestion_is_empty_when_everything_passed() -> None:
     assert suggestion.picks == ()
     assert progress.remaining == ()
     assert progress.percent_complete == 100.0
+
+# ── วิชาเลือก: หมวด โควตา และการเรียงลำดับ ───────────────────────────────────
+#
+# วิชาเลือกใน curriculum_rules มี std_year/std_semester เป็น NULL เพราะลงเทอม
+# ไหนก็ได้ ส่วนโควตา "ต้องเก็บให้ครบกี่หน่วยกิต" อยู่ใน curriculum_groups
+# เคสในหมวดนี้คือเคสที่ตอบผิดแล้วนักศึกษาเข้าใจว่าใกล้จบทั้งที่ยังขาด
+
+
+def elective_row(code: str, credits: int = 3, group: str = "2.2", **extra) -> dict:
+    """แถววิชาเลือก — NULL ทั้งปีและเทอม เหมือนที่ออกมาจาก DB จริง"""
+    row = {
+        "course_code": code,
+        "std_year": None,
+        "std_semester": None,
+        "credits": credits,
+        "name_th": f"วิชาเลือก {code}",
+        "group_code": group,
+    }
+    row.update(extra)
+    return row
+
+
+# 12 (บังคับ) + 18 (เลือกเฉพาะด้าน) + 6 (เลือกเสรี) = 36 นก. พอดี
+GROUP_ROWS = [
+    {
+        "group_code": "1.1",
+        "group_label": "วิชาบังคับ",
+        "required_credits": 12,
+        "is_choice": False,
+        "sort_order": 10,
+    },
+    {
+        "group_code": "2.2",
+        "group_label": "วิชาเลือกเฉพาะด้าน",
+        "required_credits": 18,
+        "is_choice": True,
+        "sort_order": 20,
+    },
+    {
+        "group_code": "3.1",
+        "group_label": "เลือกเสรี",
+        "required_credits": 6,
+        "is_choice": True,
+        "sort_order": 30,
+    },
+]
+
+CORE_CODES = ["1000001", "1000002", "1000003", "1000004"]
+ELECTIVE_CODES = [f"70733{n:02d}" for n in range(1, 9)]  # คลัง 8 วิชา 24 นก.
+
+# แผนเต็ม: บังคับ 4 วิชา (มีเทอม) + คลังวิชาเลือก 8 วิชา (ไม่มีเทอม)
+GROUPED_PLAN = [
+    plan_row("1000001", 1, 1, group_code="1.1", opens_sem1=True),
+    plan_row("1000002", 1, 1, group_code="1.1", opens_sem1=True),
+    plan_row("1000003", 1, 2, group_code="1.1", opens_sem1=True),
+    plan_row("1000004", 2, 1, group_code="1.1", opens_sem1=True),
+] + [elective_row(code, opens_sem1=True) for code in ELECTIVE_CODES]
+
+
+def grouped(passed: list[str], *, free: int = 0) -> planner.Progress:
+    return planner.evaluate(
+        "p",
+        GROUPED_PLAN,
+        passed,
+        total_credits_required=36,
+        group_rows=GROUP_ROWS,
+        free_elective_credits=free,
+    )
+
+
+def test_course_without_term_sorts_last_not_first() -> None:
+    """
+    วิชาไม่มีเทอมต้องไปท้ายสุด
+
+    ก่อนแก้ ``term_order`` คืน ``(0, 0)`` ให้วิชาเลือก จึงเรียงมาก่อนวิชาบังคับ
+    ปี 1 ทั้งหมด แล้วตัวแนะนำเทอมหน้าจะเสนอวิชาเลือกก่อนวิชาที่แผนวางไว้
+    """
+    progress = grouped([])
+    order = [status.course.course_code for status in progress.remaining]
+
+    assert order[:4] == CORE_CODES
+    assert order[4:] == ELECTIVE_CODES
+
+    picks = codes(planner.suggest_term(progress, 1, max_credits=99).picks)
+    assert picks[:4] == CORE_CODES, "วิชาบังคับต้องมาก่อนวิชาเลือกในคำแนะนำ"
+
+
+def test_course_without_term_never_shows_year_zero() -> None:
+    """ผู้ใช้ต้องไม่เห็น "ปี 0 เทอม 0" ซึ่งไม่มีอยู่ในหลักสูตร"""
+    course = planner.find_status(grouped([]), ELECTIVE_CODES[0]).course
+
+    assert course.has_term is False
+    assert "ปี 0" not in course.term_label
+    # มีชื่อหมวดก็ใช้ชื่อหมวด (ชื่อมาจาก curriculum_groups ผ่าน group_code)
+    assert course.term_label == "วิชาเลือกเฉพาะด้าน"
+    assert course.group_code == "2.2"
+    assert course.group_label == "วิชาเลือกเฉพาะด้าน"
+
+
+def test_course_without_term_and_without_group_says_so() -> None:
+    """ไม่รู้หมวด ก็บอกว่าไม่กำหนดเทอม ไม่เดาเป็นปี 0"""
+    progress = planner.evaluate("p", [elective_row("7073399", group=None)], [])
+
+    assert planner.find_status(progress, "7073399").course.term_label == "ไม่กำหนดเทอม"
+
+
+def test_courses_with_term_keep_their_label() -> None:
+    """วิชาบังคับต้องไม่กระทบจากการแก้เรื่องเทอมว่าง"""
+    course = planner.PlannedCourse("1000001", 2, 1)
+
+    assert course.has_term is True
+    assert course.term_label == "ปี 2 เทอม 1"
+    assert course.term_order == (2, 1)
+
+
+def test_extra_credits_in_a_group_are_capped_at_the_quota() -> None:
+    """
+    เก็บเกินโควตาไม่ทำให้จบเร็วขึ้น — ต้องนับแค่เพดานของหมวด
+
+    เก็บเลือกเฉพาะด้าน 21 นก. จากโควตา 18 → นับให้ 18 ส่วนเกิน 3 นก. เอาไป
+    กลบหมวดอื่นที่ยังขาดไม่ได้ ไม่งั้นเปอร์เซ็นต์รวมจะทะลุ 100
+    """
+    progress = grouped(CORE_CODES + ELECTIVE_CODES[:7])  # 12 + 21 นก.
+    by_code = {g.group_code: g for g in progress.groups}
+
+    assert by_code["2.2"].passed_credits == 21
+    assert by_code["2.2"].counted_credits == 18
+    assert by_code["2.2"].complete is True
+    assert by_code["2.2"].percent == 100.0
+    # 12 + 18 + 0 (เลือกเสรียังไม่กรอก) = 30 จาก 36
+    assert progress.passed_credits == 33
+    assert progress.counted_credits == 30
+    assert progress.percent_complete == 83.3
+
+
+def test_percent_and_credits_left_agree_when_every_quota_is_met() -> None:
+    """
+    100% ต้องมาพร้อม "เหลือ 0 นก." เสมอ
+
+    บั๊กเดิม: ติ๊กครบทุกวิชาในแผน 32 ตัวได้ 100% ทั้งที่ยังขาด 15 นก. เพราะ
+    เปอร์เซ็นต์คิดจากจำนวนวิชา แต่หน่วยกิตที่เหลือคิดจากหน่วยกิตหลักสูตร
+    """
+    progress = grouped(CORE_CODES + ELECTIVE_CODES[:6], free=6)  # 12 + 18 + 6
+
+    assert progress.counted_credits == 36
+    assert progress.percent_complete == 100.0
+    assert progress.credits_left_to_graduate == 0
+    assert all(g.complete for g in progress.groups)
+
+
+def test_percent_never_exceeds_one_hundred_with_overshoot_everywhere() -> None:
+    """เก็บเกินทุกหมวด (24 จาก 18, เสรี 10 จาก 6) ก็ยังต้องเป็น 100 ไม่ใช่ 120"""
+    progress = grouped(CORE_CODES + ELECTIVE_CODES, free=10)
+
+    assert progress.percent_complete == 100.0
+    assert progress.credits_left_to_graduate == 0
+
+
+def test_free_elective_group_takes_the_number_the_student_typed() -> None:
+    """
+    เลือกเสรีไม่มีรายวิชาให้ติ๊ก (ลงคณะไหนก็ได้) จึงรับเป็นจำนวนหน่วยกิต
+
+    ถ้าไปนับจากวิชาที่ติ๊ก หมวดนี้จะค้าง 0 ตลอดและเปอร์เซ็นต์รวมไม่มีวันถึง 100
+    """
+    free_group = {g.group_code: g for g in grouped([], free=3).groups}["3.1"]
+
+    assert free_group.is_choice is True
+    assert free_group.passed_credits == 3
+    assert free_group.counted_credits == 3
+    assert free_group.percent == 50.0
+    assert grouped([], free=3).free_elective_credits == 3
+    # ไม่กรอก = 0 ไม่ใช่เดาว่าครบ
+    assert {g.group_code: g for g in grouped([]).groups}["3.1"].passed_credits == 0
+
+
+def test_group_with_courses_ignores_the_free_elective_number() -> None:
+    """หมวดที่มีวิชาในคลังต้องนับจากวิชาที่ติ๊กเท่านั้น แม้จะเป็นหมวดให้เลือก"""
+    by_code = {g.group_code: g for g in grouped(ELECTIVE_CODES[:2], free=50).groups}
+
+    assert by_code["2.2"].passed_credits == 6
+
+
+def test_courses_in_a_completed_group_are_not_suggested() -> None:
+    """เก็บครบโควตาแล้ว วิชาที่เหลือในคลังต้องไม่มาแย่งเพดานหน่วยกิตของเทอม"""
+    progress = grouped(ELECTIVE_CODES[:6])  # เลือกเฉพาะด้านครบ 18 นก.
+    suggestion = planner.suggest_term(progress, 1, max_credits=99)
+    suggested = set(
+        codes(suggestion.picks)
+        + codes(suggestion.deferred)
+        + codes(suggestion.not_offered)
+    )
+
+    assert suggested.isdisjoint(ELECTIVE_CODES[6:])
+    assert set(CORE_CODES) <= suggested, "วิชาบังคับที่ยังขาดต้องยังถูกเสนอ"
+
+
+def test_incomplete_group_still_gets_suggested() -> None:
+    progress = grouped(ELECTIVE_CODES[:2])  # 6 จาก 18 นก. ยังไม่ครบ
+    suggestion = planner.suggest_term(progress, 1, max_credits=99)
+
+    assert set(ELECTIVE_CODES[2:]) <= set(codes(suggestion.picks))
+
+
+# ── กันการถดถอย: ไม่มีข้อมูลหมวด ต้องได้ผลเหมือนก่อนแก้ ─────────────────────
+
+
+def test_without_group_rows_everything_matches_the_old_formula() -> None:
+    """
+    หลักสูตรที่ยังไม่ได้กรอก curriculum_groups (มีอยู่จริงหลายใบ) ต้องไม่พัง
+
+    เมื่อไม่มีข้อมูลหมวด สูตรเปอร์เซ็นต์ยังเป็น "จำนวนวิชาที่ผ่าน/วิชาในแผน"
+    และหน่วยกิตที่เหลือยังคิดจากหน่วยกิตที่ผ่านดิบ ๆ ทุกตัวเลขต้องเท่าเดิม
+    """
+    progress = planner.evaluate(
+        "p", SMALL_PLAN, ["1000001", "1000002"], total_credits_required=120
+    )
+
+    assert progress.groups == ()
+    assert progress.free_elective_credits == 0
+    assert progress.counted_credits == progress.passed_credits == 6
+    assert progress.percent_complete == 25.0
+    assert progress.credits_left_to_graduate == 114
+
+
+def test_group_rows_without_program_total_falls_back_to_course_count() -> None:
+    """ไม่รู้หน่วยกิตรวมของหลักสูตร = หารด้วยอะไรไม่ได้ ต้องถอยไปสูตรเดิม"""
+    progress = planner.evaluate("p", GROUPED_PLAN, CORE_CODES, group_rows=GROUP_ROWS)
+
+    assert progress.groups, "ยังต้องคืนข้อมูลรายหมวดให้หน้าเว็บแสดง"
+    assert progress.percent_complete == round(100.0 * 4 / 12, 1)
+    assert progress.credits_left_to_graduate is None
+
+
+def test_empty_curriculum_does_not_crash_with_groups() -> None:
+    """หลักสูตรที่ยังไม่มีแถวใน curriculum_rules เลย (เช่น 653170011)"""
+    progress = planner.evaluate(
+        "p", [], [], total_credits_required=120, group_rows=GROUP_ROWS
+    )
+
+    assert progress.percent_complete == 0.0
+    assert progress.credits_left_to_graduate == 120
+    assert planner.suggest_term(progress, 1).picks == ()
+
+
+def test_group_quota_zero_is_complete_not_zero_percent() -> None:
+    """โควตา 0 นก. = ไม่มีอะไรต้องเก็บ ห้ามรายงานว่าค้างอยู่ 0%"""
+    group = planner.GroupProgress("9.9", "หมวดว่าง", 0)
+
+    assert group.percent == 100.0
+    assert group.complete is True

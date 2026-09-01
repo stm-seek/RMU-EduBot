@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from app import planner
 from app import progress as prog
 from app import router
 
@@ -455,3 +456,102 @@ async def test_manual_credit_override_is_used_and_acknowledged(settings) -> None
 
     assert "คิดเกรดแล้ว 66 หน่วยกิต" in text
     assert "ใช้จำนวนหน่วยกิตที่คุณบอกมาคิด" in text
+
+
+# ── วิชาเลือกในข้อความที่ผู้ใช้เห็น ─────────────────────────────────────────
+
+
+def test_elective_course_line_never_says_year_zero() -> None:
+    """
+    วิชาเลือกไม่มีเทอมกำหนด (NULL ใน DB) — บรรทัดที่ส่งออกห้ามมี "ปี 0 เทอม 0"
+
+    ชั้นข้อความเอา ``term_label`` ของ planner ไปแปะตรง ๆ ถ้า planner คืน
+    "ปี 0 เทอม 0" ผู้ใช้จะเห็นเทอมที่ไม่มีอยู่จริงในหลักสูตร
+    """
+    course = planner.PlannedCourse(
+        "7073312",
+        0,
+        0,
+        name="วิชาเลือกเฉพาะด้าน ก",
+        credits=3,
+        group_code="2.2",
+        group_label="วิชาเลือกเฉพาะด้าน",
+    )
+    status = planner.CourseStatus(course=course)
+
+    line = prog.course_line(status)
+    assert "ปี 0" not in line
+    assert "[วิชาเลือกเฉพาะด้าน]" in line
+    assert prog.course_row_data(status)["term"] == "วิชาเลือกเฉพาะด้าน"
+
+
+def _db_with_groups(passed: list[str]) -> FakeDatabase:
+    """FakeDatabase ที่มีทั้งโควตาหมวดและหน่วยกิตเลือกเสรี (คิวรีที่ 6 ของ load_progress)"""
+    plan = [
+        dict(PLAN_ROWS[0], group_code="2.2"),
+        dict(PLAN_ROWS[1], group_code="2.2"),
+    ]
+    return FakeDatabase(
+        {
+            "FROM app_users u": {
+                "id": 7,
+                "program_code": "643170151",
+                "study_year": 2,
+                "entry_year": 2564,
+                "completed_courses": len(passed),
+                "free_elective_credits": 6,
+            },
+            "FROM curriculum_rules cr": plan,
+            "FROM curriculum_groups": [
+                {
+                    "group_code": "2.2",
+                    "group_label": "วิชาเลือกเฉพาะด้าน",
+                    "required_credits": 6,
+                    "is_choice": True,
+                    "sort_order": 20,
+                },
+                {
+                    "group_code": "3.1",
+                    "group_label": "หมวดวิชาเลือกเสรี",
+                    "required_credits": 6,
+                    "is_choice": True,
+                    "sort_order": 90,
+                },
+            ],
+            "FROM prerequisites p": [],
+            "FROM user_completed_courses": [{"course_code": c} for c in passed],
+            "FROM programs": {
+                "program_code": "643170151",
+                "program_name": "การจัดการนวัตกรรมดิจิทัล",
+                "total_credits": 120,
+            },
+            "FROM offerings o": [],
+            "FROM offerings": {"acad_year": 2568, "semester": 2, "offerings": 45},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_uses_the_same_group_quota_math_as_the_liff_page() -> None:
+    """
+    ``load_progress`` ต้องส่ง ``group_rows``/``free_elective_credits`` เข้า planner
+
+    ถ้าลืมส่ง planner จะตกไปใช้สูตรสำรอง (นับจำนวนวิชา) แล้วผู้ใช้คนเดียวกัน
+    ถามในแชตกับเปิดหน้า /liff จะได้เปอร์เซ็นต์ไม่เท่ากัน — เทสนี้ปักหมุดว่า
+    ทั้งสองช่องทางคิดจากหน่วยกิตที่นับได้ตามโควตาหมวด
+    """
+    loaded = await prog.load_progress(_db_with_groups(["1000001"]), USER_HASH)
+    assert loaded is not None
+    progress, _ = loaded
+
+    # ผ่าน 1 จาก 2 วิชา — สูตรสำรองจะได้ 50.0 ซึ่งเป็นค่าที่ต้อง **ไม่** เกิดขึ้น
+    assert progress.percent_complete != 50.0
+    # 3 นก. ในหมวด 2.2 + 6 นก. เลือกเสรีที่ผู้ใช้กรอกเอง = 9 จาก 120
+    assert progress.counted_credits == 9
+    assert progress.percent_complete == 7.5
+    assert progress.credits_left_to_graduate == 111
+    assert progress.free_elective_credits == 6
+
+    quota = {g.group_code: g for g in progress.groups}
+    assert quota["3.1"].passed_credits == 6  # หมวดไม่มีวิชาชี้มา รับค่าจากผู้ใช้
+    assert quota["2.2"].passed_credits == 3

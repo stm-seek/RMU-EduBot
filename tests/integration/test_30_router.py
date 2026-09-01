@@ -131,17 +131,20 @@ def test_plan_answer_reports_the_real_gap(
     """
     คำตอบเรื่องแผนการเรียนต้องพูดตัวเลขจริง และยอมรับส่วนที่ยังไม่รู้
 
-    สถานะจริงตั้งแต่ 22 ส.ค. 2026: ``curriculum_rules`` มี 32 วิชาแล้ว
+    สถานะจริงตั้งแต่ 22 ส.ค. 2026: ``curriculum_rules`` มีวิชาแล้ว
     (จึงคำนวณความก้าวหน้าได้) แต่ ``prerequisites`` ยังว่าง → ต้องไม่เคลม
     ว่ารู้เงื่อนไขวิชาบังคับก่อน
+
+    68 = 32 วิชาบังคับที่มีปี/เทอม + 36 วิชาเลือกที่ migration 010 ใส่เข้ามา
+    (วิชาเลือกไม่มีปี/เทอม แต่ข้อความนี้นับ "แถวใน curriculum_rules" ทั้งหมด)
     """
     answer = run(rt.handle_postback("action=plan", live_db))
     text = answer.messages[0]["text"]
 
     assert answer.answered_by == "quick_reply"
     assert_line_limits(answer.messages)
-    assert "แผนการเรียนมาตรฐาน 32 วิชา" in text
-    assert "68 วิชา" in text
+    assert "แผนการเรียนมาตรฐาน 68 วิชา" in text
+    assert "รายวิชาในหลักสูตร 68 วิชา" in text
     assert "45 วิชา" in text
     assert "เทอม 1: 37" in text and "เทอม 2: 33" in text
     assert "ไม่ใช่เงื่อนไขบังคับ" in text

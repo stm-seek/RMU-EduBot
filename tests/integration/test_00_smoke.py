@@ -22,11 +22,16 @@ pytestmark = pytest.mark.integration
 
 # จำนวนแถวที่ seed ใส่ไว้ — 002_seed_data.sql (1,066 แถว)
 # บวก 003_curriculum_rules.sql (แผนการเรียนของ 643170151 อีก 32 แถว)
+# บวก migration 010_electives.sql (วิชาเลือก 36 แถว + โควตา 9 หมวด + 2 วิชา)
 EXPECTED_SEED_ROWS = {
-    "curriculum_rules": 32,
+    # 32 แถวเดิม (วิชาบังคับที่มีปี/เทอม) + 36 วิชาเลือกจาก migration 010
+    "curriculum_rules": 68,
+    "curriculum_groups": 9,
     "programs": 2,
     "categories": 26,
-    "courses": 145,
+    # 145 จาก scraper + 2 วิชาเลือกเสรีคนละคณะที่ migration 010 เพิ่มเอง
+    # (ใบผลการเรียนนับให้ แต่ scraper เดินไม่ถึงเพราะอยู่คณะอื่น)
+    "courses": 147,
     "program_courses": 125,
     "offerings": 337,
     "offering_slots": 292,

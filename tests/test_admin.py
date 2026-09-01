@@ -72,6 +72,11 @@ def admin_db(
     prompt_rule_row: dict | None = None,
     prompt_rules: list[dict] | None = None,
     active_prompt_rules: int = 0,
+    rules: list[dict] | None = None,
+    groups: list[dict] | None = None,
+    group_row: dict | None = None,
+    stock: list[dict] | None = None,
+    total_credits: int | None = 120,
 ) -> FakeWriteDatabase:
     """
     DB ปลอมที่ตอบพอให้ล็อกอินและ ``/state`` ทำงาน
@@ -86,6 +91,12 @@ def admin_db(
     ``prompt_rule_row`` = กฎเสริมของ AI ข้อที่ถูกค้นด้วย ``rule_key`` (``None``
     = ยังไม่มีข้อนั้น → เท่ากับกำลัง "สร้างใหม่"), ``active_prompt_rules`` =
     จำนวนข้อที่เปิดใช้อยู่ ใช้ทดสอบเพดานจำนวนข้อ
+
+    ``groups``/``stock``/``total_credits`` = สามขาของคำเตือนบนแท็บโควตารายหมวด
+    (โควตาที่กรอกไว้ / คลังวิชาที่ชี้มาที่หมวด / หน่วยกิตรวมของหลักสูตร) แยก
+    พารามิเตอร์กันเพราะคำเตือนแต่ละข้อเกิดจากการที่สามขานี้ **ไม่ตรงกัน** —
+    เทสจึงต้องตั้งแต่ละขาได้อิสระ ``total_credits=None`` = ไม่มีเลขในตาราง
+    ``programs`` (คนละกรณีกับผลรวมไม่ตรง)
     """
     if account == "default":
         account = {
@@ -112,7 +123,17 @@ def admin_db(
             "FROM faqs": [{"intent_key": "drop_course", "is_active": True}],
             "FROM documents": [],
             "FROM instructors": [],
-            "FROM curriculum_rules": [],
+            # เฉพาะเจาะจงต้องมาก่อนกว้าง: คลังวิชาอ่านจาก ``curriculum_rules``
+            # เหมือนกัน และแถวเดี่ยวของหมวดอ่านจาก ``curriculum_groups`` เหมือนกัน
+            "AS stock_credits": stock or [],
+            "AND group_code = %s": group_row,
+            "FROM curriculum_groups": groups or [],
+            "FROM programs": {
+                "program_code": "643170151",
+                "program_name": "หลักสูตรสำหรับเทส",
+                "total_credits": total_credits,
+            },
+            "FROM curriculum_rules": rules or [],
             "FROM prerequisites": [],
             "FROM ai_prompt_rules": prompt_rules or [],
             "FROM admin_audit_logs": [],
@@ -768,7 +789,9 @@ def test_state_returns_every_editable_table_in_one_request(
     body = client.post("/api/admin/state", json={}).json()
 
     for key in ("counts", "faqs", "documents", "instructors",
-                "curriculum_rules", "prerequisites", "ai_prompt_rules", "audit"):
+                "curriculum_rules", "curriculum_groups", "program_total_credits",
+                "curriculum_group_warnings", "curriculum_rule_warnings",
+                "prerequisites", "ai_prompt_rules", "audit"):
         assert key in body, key
     assert body["program_code"] == "643170151"
 
@@ -1159,6 +1182,361 @@ def test_no_admin_endpoint_can_write_the_core_prompt() -> None:
     assert ai_chat.SYSTEM_PROMPT  # กันเทสผ่านเพราะค่าคงที่หายไปเฉย ๆ
 
 
+# ── endpoints: โควตาหน่วยกิตรายหมวด ─────────────────────────────────────────
+#
+# แท็บนี้แก้ตัวเลขที่เป็น **ตัวหารของเปอร์เซ็นต์จบการศึกษา** ที่นักศึกษาเห็นใน
+# หน้าติ๊กวิชา กรอกผิดแล้วไม่มีอะไรพัง — เปอร์เซ็นต์แค่ผิด ซึ่งไม่มีใครจับได้
+# เทสกลุ่มนี้จึงปักทั้งทางเขียน (ต้องมี audit + ชื่อคนกด) และคำเตือนทั้งสามข้อ
+
+GROUP_BODY = {
+    "program_code": "643170151",
+    "group_code": "2.2",
+    "group_label": "วิชาเลือกเฉพาะด้าน",
+    "required_credits": 18,
+    "is_choice": True,
+    "sort_order": 20,
+    "source": "ใบผลการเรียนที่ระบบทะเบียนจัดหมวดให้",
+}
+
+
+def group_row(**overrides) -> dict:
+    """แถวหมวดที่ครบทุกช่องที่คำเตือนต้องอ่าน (ขาดช่องเดียวคำเตือนจะเงียบ)"""
+    row = {
+        "group_code": "2.2",
+        "group_label": "วิชาเลือกเฉพาะด้าน",
+        "required_credits": 18,
+        "is_choice": True,
+        "is_active": True,
+        "verified_by": "ผู้ตรวจหลักสูตร",
+    }
+    row.update(overrides)
+    return row
+
+
+def warning_kinds(body: dict, key: str = "curriculum_group_warnings") -> list[str]:
+    return [item["kind"] for item in body[key]]
+
+
+def test_saving_a_curriculum_group_writes_the_row_and_the_audit(
+    make_client, monkeypatch
+) -> None:
+    """เหมือนทุกแท็บ: upsert หนึ่งครั้ง + audit หนึ่งครั้ง + ชื่อคนกดใน ``updated_by``"""
+    client, database = logged_in(make_client, monkeypatch)
+
+    body = client.post("/api/admin/curriculum_group", json=GROUP_BODY).json()
+
+    assert body["ok"] is True
+    assert body["action"] == "create"
+    assert body["changes"]["required_credits"]["to"] == 18
+    params = database.executed_for("INSERT INTO curriculum_groups")
+    assert params[0] == "643170151"
+    assert params[1] == "2.2"
+    assert params[3] == 18
+    assert params[-1] == ADMIN_USERNAME
+    audit = database.executed_for("INSERT INTO admin_audit_logs")
+    assert audit[0] == ADMIN_USERNAME
+    assert audit[1] == "create"
+    assert audit[2] == "curriculum_groups"
+
+
+def test_saving_over_an_existing_group_keeps_the_old_quota_in_the_audit(
+    make_client, monkeypatch
+) -> None:
+    """
+    โควตาเดิมต้องอยู่ใน ``changes`` — ตัวเลขชุดนี้ยังไม่มีใครยืนยันกับ มคอ.2
+    ถ้าใครแก้ผิดแล้วค่าเก่าไม่ถูกเก็บไว้ ก็ไม่มีทางรู้ว่าเดิมเป็นเท่าไร
+    """
+    old = group_row(required_credits=15, verified_by=None)
+    old.update({"program_code": "643170151", "source": "ที่มาเก่า", "sort_order": 20})
+    client, database = logged_in(make_client, monkeypatch, admin_db(group_row=old))
+
+    body = client.post("/api/admin/curriculum_group", json=GROUP_BODY).json()
+
+    assert body["action"] == "update"
+    assert body["changes"]["required_credits"] == {"from": 15, "to": 18}
+    # ช่องที่ไม่ได้เปลี่ยนต้องไม่โผล่ ไม่งั้นอ่าน audit ไม่ออกว่าแก้อะไรจริง
+    assert "group_label" not in body["changes"]
+
+
+def test_saving_a_curriculum_group_needs_the_cookie(make_client, monkeypatch) -> None:
+    """ไม่มี cookie = แก้ตัวหารของเปอร์เซ็นต์จบการศึกษาไม่ได้ และต้องไม่เขียนอะไรเลย"""
+    database = admin_db()
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(admin_settings())
+
+    response = client.post("/api/admin/curriculum_group", json=GROUP_BODY)
+
+    assert response.status_code == 401
+    assert database.executed == []
+
+
+def test_the_group_endpoint_has_no_way_in_without_a_cookie(
+    make_client, monkeypatch
+) -> None:
+    """
+    ไม่มีทางอ่าน/เขียนแท็บนี้แบบไม่ล็อกอิน — รวม ``GET`` ด้วย
+
+    ปักไว้เพราะ endpoint แบบอ่านอย่างเดียวคือสิ่งที่คนมักเปิดทิ้งไว้ "เพราะไม่
+    ได้เขียนอะไร" แต่โควตาหลักสูตรกับ ``/state`` ทั้งก้อนก็คือข้อมูลภายใน
+    """
+    database = admin_db()
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(admin_settings())
+
+    for response in (
+        client.get("/api/admin/curriculum_group"),
+        client.post("/api/admin/state", json={}),
+    ):
+        assert response.status_code in (401, 403, 405), response.status_code
+    assert database.executed == []
+
+
+def test_a_negative_required_credits_never_reaches_postgres(
+    make_client, monkeypatch
+) -> None:
+    """
+    ``CHECK (required_credits >= 0)`` ของ 010 จะโยน ``CheckViolation`` = 500
+    ที่หน้าเว็บขึ้นเป็น "ระบบผิดพลาด" ทั้งที่คนกรอกผิด → ต้อง 422 ก่อนถึง DB
+    """
+    client, database = logged_in(make_client, monkeypatch)
+
+    response = client.post(
+        "/api/admin/curriculum_group", json={**GROUP_BODY, "required_credits": -1}
+    )
+
+    assert response.status_code == 422
+    assert database.executed == []
+
+
+def test_a_sort_order_that_is_not_a_number_is_rejected(make_client, monkeypatch) -> None:
+    """``sort_order`` เป็น SMALLINT — ส่งข้อความมาต้องเป็น 422 ไม่ใช่ 500 ตอน INSERT"""
+    client, database = logged_in(make_client, monkeypatch)
+
+    response = client.post(
+        "/api/admin/curriculum_group", json={**GROUP_BODY, "sort_order": "สอง"}
+    )
+
+    assert response.status_code == 422
+    assert database.executed == []
+
+
+def test_changing_the_group_code_of_an_existing_row_is_rejected(
+    make_client, monkeypatch
+) -> None:
+    """
+    เปลี่ยนรหัสหมวดของแถวเดิม = สร้างหมวดใหม่ทิ้งวิชาที่ชี้มาที่รหัสเดิมไว้ลอย ๆ
+    (``curriculum_rules.group_code`` ไม่มี FK) จึงต้องปฏิเสธ ไม่ใช่ upsert เงียบ ๆ
+    """
+    client, database = logged_in(make_client, monkeypatch)
+
+    response = client.post(
+        "/api/admin/curriculum_group",
+        json={**GROUP_BODY, "group_code": "2.3", "original_group_code": "2.2"},
+    )
+
+    assert response.status_code == 400
+    assert "2.2" in response.json()["detail"]
+    assert database.executed == [], "ถูกปฏิเสธแล้วต้องไม่มีแถวใหม่เกิดขึ้น"
+
+
+def test_a_rule_that_points_at_a_group_that_does_not_exist_is_a_404(
+    make_client, monkeypatch
+) -> None:
+    """
+    ``group_code`` ไม่มี FK → พิมพ์รหัสหมวดที่ยังไม่มีอยู่ก็บันทึกผ่านได้ แล้ว
+    วิชานั้นหลุดจากทุกโควตาโดยไม่มี error ให้เห็น ต้องเช็คว่าหมวดมีจริงก่อนเขียน
+    """
+    client, database = logged_in(make_client, monkeypatch, admin_db(group_row=None))
+
+    response = client.post(
+        "/api/admin/curriculum_rule",
+        json={
+            "program_code": "643170151",
+            "course_code": "7071101",
+            "std_year": 1,
+            "std_semester": 1,
+            "source": "มคอ.2 หน้า 42",
+            "group_code": "9.9",
+        },
+    )
+
+    assert response.status_code == 404
+    assert "9.9" in response.json()["detail"]
+    assert database.executed == []
+
+
+def test_a_group_code_with_a_comma_instead_of_a_dot_is_rejected(
+    make_client, monkeypatch
+) -> None:
+    """'2,2' คือคีย์ที่หน้าตาเหมือน '2.2' แต่ไม่มีวิชาไหนชี้มา — กันที่รูปแบบเลย"""
+    client, database = logged_in(make_client, monkeypatch)
+
+    response = client.post(
+        "/api/admin/curriculum_group", json={**GROUP_BODY, "group_code": "2,2"}
+    )
+
+    assert response.status_code == 422
+    assert database.executed == []
+
+
+# ── คำเตือนบนแท็บโควตา ──────────────────────────────────────────────────────
+#
+# **ห้ามลบเทสกลุ่มนี้** ด้วยเหตุผลเดียวกับที่เขียนไว้ในหัว 010_electives.sql:
+# ถ้าผลรวมโควตาไม่เท่าหน่วยกิตหลักสูตร หน้า /liff ยังคิดเปอร์เซ็นต์ออกมาสวย ๆ
+# ได้อยู่ — ผิดแบบไม่มีใครเห็น คำเตือนคือสิ่งเดียวที่ทำให้คนดูแลรู้ตัว
+
+
+def test_warns_when_the_quotas_do_not_add_up_to_the_curriculum(
+    make_client, monkeypatch
+) -> None:
+    """
+    ข้อความต้องมีทั้งสองตัวเลขและส่วนต่าง — บอกแค่ "ไม่ตรง" แล้วคนดูแลต้องไปบวก
+    เองทุกครั้ง ซึ่งแปลว่าจะไม่มีใครแก้
+    """
+    client, _ = logged_in(
+        make_client,
+        monkeypatch,
+        admin_db(groups=[group_row(required_credits=18)], total_credits=120),
+    )
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    assert "credit_sum" in warning_kinds(body)
+    text = next(w["text"] for w in body["curriculum_group_warnings"]
+                if w["kind"] == "credit_sum")
+    assert "18" in text and "120" in text and "102" in text
+
+
+def test_does_not_warn_when_the_quotas_add_up(make_client, monkeypatch) -> None:
+    """คำเตือนที่ขึ้นทั้งที่ทุกอย่างถูกคือคำเตือนที่คนจะเลิกอ่านทั้งแท็บ"""
+    client, _ = logged_in(
+        make_client,
+        monkeypatch,
+        admin_db(
+            groups=[
+                group_row(group_code="2.2", required_credits=18),
+                group_row(group_code="3.1", group_label="เลือกเสรี",
+                          required_credits=6),
+            ],
+            total_credits=24,
+        ),
+    )
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    assert body["curriculum_group_warnings"] == []
+
+
+def test_a_group_with_no_courses_pointing_at_it_is_never_warned_about(
+    make_client, monkeypatch
+) -> None:
+    """
+    หมวดเลือกเสรี (3.1) ไม่ระบุรายวิชาโดยเจตนา — คลังวิชา 0 หน่วยกิตของมันคือ
+    ความถูกต้อง ไม่ใช่ความผิด เตือนแล้วคนดูแลจะเห็นคำเตือนที่แก้ไม่ได้ทุกวัน
+    """
+    client, _ = logged_in(
+        make_client,
+        monkeypatch,
+        admin_db(
+            groups=[
+                group_row(group_code="2.2", required_credits=18),
+                group_row(group_code="3.1", group_label="เลือกเสรี",
+                          required_credits=6),
+            ],
+            stock=[{"group_code": "2.2", "course_count": 8,
+                    "stock_credits": 24, "unknown_credits": 0}],
+            total_credits=24,
+        ),
+    )
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    assert body["curriculum_group_warnings"] == []
+
+
+def test_warns_when_the_courses_in_a_group_cannot_fill_its_quota(
+    make_client, monkeypatch
+) -> None:
+    """คลังวิชาน้อยกว่าโควตา = นักศึกษาเลือกให้ครบไม่ได้เลย ไม่ว่าจะขยันแค่ไหน"""
+    client, _ = logged_in(
+        make_client,
+        monkeypatch,
+        admin_db(
+            groups=[group_row(required_credits=18)],
+            stock=[{"group_code": "2.2", "course_count": 2,
+                    "stock_credits": 6, "unknown_credits": 0}],
+            total_credits=18,
+        ),
+    )
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    assert warning_kinds(body) == ["stock_short"]
+    assert "6" in body["curriculum_group_warnings"][0]["text"]
+
+
+def test_warns_about_groups_that_nobody_checked_against_the_curriculum_book(
+    make_client, monkeypatch
+) -> None:
+    """
+    โควตาทั้งชุดมาจากใบผลการเรียนที่ระบบทะเบียนจัดหมวดให้ ไม่ใช่จาก มคอ.2 —
+    ตอนนี้ยังไม่มีหมวดไหนถูกยืนยัน คำเตือนนี้คือที่เดียวที่บอกความจริงข้อนั้น
+    """
+    client, _ = logged_in(
+        make_client,
+        monkeypatch,
+        admin_db(
+            groups=[group_row(required_credits=18, verified_by=None)],
+            total_credits=18,
+        ),
+    )
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    assert warning_kinds(body) == ["unverified"]
+    assert "2.2" in body["curriculum_group_warnings"][0]["text"]
+
+
+def test_warns_when_the_curriculum_has_no_total_credits_at_all(
+    make_client, monkeypatch
+) -> None:
+    """ไม่รู้หน่วยกิตรวม ≠ หน่วยกิตรวมเป็น 0 — ต้องบอกว่า "ตรวจให้ไม่ได้" ไม่ใช่เดา"""
+    client, _ = logged_in(
+        make_client,
+        monkeypatch,
+        admin_db(groups=[group_row(required_credits=18)], total_credits=None),
+    )
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    assert warning_kinds(body) == ["no_total"]
+    assert body["program_total_credits"] is None
+
+
+def test_warns_about_a_course_in_the_plan_that_has_no_group(
+    make_client, monkeypatch
+) -> None:
+    """
+    วิชาที่ ``group_code`` ว่างยังขึ้นให้นักศึกษาติ๊กตามปกติ แต่ติ๊กแล้ว
+    เปอร์เซ็นต์ไม่ขยับ และไม่มีอะไรบอกว่าทำไม
+    """
+    client, _ = logged_in(
+        make_client,
+        monkeypatch,
+        admin_db(rules=[
+            {"course_code": "7071101", "group_code": None, "is_active": True},
+            {"course_code": "7071102", "group_code": "2.2", "is_active": True},
+        ]),
+    )
+
+    body = client.post("/api/admin/state", json={}).json()
+
+    assert warning_kinds(body, "curriculum_rule_warnings") == ["missing_group"]
+    text = body["curriculum_rule_warnings"][0]["text"]
+    assert "7071101" in text
+    assert "7071102" not in text, "วิชาที่มีหมวดแล้วต้องไม่ถูกเอ่ยถึง"
+
+
 # ── endpoints: ปุ่มปิด (แทนการลบ) ────────────────────────────────────────────
 
 
@@ -1228,6 +1606,36 @@ def test_toggling_a_row_off_updates_only_that_row(make_client, monkeypatch) -> N
     assert params[0] is False
     assert params[1] == ADMIN_USERNAME
     assert params[-1] == "drop_course"
+
+
+def test_toggling_a_curriculum_group_off_updates_only_that_row(
+    make_client, monkeypatch
+) -> None:
+    """
+    ปิดหมวดแทนการลบ — และเหตุผลที่แท็บนี้ **ไม่มี DELETE** หนักกว่าที่อื่น:
+    มีรายวิชาหลายสิบแถวชี้มาที่ ``group_code`` โดยไม่มี FK ลบหมวดแล้ววิชาเหล่านั้น
+    จะไม่มีโควตารองรับแบบไม่มี error ให้เห็น
+    """
+    client, database = logged_in(
+        make_client, monkeypatch, admin_db(group_row=group_row())
+    )
+
+    body = client.post(
+        "/api/admin/toggle",
+        json={
+            "table": "curriculum_groups",
+            "key": ["643170151", "2.2"],
+            "is_active": False,
+        },
+    ).json()
+
+    assert body["action"] == "toggle"
+    assert body["changes"]["is_active"] == {"from": True, "to": False}
+    params = database.executed_for("UPDATE curriculum_groups SET is_active")
+    assert params == (False, ADMIN_USERNAME, "643170151", "2.2")
+    assert database.executed_for("INSERT INTO admin_audit_logs")[2] == (
+        "curriculum_groups"
+    )
 
 
 def test_turning_a_prompt_rule_back_on_respects_the_active_cap(
@@ -1418,6 +1826,7 @@ def test_no_query_deletes_anything(name: str) -> None:
         "SQL_ADMIN_UPSERT_FAQ",
         "SQL_ADMIN_UPSERT_DOCUMENT",
         "SQL_ADMIN_UPSERT_CURRICULUM_RULE",
+        "SQL_ADMIN_UPSERT_CURRICULUM_GROUP",
         "SQL_ADMIN_UPSERT_PREREQUISITE",
         "SQL_ADMIN_UPDATE_INSTRUCTOR",
         "SQL_ADMIN_UPSERT_PROMPT_RULE",

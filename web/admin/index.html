@@ -1447,6 +1447,7 @@ const TABS = [
     endpoint: "/api/admin/curriculum_rule",
     key: ["program_code", "course_code"],
     rows: () => state.curriculum_rules,
+    warnings: () => state.curriculum_rule_warnings,
     lead: "ปี/ภาคที่หลักสูตรวางไว้ให้แต่ละวิชา — planner เอาชุดนี้ไปบอกว่า " +
       "เทอมหน้าควรลงอะไร",
     empty: {
@@ -1463,12 +1464,13 @@ const TABS = [
       { name: "std_year", label: "ปี" },
       { name: "std_semester", label: "ภาค" },
       { name: "is_fixed_term", label: "ล็อกเทอม", type: "bool" },
+      { name: "group_code", label: "หมวด", cls: "nowrap" },
       { name: "source", label: "ที่มา", cls: "clip" },
     ],
     fields: [
       { name: "program_code", label: "รหัสหลักสูตร", required: true, min: 3, max: 20 },
       { name: "course_code", label: "รหัสวิชา 7 หลัก", required: true,
-        pattern: "^\d{7}$", max: 7, numeric: true,
+        pattern: "^\\d{7}$", max: 7, numeric: true,
         patternHint: "ต้องเป็นตัวเลข 7 หลักพอดี",
         hint: "ต้องเป็น 7 หลักพอดี — ใส่รหัสเต็มลงช่องนี้แล้วจะหาชื่อวิชาไม่เจอ " +
           "โดยไม่มี error อะไรเลย" },
@@ -1478,10 +1480,79 @@ const TABS = [
       { name: "std_semester", label: "ภาคเรียนที่", type: "number", required: true,
         numMin: 1, numMax: 3, hint: "1–3" },
       { name: "is_fixed_term", label: "ล็อกเทอมนี้ (ย้ายไปเทอมอื่นไม่ได้)", type: "checkbox" },
+      { name: "group_code", label: "หมวดของหลักสูตร", type: "select",
+        options: () => groupCodeOptions(),
+        hint: "ว่าง = วิชานี้ไม่ถูกนับหน่วยกิตในโควตาหมวดใดเลย ทั้งที่ยังขึ้น " +
+          "ให้นักศึกษาติ๊ก (ติ๊กแล้วเปอร์เซ็นต์ไม่ขยับ)" },
       { name: "note", label: "หมายเหตุ", max: 500 },
       { name: "source", label: "ที่มาของข้อมูล", required: true, min: 2, max: 200, wide: true,
         hint: "บังคับกรอก — planner เอาไปบอกว่าเทอมหน้าควรลงอะไร " +
           "ถ้าไม่รู้ว่าใครบอกมาก็แก้กลับไม่ได้" },
+    ],
+  },
+  {
+    id: "curriculum_groups",
+    label: "โควตารายหมวด",
+    table: "curriculum_groups",
+    endpoint: "/api/admin/curriculum_group",
+    key: ["program_code", "group_code"],
+    rows: () => state.curriculum_groups,
+    warnings: () => state.curriculum_group_warnings,
+    // รหัสหมวดเป็นกุญแจที่รายวิชาในแผนชี้มาโดยไม่มี FK — เปลี่ยนไม่ได้
+    lockedField: "group_code",
+    lead: "หน่วยกิตที่ต้องผ่านของแต่ละหมวด — ตัวเลขชุดนี้คือตัวหารของ " +
+      "เปอร์เซ็นต์จบการศึกษาที่นักศึกษาเห็น",
+    note: "โควตาชุดนี้มาจากใบผลการเรียนที่ระบบทะเบียนจัดหมวดให้ ไม่ใช่จากเล่ม " +
+      "มคอ.2 — ใครเทียบเล่มแล้วให้กรอกชื่อตัวเองในช่อง “ยืนยันโดย” ของหมวดนั้น " +
+      "แท็บนี้จึงมีอยู่เพื่อไม่ต้องรอ migration ใหม่ทุกครั้งที่ตัวเลขเปลี่ยน",
+    empty: {
+      title: "ยังไม่มีโควตารายหมวดของหลักสูตรนี้",
+      body: "ไม่มีข้อมูลชุดนี้ = หน้าติ๊กวิชาไม่รู้ว่าวิชาเลือกต้องเลือกให้ครบ " +
+        "กี่หน่วยกิต และคิดเปอร์เซ็นต์จบการศึกษาจากจำนวนวิชาแทนหน่วยกิต",
+      steps: [
+        "กรอกหมวดละหนึ่งแถว: รหัสหมวด (เช่น 2.2) ชื่อหมวด และหน่วยกิตที่ต้องผ่าน",
+        "ติ๊ก “เป็นคลังให้เลือก” เมื่อหมวดนั้นมีวิชาให้เลือกมากกว่าโควตา",
+        "กรอกให้ผลรวมทุกหมวดเท่ากับหน่วยกิตรวมของหลักสูตร (คำเตือนจะบอกถ้าไม่เท่า)",
+      ],
+    },
+    groupBy: (row) => row.is_choice
+      ? "หมวดที่เลือกได้ (คลังวิชามากกว่าโควตา)"
+      : "หมวดที่ต้องผ่านทุกวิชา",
+    groupLabel: "ชนิดหมวด",
+    summary: ["group_code", "group_label"],
+    columns: [
+      { name: "group_code", label: "รหัสหมวด", cls: "nowrap" },
+      { name: "group_label", label: "ชื่อหมวด", cls: "clip" },
+      { name: "required_credits", label: "หน่วยกิต" },
+      { name: "is_choice", label: "เลือกได้", type: "bool" },
+      { name: "sort_order", label: "ลำดับ" },
+      { name: "verified_by", label: "ยืนยันโดย", cls: "clip" },
+    ],
+    fields: [
+      { name: "program_code", label: "รหัสหลักสูตร", required: true, min: 3, max: 20 },
+      { name: "group_code", label: "รหัสหมวด (กุญแจ — แก้แถวเดิมไม่ได้)",
+        required: true, max: 20, lockWhenEditing: true,
+        pattern: "^[0-9A-Za-z][0-9A-Za-z.-]{0,19}$",
+        patternHint: "ใช้ได้เฉพาะตัวเลข ตัวอักษรอังกฤษ จุด และขีด (เช่น 2.2)",
+        hint: "รายวิชาในแผนการเรียนชี้มาที่รหัสนี้ เปลี่ยนรหัสคือทิ้งวิชาเดิม " +
+          "ไว้กับหมวดที่ไม่มีอยู่ — ถ้าต้องเปลี่ยนจริงให้สร้างหมวดใหม่ ย้ายวิชา " +
+          "แล้วปิดหมวดเดิม" },
+      { name: "group_label", label: "ชื่อหมวดที่คนอ่านเข้าใจ", required: true,
+        min: 2, max: 200, wide: true,
+        hint: "ข้อความนี้ขึ้นเป็นหัวข้อกลุ่มวิชาเลือกในหน้าติ๊กวิชาของนักศึกษา" },
+      { name: "required_credits", label: "หน่วยกิตที่ต้องผ่าน", type: "number",
+        required: true, numMin: 0, numMax: 300,
+        hint: "ผลรวมทุกหมวดต้องเท่ากับหน่วยกิตรวมของหลักสูตร" },
+      { name: "is_choice", label: "เป็นคลังให้เลือก (ไม่ต้องผ่านทุกวิชาในหมวด)",
+        type: "checkbox" },
+      { name: "sort_order", label: "ลำดับที่แสดง", type: "number",
+        numMin: 0, numMax: 9999,
+        hint: "เว้นช่วงละ 10 ไว้เพื่อแทรกหมวดใหม่ได้โดยไม่ต้องไล่แก้ทุกแถว" },
+      { name: "source", label: "ที่มาของตัวเลข", required: true, min: 2, max: 300,
+        wide: true,
+        hint: "บังคับกรอก — ตัวเลขที่ไม่รู้ว่ามาจากไหนคือตัวเลขที่แก้กลับไม่ได้" },
+      { name: "verified_by", label: "ยืนยันกับ มคอ.2 โดย", max: 200,
+        hint: "ว่าง = ยังไม่มีใครเทียบกับเล่มหลักสูตร (ตอนนี้ว่างทุกหมวด)" },
     ],
   },
   {
@@ -1519,10 +1590,10 @@ const TABS = [
     fields: [
       { name: "program_code", label: "รหัสหลักสูตร", required: true, min: 3, max: 20 },
       { name: "course_code", label: "รหัสวิชา 7 หลัก", required: true,
-        pattern: "^\d{7}$", max: 7, numeric: true,
+        pattern: "^\\d{7}$", max: 7, numeric: true,
         patternHint: "ต้องเป็นตัวเลข 7 หลักพอดี" },
       { name: "requires_code", label: "วิชาที่ต้องผ่านก่อน (7 หลัก)", required: true,
-        pattern: "^\d{7}$", max: 7, numeric: true,
+        pattern: "^\\d{7}$", max: 7, numeric: true,
         patternHint: "ต้องเป็นตัวเลข 7 หลักพอดี" },
       { name: "kind", label: "ชนิดเงื่อนไข", type: "select",
         options: [["hard", "บังคับ (hard)"], ["soft", "แนะนำ (soft)"],
@@ -1597,13 +1668,38 @@ function tabCount(tab) {
 // สร้างจาก ``fields`` ของแท็บ ไม่ได้เขียน HTML ของแต่ละฟอร์มแยก — ฟอร์มที่
 // copy-paste กันมักจะลืมแก้ที่ใดที่หนึ่งเวลาเพิ่มช่อง แล้วค่านั้นจะหายเงียบ ๆ
 
+/**
+ * ตัวเลือกหมวดสำหรับแท็บแผนการเรียน
+ *
+ * รวมรหัสที่ **แถวในแผนใช้อยู่แต่ไม่มีในตารางโควตา** เข้ามาด้วย เพราะถ้าไม่รวม
+ * แล้วกด "แก้" แถวนั้น dropdown จะเด้งกลับเป็นค่าว่าง = กดบันทึกทีเดียวหมวดของ
+ * วิชานั้นหายไปเงียบ ๆ (เซิร์ฟเวอร์จะปฏิเสธรหัสที่ไม่มีหมวดรองรับอยู่แล้ว
+ * คนกรอกจะได้เห็นข้อความว่าต้องสร้างหมวดก่อน ซึ่งดีกว่าค่าหายแบบไม่มีใครรู้)
+ */
+function groupCodeOptions() {
+  const options = new Map();
+  for (const row of state.curriculum_groups || []) {
+    const code = String(row.group_code);
+    options.set(code, `${code} · ${row.group_label}${row.is_active ? "" : " (ปิดอยู่)"}`);
+  }
+  for (const row of state.curriculum_rules || []) {
+    const code = row.group_code ? String(row.group_code) : "";
+    if (code && !options.has(code)) options.set(code, `${code} (ไม่มีหมวดนี้ในตารางโควตา)`);
+  }
+  return [["", "— ไม่ระบุหมวด —"], ...options.entries()];
+}
+
 function inputFor(field) {
   let node;
   if (field.type === "textarea") {
     node = document.createElement("textarea");
   } else if (field.type === "select") {
     node = document.createElement("select");
-    for (const [value, label] of field.options) {
+    // ตัวเลือกเป็นฟังก์ชันได้ เพราะ dropdown หมวดของหลักสูตรต้องมาจากตาราง
+    // โควตาที่โหลดมากับ /state ไม่ใช่รายการที่ hard-code ไว้ในหน้า (หมวดเพิ่ม/
+    // ปิดได้จากแท็บข้าง ๆ แล้วสองที่จะไม่ตรงกันทันที)
+    const options = typeof field.options === "function" ? field.options() : field.options;
+    for (const [value, label] of options) {
       const option = document.createElement("option");
       option.value = value;
       option.textContent = label;
@@ -1628,6 +1724,12 @@ function inputFor(field) {
   node.id = `f_${field.name}`;
   node.name = field.name;
   if (field.readonly) node.readOnly = true;
+  // ช่องที่เป็นกุญแจของแถว: แก้ได้ตอนสร้างใหม่ ห้ามแก้ตอนกดแก้แถวเดิม
+  // (เซิร์ฟเวอร์ปฏิเสธอยู่แล้ว — ที่นี่กันไม่ให้พิมพ์ทิ้งไปเปล่า ๆ ก่อนถูกปฏิเสธ)
+  if (field.lockWhenEditing && editingKey) {
+    if (node.tagName === "SELECT") node.disabled = true;
+    else node.readOnly = true;
+  }
   return node;
 }
 
@@ -1904,6 +2006,15 @@ async function submitForm(tab, button, status) {
   clearNotices();
   clearFieldErrors(tab);
   const { body, problems } = collectForm(tab);
+  // ``original_*`` = ค่ากุญแจของแถวที่กำลังแก้ ส่งไปให้เซิร์ฟเวอร์เทียบเอง
+  // — ถ้ามีใครแก้ค่าในช่องที่ล็อกไว้ได้ (ปิด JS, curl) จะได้ 400 ไม่ใช่แถวใหม่
+  // ที่ทิ้งรายวิชาซึ่งชี้มาที่รหัสเดิมไว้กลางอากาศ
+  if (tab.lockedField && editingKey) {
+    const current = (tab.rows() || []).find(
+      (row) => tab.key.map((name) => String(row[name])).join(" | ") === editingKey
+    );
+    if (current) body[`original_${tab.lockedField}`] = current[tab.lockedField];
+  }
   if (problems.length) {
     for (const problem of problems) showFieldError(problem.field, problem.message);
     notice(
@@ -3105,6 +3216,35 @@ function promptBlock(label, body, editable) {
   return box;
 }
 
+/**
+ * คำเตือนของแท็บ — ข้อความมาจาก ``/api/admin/state`` ทั้งก้อน
+ *
+ * หน้านี้ **ไม่คำนวณคำเตือนเอง** โดยเจตนา: ผลรวมโควตาเทียบหน่วยกิตหลักสูตร
+ * เป็นตัวเลขเดียวกับที่ตัดสินเปอร์เซ็นต์จบการศึกษาของนักศึกษา คิดสองที่แล้ว
+ * ไม่ตรงกันคือความพังที่หาสาเหตุยากที่สุด (ดู app/admin.py)
+ */
+function warningCard(items) {
+  const card = document.createElement("section");
+  card.className = "card";
+  const head = document.createElement("div");
+  head.className = "card__head";
+  const title = document.createElement("h2");
+  title.textContent = `ต้องแก้ก่อน (${items.length.toLocaleString("th-TH")} เรื่อง)`;
+  head.appendChild(title);
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent =
+    "คำเตือนพวกนี้ไม่ได้ห้ามบันทึก แต่ระหว่างที่ยังไม่แก้ ตัวเลขความคืบหน้า " +
+    "ที่นักศึกษาเห็นในหน้าติ๊กวิชาจะไม่ตรงกับหลักสูตร";
+  head.appendChild(sub);
+  card.appendChild(head);
+  const body = document.createElement("div");
+  body.className = "card__body";
+  for (const item of items) body.appendChild(inlineMsg(item.text, "warn"));
+  card.appendChild(body);
+  return card;
+}
+
 function render() {
   renderTabs();
   const view = el("view");
@@ -3121,6 +3261,8 @@ function render() {
     view.appendChild(renderAudit());
   } else {
     view.appendChild(renderForm(tab));
+    const warnings = tab.warnings ? tab.warnings() || [] : [];
+    if (warnings.length) view.appendChild(warningCard(warnings));
     if (tab.id === "ai_prompt_rules") view.appendChild(renderPromptPreview());
     view.appendChild(renderTable(tab));
     if (!editingKey) fillForm(tab, null);

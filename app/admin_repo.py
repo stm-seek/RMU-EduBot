@@ -73,11 +73,65 @@ LIMIT %s
 
 SQL_ADMIN_CURRICULUM_RULES = """
 SELECT program_code, course_code, course_code_full, std_year, std_semester,
-       is_fixed_term, note, source, is_active, updated_at, updated_by
+       is_fixed_term, note, source, group_code, is_active, updated_at, updated_by
 FROM curriculum_rules
 WHERE program_code = %s
 ORDER BY is_active DESC, std_year, std_semester, course_code
 LIMIT %s
+"""
+
+# โควตาหน่วยกิตรายหมวด (010_electives.sql) — เรียง ``sort_order`` ก่อน
+# ``group_code`` ด้วยเหตุผลเดียวกับใน :mod:`app.repository`: '1.1.10' เรียงแบบ
+# text จะมาก่อน '1.1.2' ซึ่งไม่ใช่ลำดับที่คนอ่านหลักสูตรคุ้น
+#
+# **ไม่กรอง is_active** ต่างจาก ``repository.SQL_CURRICULUM_GROUPS`` ที่บอทใช้:
+# หน้านี้ต้องเห็นหมวดที่ปิดไว้เพื่อเปิดกลับได้ (กรองหายแล้วปิดคือลบจริง)
+SQL_ADMIN_CURRICULUM_GROUPS = """
+SELECT program_code, group_code, group_label, required_credits, is_choice,
+       sort_order, source, verified_by, is_active, updated_at, updated_by
+FROM curriculum_groups
+WHERE program_code = %s
+ORDER BY is_active DESC, sort_order, group_code
+LIMIT %s
+"""
+
+# คลังวิชาของแต่ละหมวด — "เลือกให้ครบโควตาได้จริงไหม" ตอบได้ต่อเมื่อรู้ว่าหมวด
+# นั้นมีวิชาให้เลือกกี่หน่วยกิต ตัวเลขนี้จึงมาจาก ``curriculum_rules`` ที่ชี้มา
+# ไม่ใช่จากตัวโควตาเอง (ดูคำเตือนใน :func:`app.admin.curriculum_group_warnings`)
+#
+# ``LEFT JOIN LATERAL`` ตามแบบ ``repository.SQL_CURRICULUM_PLAN``: ตาราง
+# ``courses`` มีรหัสซ้ำได้ (คนละหลักสูตร/คนละปี) join ตรง ๆ แล้วหน่วยกิตจะถูก
+# นับหลายรอบต่อวิชาเดียว ซึ่งทำให้คลังดู "พอ" ทั้งที่ไม่พอ
+#
+# ``unknown_credits`` = วิชาที่ไม่มีหน่วยกิตในคลังข้อมูล — ถ้ามีแถวแบบนี้
+# ผลรวมข้างบนต่ำกว่าความจริง จึงต้องรายงานแยกไม่ใช่เตือนว่าคลังไม่พอ
+SQL_ADMIN_CURRICULUM_GROUP_STOCK = """
+SELECT cr.group_code,
+       count(*) AS course_count,
+       coalesce(sum(c.credits), 0) AS stock_credits,
+       count(*) FILTER (WHERE c.credits IS NULL) AS unknown_credits
+FROM curriculum_rules cr
+LEFT JOIN LATERAL (
+    SELECT credits
+    FROM courses
+    WHERE course_code = cr.course_code
+    ORDER BY (credits IS NULL), course_id
+    LIMIT 1
+) c ON TRUE
+WHERE cr.program_code = %s
+  AND cr.is_active
+  AND cr.group_code IS NOT NULL
+GROUP BY cr.group_code
+"""
+
+# ตัวหารของคำเตือน "ผลรวมโควตาไม่เท่าหลักสูตร" — อ่านเองที่นี่ ไม่เรียกข้าม
+# ไปที่ :mod:`app.repository` เพราะไฟล์นี้ลงทะเบียน SQL ของตัวเองให้เทสตรวจ
+SQL_ADMIN_PROGRAM_TOTAL_CREDITS = """
+SELECT program_code, program_name, total_credits
+FROM programs
+WHERE program_code = %s
+ORDER BY program_id
+LIMIT 1
 """
 
 SQL_ADMIN_PREREQUISITES = """
@@ -185,9 +239,16 @@ WHERE full_name = %s
 
 SQL_ADMIN_CURRICULUM_RULE_ROW = """
 SELECT program_code, course_code, course_code_full, std_year, std_semester,
-       is_fixed_term, note, source, is_active
+       is_fixed_term, note, source, group_code, is_active
 FROM curriculum_rules
 WHERE program_code = %s AND course_code = %s
+"""
+
+SQL_ADMIN_CURRICULUM_GROUP_ROW = """
+SELECT program_code, group_code, group_label, required_credits, is_choice,
+       sort_order, source, verified_by, is_active
+FROM curriculum_groups
+WHERE program_code = %s AND group_code = %s
 """
 
 SQL_ADMIN_PREREQUISITE_ROW = """
@@ -268,8 +329,8 @@ WHERE full_name = %s
 SQL_ADMIN_UPSERT_CURRICULUM_RULE = """
 INSERT INTO curriculum_rules (program_code, course_code, course_code_full,
                               std_year, std_semester, is_fixed_term, note,
-                              source, updated_at, updated_by)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), %s)
+                              source, group_code, updated_at, updated_by)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s)
 ON CONFLICT (program_code, course_code) DO UPDATE SET
     course_code_full = EXCLUDED.course_code_full,
     std_year         = EXCLUDED.std_year,
@@ -277,6 +338,30 @@ ON CONFLICT (program_code, course_code) DO UPDATE SET
     is_fixed_term    = EXCLUDED.is_fixed_term,
     note             = EXCLUDED.note,
     source           = EXCLUDED.source,
+    group_code       = EXCLUDED.group_code,
+    updated_at       = now(),
+    updated_by       = EXCLUDED.updated_by
+"""
+
+# ``group_code`` **ไม่อยู่ใน DO UPDATE** ไม่ได้ — มันคือครึ่งหนึ่งของ PK
+# (แก้รหัสหมวดคือสร้างหมวดใหม่ ไม่ใช่เปลี่ยนชื่อ) endpoint จึงกันไว้อีกชั้น
+# ก่อนถึงคำสั่งนี้ ดู ``/api/admin/curriculum_group`` ใน :mod:`app.admin`
+#
+# ``verified_by`` อยู่ใน DO UPDATE เพราะ **นี่คือเหตุผลที่แท็บนี้ต้องมี**:
+# โควตาทั้ง 9 หมวดมาจากใบผลการเรียนของนักศึกษาคนเดียว ยังไม่มีใครเทียบกับ
+# มคอ.2 คนที่เทียบแล้วต้องกรอกชื่อตัวเองได้จากหน้าเว็บ ไม่ต้องเขียน migration
+SQL_ADMIN_UPSERT_CURRICULUM_GROUP = """
+INSERT INTO curriculum_groups (program_code, group_code, group_label,
+                               required_credits, is_choice, sort_order,
+                               source, verified_by, updated_at, updated_by)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), %s)
+ON CONFLICT (program_code, group_code) DO UPDATE SET
+    group_label      = EXCLUDED.group_label,
+    required_credits = EXCLUDED.required_credits,
+    is_choice        = EXCLUDED.is_choice,
+    sort_order       = EXCLUDED.sort_order,
+    source           = EXCLUDED.source,
+    verified_by      = EXCLUDED.verified_by,
     updated_at       = now(),
     updated_by       = EXCLUDED.updated_by
 """
@@ -327,6 +412,14 @@ WHERE full_name = %s
 SQL_ADMIN_TOGGLE_CURRICULUM_RULE = """
 UPDATE curriculum_rules SET is_active = %s, updated_at = now(), updated_by = %s
 WHERE program_code = %s AND course_code = %s
+"""
+
+# ปิดหมวด ≠ ลบหมวด: ``curriculum_rules`` 68 แถวชี้มาที่ ``group_code`` โดยไม่มี
+# FK (ตั้งใจ ดูหัวไฟล์ 010) ถ้าลบหมวด วิชาที่ชี้มาจะกลายเป็นวิชาที่ไม่มีโควตา
+# รองรับแบบเงียบ ๆ — ปิดแล้วคำเตือนบนแท็บยังเห็นว่าเคยมีหมวดนี้อยู่
+SQL_ADMIN_TOGGLE_CURRICULUM_GROUP = """
+UPDATE curriculum_groups SET is_active = %s, updated_at = now(), updated_by = %s
+WHERE program_code = %s AND group_code = %s
 """
 
 SQL_ADMIN_TOGGLE_PREREQUISITE = """
@@ -417,6 +510,7 @@ TABLE_KEYS: dict[str, tuple[str, ...]] = {
     "documents": ("url",),
     "instructors": ("full_name",),
     "curriculum_rules": ("program_code", "course_code"),
+    "curriculum_groups": ("program_code", "group_code"),
     "prerequisites": ("program_code", "course_code", "requires_code"),
     "ai_prompt_rules": ("rule_key",),
 }
@@ -426,6 +520,7 @@ TABLE_ROW_SQL: dict[str, str] = {
     "documents": SQL_ADMIN_DOCUMENT_ROW,
     "instructors": SQL_ADMIN_INSTRUCTOR_ROW,
     "curriculum_rules": SQL_ADMIN_CURRICULUM_RULE_ROW,
+    "curriculum_groups": SQL_ADMIN_CURRICULUM_GROUP_ROW,
     "prerequisites": SQL_ADMIN_PREREQUISITE_ROW,
     "ai_prompt_rules": SQL_ADMIN_PROMPT_RULE_ROW,
 }
@@ -435,6 +530,7 @@ TABLE_TOGGLE_SQL: dict[str, str] = {
     "documents": SQL_ADMIN_TOGGLE_DOCUMENT,
     "instructors": SQL_ADMIN_TOGGLE_INSTRUCTOR,
     "curriculum_rules": SQL_ADMIN_TOGGLE_CURRICULUM_RULE,
+    "curriculum_groups": SQL_ADMIN_TOGGLE_CURRICULUM_GROUP,
     "prerequisites": SQL_ADMIN_TOGGLE_PREREQUISITE,
     "ai_prompt_rules": SQL_ADMIN_TOGGLE_PROMPT_RULE,
 }
@@ -500,6 +596,46 @@ async def list_curriculum_rules(
     db: SupportsQuery, program_code: str, limit: int = DEFAULT_LIMIT
 ) -> list[dict]:
     return await db.fetch_all(SQL_ADMIN_CURRICULUM_RULES, (program_code, limit))
+
+
+async def list_curriculum_groups(
+    db: SupportsQuery, program_code: str, limit: int = DEFAULT_LIMIT
+) -> list[dict]:
+    return await db.fetch_all(SQL_ADMIN_CURRICULUM_GROUPS, (program_code, limit))
+
+
+async def curriculum_group_stock(db: SupportsQuery, program_code: str) -> dict[str, dict]:
+    """
+    คลังวิชาต่อหมวด → ``{group_code: {course_count, stock_credits, unknown_credits}}``
+
+    คืนเป็น dict ไม่ใช่ list เพราะผู้ใช้ฝั่งเดียวของมันคือคำเตือนที่ต้องถาม
+    "หมวดนี้มีวิชาให้เลือกกี่หน่วยกิต" ทีละหมวด — คืน list แล้วต้องวนหาเองทุกครั้ง
+    หมวดที่ไม่มีวิชาชี้มาเลย (เลือกเสรี) **จะไม่มีคีย์ในนี้** ซึ่งเป็นสิ่งที่
+    คำเตือนใช้แยกแยะว่า "คลังไม่พอ" กับ "หมวดที่ไม่ได้ระบุรายวิชาโดยเจตนา"
+    """
+    rows = await db.fetch_all(SQL_ADMIN_CURRICULUM_GROUP_STOCK, (program_code,))
+    return {
+        row["group_code"]: {
+            "course_count": int(row.get("course_count") or 0),
+            "stock_credits": int(row.get("stock_credits") or 0),
+            "unknown_credits": int(row.get("unknown_credits") or 0),
+        }
+        for row in rows
+        if row.get("group_code")
+    }
+
+
+async def program_total_credits(db: SupportsQuery, program_code: str) -> int | None:
+    """
+    หน่วยกิตรวมของหลักสูตร — ``None`` เมื่อไม่มีแถว/ไม่ได้กรอกไว้
+
+    คืน ``None`` แทน 0 โดยเจตนา: 0 จะทำให้คำเตือนบอกว่า "โควตาเกินหลักสูตร
+    120 นก." ทั้งที่ความจริงคือ *ไม่รู้* ว่าหลักสูตรต้องกี่หน่วยกิต
+    """
+    row = await db.fetch_one(SQL_ADMIN_PROGRAM_TOTAL_CREDITS, (program_code,))
+    if not row or row.get("total_credits") is None:
+        return None
+    return int(row["total_credits"])
 
 
 async def list_prerequisites(
@@ -784,6 +920,7 @@ async def save_curriculum_rule(
     is_fixed_term: bool,
     note: str | None,
     source: str,
+    group_code: str | None = None,
 ) -> dict:
     """
     เขียนกฎแผนการเรียนหนึ่งวิชา
@@ -802,18 +939,71 @@ async def save_curriculum_rule(
         "is_fixed_term": is_fixed_term,
         "note": note,
         "source": source,
+        "group_code": group_code,
     }
     await db.execute(
         SQL_ADMIN_UPSERT_CURRICULUM_RULE,
         (
             program_code, course_code, course_code_full, std_year, std_semester,
-            is_fixed_term, note, source, admin_username,
+            is_fixed_term, note, source, group_code, admin_username,
         ),
     )
     action = "update" if before else "create"
     changes = diff(before, after)
     await write_audit(
         db, admin_username=admin_username, action=action, table="curriculum_rules",
+        key=key, changes=changes,
+    )
+    return {"action": action, "changes": changes}
+
+
+async def save_curriculum_group(
+    db: SupportsExecute,
+    *,
+    admin_username: str,
+    program_code: str,
+    group_code: str,
+    group_label: str,
+    required_credits: int,
+    is_choice: bool,
+    sort_order: int,
+    source: str,
+    verified_by: str | None,
+) -> dict:
+    """
+    เขียนโควตาหน่วยกิตของหมวดหนึ่ง
+
+    ``required_credits`` ของทุกหมวดที่เปิดใช้รวมกันต้องเท่ากับ
+    ``programs.total_credits`` — ที่นี่ **ไม่บังคับ** เพราะบังคับแล้วจะแก้
+    ทีละหมวดไม่ได้เลย (ย้าย 3 นก. จากหมวด ก ไปหมวด ข ต้องผ่านสถานะที่ผลรวมผิด
+    หนึ่งจังหวะ) จึงคุมด้วย *คำเตือน* บนแท็บแทน ดู
+    :func:`app.admin.curriculum_group_warnings` — คำเตือนนั้นคือกับดักหลักของ
+    งานวิชาเลือกทั้งงาน ห้ามเอาออก
+
+    ``is_choice`` = หมวดนี้เป็นคลังให้เลือก (คลังมากกว่าโควตา) ไม่ใช่ "ต้องผ่าน
+    ทุกวิชา" — planner ใช้ค่านี้ตัดสินว่าจะแนะนำวิชาในหมวดต่อหรือหยุด
+    """
+    key = (program_code, group_code)
+    before = await fetch_row(db, "curriculum_groups", key)
+    after = {
+        "group_label": group_label,
+        "required_credits": required_credits,
+        "is_choice": is_choice,
+        "sort_order": sort_order,
+        "source": source,
+        "verified_by": verified_by,
+    }
+    await db.execute(
+        SQL_ADMIN_UPSERT_CURRICULUM_GROUP,
+        (
+            program_code, group_code, group_label, required_credits, is_choice,
+            sort_order, source, verified_by, admin_username,
+        ),
+    )
+    action = "update" if before else "create"
+    changes = diff(before, after)
+    await write_audit(
+        db, admin_username=admin_username, action=action, table="curriculum_groups",
         key=key, changes=changes,
     )
     return {"action": action, "changes": changes}
@@ -922,6 +1112,9 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_ADMIN_DOCUMENTS": SQL_ADMIN_DOCUMENTS,
     "SQL_ADMIN_INSTRUCTORS": SQL_ADMIN_INSTRUCTORS,
     "SQL_ADMIN_CURRICULUM_RULES": SQL_ADMIN_CURRICULUM_RULES,
+    "SQL_ADMIN_CURRICULUM_GROUPS": SQL_ADMIN_CURRICULUM_GROUPS,
+    "SQL_ADMIN_CURRICULUM_GROUP_STOCK": SQL_ADMIN_CURRICULUM_GROUP_STOCK,
+    "SQL_ADMIN_PROGRAM_TOTAL_CREDITS": SQL_ADMIN_PROGRAM_TOTAL_CREDITS,
     "SQL_ADMIN_PREREQUISITES": SQL_ADMIN_PREREQUISITES,
     "SQL_ADMIN_PROMPT_RULES": SQL_ADMIN_PROMPT_RULES,
     "SQL_ADMIN_PROMPT_RULES_ACTIVE_COUNT": SQL_ADMIN_PROMPT_RULES_ACTIVE_COUNT,
@@ -932,18 +1125,21 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_ADMIN_DOCUMENT_ROW": SQL_ADMIN_DOCUMENT_ROW,
     "SQL_ADMIN_INSTRUCTOR_ROW": SQL_ADMIN_INSTRUCTOR_ROW,
     "SQL_ADMIN_CURRICULUM_RULE_ROW": SQL_ADMIN_CURRICULUM_RULE_ROW,
+    "SQL_ADMIN_CURRICULUM_GROUP_ROW": SQL_ADMIN_CURRICULUM_GROUP_ROW,
     "SQL_ADMIN_PREREQUISITE_ROW": SQL_ADMIN_PREREQUISITE_ROW,
     "SQL_ADMIN_PROMPT_RULE_ROW": SQL_ADMIN_PROMPT_RULE_ROW,
     "SQL_ADMIN_UPSERT_FAQ": SQL_ADMIN_UPSERT_FAQ,
     "SQL_ADMIN_UPSERT_DOCUMENT": SQL_ADMIN_UPSERT_DOCUMENT,
     "SQL_ADMIN_UPDATE_INSTRUCTOR": SQL_ADMIN_UPDATE_INSTRUCTOR,
     "SQL_ADMIN_UPSERT_CURRICULUM_RULE": SQL_ADMIN_UPSERT_CURRICULUM_RULE,
+    "SQL_ADMIN_UPSERT_CURRICULUM_GROUP": SQL_ADMIN_UPSERT_CURRICULUM_GROUP,
     "SQL_ADMIN_UPSERT_PREREQUISITE": SQL_ADMIN_UPSERT_PREREQUISITE,
     "SQL_ADMIN_UPSERT_PROMPT_RULE": SQL_ADMIN_UPSERT_PROMPT_RULE,
     "SQL_ADMIN_TOGGLE_FAQ": SQL_ADMIN_TOGGLE_FAQ,
     "SQL_ADMIN_TOGGLE_DOCUMENT": SQL_ADMIN_TOGGLE_DOCUMENT,
     "SQL_ADMIN_TOGGLE_INSTRUCTOR": SQL_ADMIN_TOGGLE_INSTRUCTOR,
     "SQL_ADMIN_TOGGLE_CURRICULUM_RULE": SQL_ADMIN_TOGGLE_CURRICULUM_RULE,
+    "SQL_ADMIN_TOGGLE_CURRICULUM_GROUP": SQL_ADMIN_TOGGLE_CURRICULUM_GROUP,
     "SQL_ADMIN_TOGGLE_PREREQUISITE": SQL_ADMIN_TOGGLE_PREREQUISITE,
     "SQL_ADMIN_TOGGLE_PROMPT_RULE": SQL_ADMIN_TOGGLE_PROMPT_RULE,
     "SQL_ADMIN_INSERT_AUDIT": SQL_ADMIN_INSERT_AUDIT,

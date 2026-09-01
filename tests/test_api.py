@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import main
@@ -241,11 +242,59 @@ PLAN_ROWS = [
         "credits_text": "3 (2-2-5)",
         "name_th": "พื้นฐานเทคโนโลยีสารสนเทศ",
         "note": None,
-    }
+        "group_code": "2.1",
+    },
+    # วิชาเลือก: ``std_year``/``std_semester`` เป็น NULL ใน DB จริง (นักศึกษา
+    # ลงเทอมไหนก็ได้) — ต้องมีในชุดทดสอบ ไม่งั้นเทสจะไม่เจอกรณี "ปี 0 เทอม 0"
+    {
+        "course_code": "7073312",
+        "course_code_full": "7073312-3",
+        "std_year": None,
+        "std_semester": None,
+        "credits": 3,
+        "credits_text": "3 (2-2-5)",
+        "name_th": "การเขียนโปรแกรมบนอุปกรณ์เคลื่อนที่",
+        "note": None,
+        "group_code": "2.2",
+    },
+]
+
+# โควตารายหมวด — เรียงตาม ``sort_order`` เหมือนที่ SQL คืนมาจริง
+#
+# หมวด 3.1 ไม่มีวิชาใน ``curriculum_rules`` ชี้มาโดยเจตนา (เลือกเสรีลงคณะไหน
+# ก็ได้) จึงเป็นหมวดเดียวที่ ``passed_credits`` มาจากตัวเลขที่ผู้ใช้กรอกเอง
+GROUP_ROWS = [
+    {
+        "group_code": "2.1",
+        "group_label": "วิชาเฉพาะด้าน (บังคับ)",
+        "required_credits": 54,
+        "is_choice": False,
+        "sort_order": 60,
+    },
+    {
+        "group_code": "2.2",
+        "group_label": "วิชาเฉพาะด้าน (เลือก)",
+        "required_credits": 18,
+        "is_choice": True,
+        "sort_order": 70,
+    },
+    {
+        "group_code": "3.1",
+        "group_label": "วิชาเลือกเสรี",
+        "required_credits": 6,
+        "is_choice": True,
+        "sort_order": 90,
+    },
 ]
 
 
-def liff_db(passed: list[str] | None = None) -> FakeWriteDatabase:
+def liff_db(
+    passed: list[str] | None = None,
+    *,
+    free_elective_credits: int = 0,
+    plan_rows: list[dict] | None = None,
+    group_rows: list[dict] | None = None,
+) -> FakeWriteDatabase:
     """FakeWriteDatabase ที่ตอบครบทุกคิวรีของ ``/api/liff/*``"""
     done = passed or []
     return FakeWriteDatabase(
@@ -257,8 +306,14 @@ def liff_db(passed: list[str] | None = None) -> FakeWriteDatabase:
                 "study_year": 1,
                 "entry_year": 2564,
                 "completed_courses": len(done),
+                "free_elective_credits": free_elective_credits,
             },
-            "FROM curriculum_rules cr": PLAN_ROWS,
+            "FROM curriculum_rules cr": (
+                PLAN_ROWS if plan_rows is None else plan_rows
+            ),
+            "FROM curriculum_groups": (
+                GROUP_ROWS if group_rows is None else group_rows
+            ),
             "FROM prerequisites p": [],
             "FROM user_completed_courses": [{"course_code": c} for c in done],
             "FROM programs": {
@@ -280,6 +335,33 @@ def test_liff_page_is_served_without_secrets(make_client) -> None:
     assert "static.line-scdn.net/liff/edge/2/sdk.js" in response.text
     assert "1234567890-abcdefgh" not in response.text
     assert "getIDToken" in response.text, "ต้องส่ง ID token ไม่ใช่ userId"
+
+
+def test_liff_page_keeps_the_elective_contract(make_client) -> None:
+    """
+    ข้อตกลงของหน้า LIFF ที่ regression ได้ง่ายที่สุด — ล็อกไว้ที่ระดับไฟล์
+
+    * วิชาเลือกอยู่ใน ``<details>`` และ **ไม่มี** ``open`` (หมวดเดียวมีถึง 29
+      วิชา เปิดค้างแล้วผู้ใช้เลื่อนหาวิชาบังคับไม่เจอ)
+    * ช่องเลือกเสรีต้องคุมช่วง 0–60 ที่ตัว input ด้วย ไม่ใช่รอ 422 จาก backend
+    * คำว่า "ปี 0 / เทอม 0" ห้ามโผล่เลย แม้แต่ในคอมเมนต์ (วิชาเลือกไม่มีเทอม)
+    * ไลบรารีภายนอกมีได้ตัวเดียวคือ LIFF SDK
+    """
+    client = make_client(liff_settings())
+    page = client.get("/liff").text
+
+    assert 'createElement("details")' in page, "วิชาเลือกต้องอยู่ในกล่องพับได้"
+    assert 'createElement("summary")' in page
+    # เปิดเฉพาะตอนค้นหาเจอ — ไม่มีบรรทัดไหนตั้ง open = true แบบไม่มีเงื่อนไข
+    assert "box.open = query" in page
+    assert 'type="search"' in page, "ต้องมีช่องค้นหาวิชาเลือก"
+    assert 'type="number" id="free" min="0" max="60"' in page
+    assert "ปี 0" not in page and "เทอม 0" not in page
+    assert page.count("<script src=") == 1
+    # ตัวเลขทุกตัวมาจาก backend — คีย์เหล่านี้คือทางเดียวที่หน้าเว็บได้ตัวเลขมา
+    for key in ("counted_credits", "free_elective_credits", "percent_complete"):
+        assert key in page
+    assert "localStorage.setItem" not in page and "sessionStorage.setItem" not in page
 
 
 def test_liff_line_me_link_lands_on_the_page_it_asked_for(make_client) -> None:
@@ -462,6 +544,209 @@ def test_saving_accepts_an_empty_selection(make_client, monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["saved"] == 0
+
+
+# ── LIFF: หมวดวิชาเลือก + เลือกเสรี ──────────────────────────────────────────
+#
+# ทำไมต้องเทสเยอะกับ payload ชุดนี้: หน้าเว็บ **ห้ามคิดเลขเอง** ตัวเลขทุกตัว
+# ที่ผู้ใช้เห็นจึงมีที่มาเดียวคือคีย์เหล่านี้ ถ้าคีย์หายหรือความหมายเปลี่ยน
+# หน้าเว็บจะแสดง ``undefined`` แบบไม่มีใครรู้จนผู้ใช้บ่น
+
+
+def state_of(client, body_extra: dict | None = None) -> dict:
+    return client.post(
+        "/api/liff/state", json={"id_token": VALID_TOKEN, **(body_extra or {})}
+    ).json()
+
+
+def test_liff_state_reports_progress_per_group(make_client, monkeypatch) -> None:
+    """หมวดต้องมาครบทุกคีย์ และเรียงตาม ``sort_order`` ที่ planner ให้มา"""
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(main, "_db", liff_db(["7071101"]))
+    client = make_client(liff_settings(), recorder.client())
+
+    groups = state_of(client)["progress"]["groups"]
+
+    assert [g["group_code"] for g in groups] == ["2.1", "2.2", "3.1"]
+    assert [g["sort_order"] for g in groups] == [60, 70, 90]
+    assert groups[0] == {
+        "group_code": "2.1",
+        "group_label": "วิชาเฉพาะด้าน (บังคับ)",
+        "required_credits": 54,
+        "passed_credits": 3,
+        "counted_credits": 3,
+        "is_choice": False,
+        "complete": False,
+        "percent": 5.6,
+        "sort_order": 60,
+    }
+
+
+def test_free_elective_group_gets_its_credits_from_the_user(
+    make_client, monkeypatch
+) -> None:
+    """
+    หมวดเลือกเสรีไม่มีวิชาให้ติ๊ก — ต้องรับตัวเลขที่ผู้ใช้กรอกเอง
+
+    ถ้าไปนับจากวิชาที่ติ๊กเหมือนหมวดอื่น หมวดนี้จะค้าง 0% ตลอดชีวิตและ
+    เปอร์เซ็นต์รวมจะไม่มีวันถึง 100 ทั้งที่นักศึกษาจบได้แล้ว
+    """
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(main, "_db", liff_db([], free_elective_credits=6))
+    client = make_client(liff_settings(), recorder.client())
+
+    progress = state_of(client)["progress"]
+    free = [g for g in progress["groups"] if g["group_code"] == "3.1"][0]
+
+    assert progress["free_elective_credits"] == 6
+    assert free["passed_credits"] == 6
+    assert free["complete"] is True
+    assert free["percent"] == 100.0
+    # ไม่ได้ติ๊กวิชาไหนเลย แต่หมวดเลือกเสรีนับให้ 6 → counted ต้องไม่ใช่ 0
+    assert progress["passed_credits"] == 0
+    assert progress["counted_credits"] == 6
+
+
+def test_counted_credits_caps_at_the_quota_of_each_group(
+    make_client, monkeypatch
+) -> None:
+    """
+    เก็บเกินโควตาไม่ทำให้จบเร็วขึ้น — เพดานต้องมาจาก planner ไม่ใช่หน้าเว็บ
+
+    กรอกเลือกเสรี 60 นก. (สุดขอบที่ฟอร์มยอมรับ) กับโควตา 6 → นับให้ 6
+    ``counted_credits`` รวมจึงเป็น 3 (2.1) + 3 (2.2) + 6 (3.1) = 12
+    ขณะที่ ``passed_credits`` ดิบยังเป็น 6 ตามวิชาที่ติ๊กจริงสองตัว
+    """
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(
+        main, "_db", liff_db(["7071101", "7073312"], free_elective_credits=60)
+    )
+    client = make_client(liff_settings(), recorder.client())
+
+    progress = state_of(client)["progress"]
+    free = [g for g in progress["groups"] if g["group_code"] == "3.1"][0]
+
+    assert free["passed_credits"] == 60 and free["counted_credits"] == 6
+    assert progress["passed_credits"] == 6
+    assert progress["counted_credits"] == 12
+    assert progress["percent_complete"] == 10.0
+    assert progress["credits_left_to_graduate"] == 108
+
+
+def test_plan_rows_carry_the_group_label_for_electives(make_client, monkeypatch) -> None:
+    """
+    วิชาเลือกต้องมีชื่อหมวดติดมาด้วย ไม่ใช่แค่รหัสหมวด
+
+    หน้าเว็บจัดกลุ่มวิชาเลือกตามหมวด (ไม่มีปี/เทอมให้จัด) ถ้าส่งมาแค่ ``'2.2'``
+    หน้าเว็บต้องมีตารางแปลรหัสของตัวเอง = ข้อมูลเดียวกันสองที่
+    """
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(main, "_db", liff_db())
+    client = make_client(liff_settings(), recorder.client())
+
+    plan = state_of(client)["plan"]
+    elective = [c for c in plan if c["course_code"] == "7073312"][0]
+
+    assert plan[0]["group_code"] == "2.1"
+    assert plan[0]["group_label"] == "วิชาเฉพาะด้าน (บังคับ)"
+    assert elective["group_label"] == "วิชาเฉพาะด้าน (เลือก)"
+    # NULL ใน DB ต้องมาถึงหน้าเว็บเป็น null เพื่อให้แยก "ไม่มีเทอม" ออกจากปี 0
+    assert elective["std_year"] is None and elective["std_semester"] is None
+
+
+def test_program_without_curriculum_rules_still_answers(make_client, monkeypatch) -> None:
+    """
+    หลักสูตร 653170011 ยังไม่มีแถวใน ``curriculum_rules`` เลย — ต้องไม่ 500
+
+    เคยเป็นบั๊กแบบคลาสสิก: โค้ดที่สมมติว่ามีหมวดเสมอจะหารด้วยศูนย์หรือ
+    index ลิสต์ว่าง แล้วนักศึกษาหลักสูตรนั้นเปิดหน้านี้ไม่ได้เลย
+    """
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(main, "_db", liff_db(plan_rows=[], group_rows=[]))
+    client = make_client(liff_settings(), recorder.client())
+
+    response = client.post("/api/liff/state", json={"id_token": VALID_TOKEN})
+    progress = response.json()["progress"]
+
+    assert response.status_code == 200
+    assert progress["groups"] == []
+    assert progress["plan_courses"] == 0
+    assert progress["counted_credits"] == 0
+    assert progress["percent_complete"] == 0.0
+    assert progress["credits_left_to_graduate"] == 120
+
+
+@pytest.mark.parametrize("value", [-1, 61, 999])
+def test_free_elective_credits_out_of_range_is_rejected_as_input(
+    make_client, monkeypatch, value: int
+) -> None:
+    """
+    ค่านอกช่วงต้องเป็น 422 ไม่ใช่ 500
+
+    ``app_users.free_elective_credits`` มี CHECK 0–60 อยู่แล้ว ถ้าปล่อยให้ DB
+    เป็นคนปฏิเสธ ผู้ใช้จะเห็น "เซิร์ฟเวอร์ผิดพลาด" ทั้งที่เขากรอกผิดเอง
+    """
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    monkeypatch.setattr(main, "_db", liff_db())
+    client = make_client(liff_settings(), recorder.client())
+
+    response = client.post(
+        "/api/liff/completed_courses",
+        json={
+            "id_token": VALID_TOKEN,
+            "course_codes": [],
+            "free_elective_credits": value,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_saving_free_elective_credits_writes_and_recomputes(
+    make_client, monkeypatch
+) -> None:
+    """
+    บันทึกเลือกเสรีแล้วต้องคืนสถานะที่ **เซิร์ฟเวอร์คำนวณใหม่** กลับไปด้วย
+
+    ส่ง 0 ก็ต้องบันทึก (ผู้ใช้ลบตัวเลขที่เคยกรอก) — ``None`` เท่านั้นที่แปลว่า
+    "ฟอร์มนี้ไม่ได้ถาม" จึงไม่แตะค่าเดิม
+    """
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    database = liff_db(["7071101"], free_elective_credits=6)
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(liff_settings(), recorder.client())
+
+    body = client.post(
+        "/api/liff/completed_courses",
+        json={
+            "id_token": VALID_TOKEN,
+            "course_codes": ["7071101"],
+            "free_elective_credits": 0,
+        },
+    ).json()
+
+    assert body["success"] is True
+    # ลำดับ params ของ SQL_SET_USER_PROGRAM: program, study_year, entry, free, hash
+    assert database.params_for("UPDATE app_users")[3] == 0
+    assert body["progress"]["counted_credits"] == 9
+    assert len(body["progress"]["groups"]) == 3
+
+
+def test_saving_without_free_electives_does_not_touch_the_stored_value(
+    make_client, monkeypatch
+) -> None:
+    """ฟอร์มที่ไม่ส่งฟิลด์นี้มา ต้องไม่เขียนทับค่าที่ผู้ใช้กรอกไว้แล้ว"""
+    recorder = Recorder((200, {"sub": TEST_USER_ID, "aud": TEST_LOGIN_CHANNEL_ID}))
+    database = liff_db([], free_elective_credits=6)
+    monkeypatch.setattr(main, "_db", database)
+    client = make_client(liff_settings(), recorder.client())
+
+    client.post(
+        "/api/liff/completed_courses",
+        json={"id_token": VALID_TOKEN, "course_codes": []},
+    )
+
+    assert not any("UPDATE app_users" in sql for sql, _ in database.calls)
 
 
 def test_login_creates_the_user_row(make_client, monkeypatch) -> None:

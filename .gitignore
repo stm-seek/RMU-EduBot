@@ -64,3 +64,8 @@ _stub.js
 
 # log ของ cloudflared quick tunnel
 .cloudflared.log
+
+# เอกสารชั่วคราวของงานวิชาเลือก
+.electives-contract.md
+# เอกสารชั่วคราวของงานกิจกรรมนักศึกษา
+.activities-contract.md

@@ -646,7 +646,7 @@ async def end_ai_session(db: SupportsExecute, session_id: int, reason: str) -> i
 # (แถวซ้ำที่เหลือ name_th เป็น NULL) แล้วตัดสินด้วย id ให้ผลคงที่ทุกครั้ง
 SQL_CURRICULUM_PLAN = """
 SELECT cr.course_code, cr.course_code_full, cr.std_year, cr.std_semester,
-       cr.is_fixed_term, cr.note,
+       cr.is_fixed_term, cr.note, cr.group_code,
        c.name_th, c.credits, c.credits_text,
        op.opens_sem1, op.opens_sem2, op.opens_sem3
 FROM curriculum_rules cr
@@ -688,7 +688,7 @@ LIMIT 1
 
 SQL_USER_PROFILE = """
 SELECT u.id, u.program_code, u.study_year, u.entry_year,
-       u.consent_version, u.consent_at,
+       u.consent_version, u.consent_at, u.free_elective_credits,
        (SELECT count(*) FROM user_completed_courses uc WHERE uc.user_id = u.id)
            AS completed_courses
 FROM app_users u
@@ -706,6 +706,31 @@ ORDER BY course_code
 async def curriculum_plan(db: SupportsQuery, program_code: str) -> list[dict]:
     """แผนการเรียนมาตรฐาน + ชื่อวิชา + เปิดเทอมไหน (input หลักของ planner)"""
     return await db.fetch_all(SQL_CURRICULUM_PLAN, (program_code,))
+
+
+# ── โควตาหน่วยกิตรายหมวด ────────────────────────────────────────────────────
+#
+# ทำไมต้องมีตารางนี้แยกจาก curriculum_rules: วิชาเลือกมี "คลัง" ใหญ่กว่าที่
+# ต้องเรียนจริง (หมวด 2.2 มี 29 วิชาให้เลือกแต่ต้องผ่านแค่ 18 นก.) ถ้านับ
+# ความก้าวหน้าจากจำนวนแถวใน curriculum_rules นักศึกษาจะเห็นว่าตัวเองเหลือ
+# อีกเยอะทั้งที่จบได้แล้ว โควตาต่อหมวดจึงเป็นตัวเลขที่ต้องใช้เป็นตัวหาร
+#
+# กรอง is_active เพราะผู้ดูแลปิดกลุ่มจากหน้า /admin ได้ (ไม่มี DELETE)
+# เรียง sort_order ก่อน group_code: ลำดับที่คนอ่านคุ้น (ศึกษาทั่วไป → เฉพาะด้าน
+# → เลือกเสรี) ไม่ตรงกับการเรียงรหัสแบบ text ('1.1.10' มาก่อน '1.1.2')
+
+SQL_CURRICULUM_GROUPS = """
+SELECT group_code, group_label, required_credits, is_choice, sort_order
+FROM curriculum_groups
+WHERE program_code = %s
+  AND is_active
+ORDER BY sort_order, group_code
+"""
+
+
+async def curriculum_groups(db: SupportsQuery, program_code: str) -> list[dict]:
+    """โควตาหน่วยกิตรายหมวด — ตัวหารของ ``Progress.groups`` (ดู planner)"""
+    return await db.fetch_all(SQL_CURRICULUM_GROUPS, (program_code,))
 
 
 async def prerequisites_for_program(db: SupportsQuery, program_code: str) -> list[dict]:
@@ -739,10 +764,11 @@ UPDATE app_users
 SET program_code = coalesce(%s, program_code),
     study_year   = coalesce(%s, study_year),
     entry_year   = coalesce(%s, entry_year),
+    free_elective_credits = coalesce(%s, free_elective_credits),
     updated_at   = now(),
     last_seen_at = now()
 WHERE line_user_hash = %s
-RETURNING id, program_code, study_year, entry_year
+RETURNING id, program_code, study_year, entry_year, free_elective_credits
 """
 
 # แทนที่ "ชุด" วิชาที่ผ่านทั้งก้อนใน **statement เดียว**
@@ -782,14 +808,21 @@ async def set_user_program(
     program_code: str | None = None,
     study_year: int | None = None,
     entry_year: int | None = None,
+    *,
+    free_elective_credits: int | None = None,
 ) -> dict | None:
     """
     ตั้งหลักสูตร/ชั้นปีของผู้ใช้ — ``None`` = ไม่แก้ค่าเดิม (coalesce ใน SQL)
 
+    ``free_elective_credits`` เป็นคีย์เวิร์ดล้วนเพราะเป็นค่าที่ผู้ใช้กรอกเอง
+    (หลักสูตรไม่ระบุรายวิชาเลือกเสรี) ส่ง 0 กับส่ง ``None`` ต่างกัน:
+    0 = ผู้ใช้บอกว่ายังไม่ผ่านเลย, ``None`` = ฟอร์มนี้ไม่ได้ถามเรื่องนั้น
+
     ต้องมีแถว ``app_users`` อยู่ก่อน (เรียก :func:`ensure_user` ให้แล้ว)
     """
     return await db.fetch_one(
-        SQL_SET_USER_PROGRAM, (program_code, study_year, entry_year, line_user_hash)
+        SQL_SET_USER_PROGRAM,
+        (program_code, study_year, entry_year, free_elective_credits, line_user_hash),
     )
 
 
@@ -857,6 +890,7 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_TOUCH_AI_SESSION": SQL_TOUCH_AI_SESSION,
     "SQL_END_AI_SESSION": SQL_END_AI_SESSION,
     "SQL_CURRICULUM_PLAN": SQL_CURRICULUM_PLAN,
+    "SQL_CURRICULUM_GROUPS": SQL_CURRICULUM_GROUPS,
     "SQL_PREREQUISITES_FOR_PROGRAM": SQL_PREREQUISITES_FOR_PROGRAM,
     "SQL_PROGRAM_TOTAL_CREDITS": SQL_PROGRAM_TOTAL_CREDITS,
     "SQL_USER_PROFILE": SQL_USER_PROFILE,

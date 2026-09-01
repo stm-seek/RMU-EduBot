@@ -1,5 +1,5 @@
 """
-เทส ``app.repository`` ทั้ง 19 ฟังก์ชันกับ Postgres จริง + ข้อมูล seed จริง
+เทส ``app.repository`` ทั้ง 30 ฟังก์ชันกับ Postgres จริง + ข้อมูล seed จริง
 
 ต่างจาก :mod:`tests.test_repository` (ที่ parse SQL ด้วย ``sqlglot`` + ยิง
 ``FakeDatabase``) ไฟล์นี้ยืนยัน **ค่าที่ออกมาจริง** ซึ่ง mock พิสูจน์ให้ไม่ได้:
@@ -537,13 +537,14 @@ def test_planning_coverage_reports_zero_prerequisites(
     ข้อ 14 — ถ้า 0 กลายเป็น ``None`` router จะแสดง 0 เหมือนกันแต่เงื่อนไข
     ``if not patterns and not rules`` จะเปลี่ยนพฤติกรรม
 
-    ``curriculum_rules`` = 32 ตั้งแต่ 22 ส.ค. 2026 (นำเข้าแผนการเรียนจริง)
+    ``curriculum_rules`` = 68 ตั้งแต่ 1 ก.ย. 2026 (32 แถวจากแผนการเรียน +
+    36 วิชาเลือกที่แผนไม่มี ดู ``db/migrations/010_electives.sql``)
     ส่วน ``prerequisites`` ยังเป็น 0 เพราะระบบทะเบียนไม่เผยแพร่วิชาบังคับก่อน
     """
     coverage = run(repo.planning_coverage(live_db, get_settings().default_program_code))
 
     assert coverage == {
-        "curriculum_rules": 32,
+        "curriculum_rules": 68,
         "prerequisites": 0,
         "patterns": 45,
         "opens_sem1": 37,
@@ -1015,7 +1016,7 @@ def test_curriculum_plan_returns_one_row_per_course_with_a_name(
     live_db: Database, run: Callable[..., Any]
 ) -> None:
     """
-    32 วิชา ไม่ซ้ำ และต้องมีชื่อวิชาครบทุกแถว
+    68 วิชา ไม่ซ้ำ และต้องมีชื่อวิชาครบทุกแถว
 
     เคยพลาดมาแล้วสองแบบที่เทสนี้ดักไว้:
 
@@ -1023,16 +1024,109 @@ def test_curriculum_plan_returns_one_row_per_course_with_a_name(
        ไม่ติดเลยทั้ง 32 วิชา ชื่อหายหมดแบบไม่มี error
     2. ``courses.course_code`` ซ้ำได้ (7071102 มี 3 แถว) → JOIN ธรรมดา
        ทำให้ 32 วิชาบวมเป็น 50 กว่าแถว แล้วหน่วยกิตรวมผิดตามไปด้วย
+
+    ตั้งแต่ 010_electives.sql มี 68 แถว: 32 แถวเดิมที่มีปี/เทอม + 36 วิชาเลือก
+    ที่ ``std_year`` เป็น NULL — กับดักข้อ 1 อันตรายกว่าเดิมเพราะวิชาเลือก
+    36 ตัวเป็นรหัสที่ไม่เคยผ่านการ JOIN มาก่อนเลย
     """
     rows = run(repo.curriculum_plan(live_db, get_settings().default_program_code))
     codes = [row["course_code"] for row in rows]
 
-    assert len(rows) == 32
-    assert len(set(codes)) == 32, "แถวซ้ำ = LATERAL dedupe พัง"
+    assert len(rows) == 68
+    assert len(set(codes)) == 68, "แถวซ้ำ = LATERAL dedupe พัง"
     assert all(row["name_th"] for row in rows), "ต้องมีชื่อวิชาครบทุกแถว"
     assert all(row["credits"] for row in rows)
     assert all(len(code) == 7 and code.isdigit() for code in codes)
     assert all(row["course_code_full"] for row in rows)
+    # ทุกแถวต้องรู้หมวดของตัวเอง ไม่งั้นหน้า /liff ไม่รู้จะเอาไปไว้กลุ่มไหน
+    assert all(row["group_code"] for row in rows), "group_code ว่าง = ตกจาก migration"
+
+
+def test_curriculum_plan_separates_electives_by_missing_term(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    วิชาเลือกต้องไม่มีปี/เทอม และต้องมาท้ายผลลัพธ์
+
+    ทั้งหน้า /liff และ planner แยก "บังคับ/เลือก" ด้วยเงื่อนไขเดียวคือมีเทอม
+    หรือไม่ ถ้าวันหลังมีใครเผลอเดาเทอมให้วิชาเลือก (CHECK บังคับ 1-8 จึงใส่
+    ค่ามั่วได้) วิชาเลือกจะไปแทรกกลางแผนบังคับ เทสนี้ดักตรงนั้น
+    """
+    rows = run(repo.curriculum_plan(live_db, get_settings().default_program_code))
+    fixed = [row for row in rows if row["std_year"] is not None]
+    electives = [row for row in rows if row["std_year"] is None]
+
+    assert (len(fixed), len(electives)) == (32, 36)
+    assert all(row["std_semester"] is None for row in electives)
+    assert not any(row["is_fixed_term"] for row in rows)
+    # ORDER BY ของ SQL_CURRICULUM_PLAN พา NULL ไปท้ายสุดเอง (default ของ Postgres)
+    assert [row["std_year"] is None for row in rows] == [False] * 32 + [True] * 36
+    # หมวดของวิชาเลือก: 10 ตัวเป็นศึกษาทั่วไป อีก 26 อยู่หมวดเลือกเฉพาะด้าน
+    assert sum(1 for row in electives if row["group_code"] == "2.2") == 26
+
+
+def test_curriculum_groups_cover_the_whole_degree(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    ผลรวมโควตา 9 หมวด ต้องเท่ากับ ``programs.total_credits`` (120)
+
+    นี่คือกับดักหลักของงานวิชาเลือก: ถ้าผลรวมไม่ตรง เปอร์เซ็นต์ความก้าวหน้า
+    จะเพี้ยนแบบเงียบ ๆ (ตัวหารไม่ใช่ 120) นักศึกษาจะเห็นตัวเลขที่ไม่มีใครผิด
+    อย่างชัดเจน — จับได้ที่นี่กับที่คำเตือนบนหน้า /admin เท่านั้น
+
+    โควตายังมาจากใบผลการเรียนที่จัดหมวดแล้ว ไม่ใช่เล่ม มคอ.2 (``verified_by``
+    ยังว่างทุกแถว) ถ้าวันหลังยืนยันแล้วตัวเลขเปลี่ยน ให้แก้เทสนี้พร้อมกัน
+    """
+    rows = run(repo.curriculum_groups(live_db, get_settings().default_program_code))
+    program = run(repo.program_info(live_db, get_settings().default_program_code))
+
+    assert len(rows) == 9
+    assert program is not None
+    assert sum(row["required_credits"] for row in rows) == program["total_credits"]
+    assert [row["group_code"] for row in rows] == [
+        "1.1.1",
+        "1.1.2",
+        "1.2.1",
+        "1.3.1",
+        "1.4.1",
+        "2.1",
+        "2.2",
+        "2.3",
+        "3.1",
+    ]
+    assert [row["sort_order"] for row in rows] == sorted(
+        row["sort_order"] for row in rows
+    )
+    assert all(row["group_label"] for row in rows)
+
+
+def test_curriculum_groups_free_elective_has_no_courses(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    หมวดเลือกเสรี (3.1) ต้องเป็นโควตาเปล่า — **ไม่มีวิชาชี้มา**
+
+    เลือกเสรีคือ 6 หน่วยกิตจากวิชาอะไรก็ได้ในมหาวิทยาลัย ถ้ามีแถวใน
+    ``curriculum_rules`` ชี้มาที่ 3.1 วิชาเหล่านั้นจะกลายเป็นวิชาบังคับปลอม
+    ที่นักศึกษาทุกคนเห็นในแผนของตัวเอง planner จึงต้องเติมหมวดนี้จาก
+    ``app_users.free_elective_credits`` ที่ผู้ใช้กรอกเองแทน
+    """
+    groups = run(repo.curriculum_groups(live_db, get_settings().default_program_code))
+    plan = run(repo.curriculum_plan(live_db, get_settings().default_program_code))
+
+    free = [row for row in groups if row["group_code"] == "3.1"]
+    assert len(free) == 1
+    assert free[0]["is_choice"] is True
+    assert free[0]["required_credits"] == 6
+    assert not [row for row in plan if row["group_code"] == "3.1"]
+
+
+def test_curriculum_groups_unknown_program_is_empty(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """หลักสูตรที่ไม่มีโควตา ต้องได้ลิสต์ว่าง ไม่ใช่ exception (planner เช็ค falsy)"""
+    assert run(repo.curriculum_groups(live_db, "0000000")) == []
 
 
 def test_curriculum_plan_matches_the_registrar_study_plan(
@@ -1043,10 +1137,15 @@ def test_curriculum_plan_matches_the_registrar_study_plan(
 
     ล็อกไว้เพราะเคยนำเข้าได้ 31 แถว (ปี 1 เทอม 1 หายไป 1 วิชา) แล้วรายงานว่า
     สำเร็จ — ตัวเลขต่อเทอมคือที่เดียวที่จับความผิดพลาดแบบนั้นได้
+
+    นับเฉพาะแถวที่มีเทอม: ตั้งแต่ 010_electives.sql วิชาเลือก 36 ตัวอยู่ใน
+    ตารางเดียวกันแต่ไม่มีเทอม (ดู ``test_curriculum_plan_separates_electives...``)
     """
     rows = run(repo.curriculum_plan(live_db, get_settings().default_program_code))
     per_term: dict[tuple[int, int], int] = {}
     for row in rows:
+        if row["std_year"] is None:
+            continue
         key = (row["std_year"], row["std_semester"])
         per_term[key] = per_term.get(key, 0) + 1
 
@@ -1061,7 +1160,9 @@ def test_curriculum_plan_matches_the_registrar_study_plan(
         (4, 2): 1,
     }
     # 31 วิชา x 3 นก. + ฝึกประสบการณ์ 12 นก.
-    assert sum(row["credits"] for row in rows) == 105
+    assert sum(row["credits"] for row in rows if row["std_year"]) == 105
+    # วิชาเลือกอีก 36 ตัว x 3 นก. — คลังให้เลือก ไม่ใช่หน่วยกิตที่ต้องเรียนทั้งหมด
+    assert sum(row["credits"] for row in rows if not row["std_year"]) == 108
 
 
 def test_prerequisites_for_program_is_still_empty(
@@ -1140,6 +1241,63 @@ def test_completed_courses_round_trip(
     cleared = run(repo.replace_completed_courses(live_db, user_id, []))
     assert cleared == {"removed": 1, "added": 0}
     assert run(repo.completed_courses(live_db, user_id)) == []
+
+
+def test_set_user_program_round_trips_free_elective_credits(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    หน่วยกิตเลือกเสรีที่ผู้ใช้กรอก ต้องเขียนแล้วอ่านกลับได้ทาง ``user_profile``
+
+    เป็นค่าเดียวในโปรไฟล์ที่ไม่มีที่มาจากระบบทะเบียน (หลักสูตรไม่ระบุรายวิชา
+    เลือกเสรี) ถ้าอ่านกลับไม่ได้ หมวด 3.1 จะค้างที่ 0% ตลอดไปโดยไม่มี error
+
+    จุดที่ต้องแยกให้ออก: ``None`` = ฟอร์มไม่ได้ถาม (ห้ามทับค่าเดิม)
+    ส่วน 0 = ผู้ใช้ยืนยันว่ายังไม่ผ่านเลย (ต้องทับ)
+    """
+    from .conftest import TEST_HASH_PREFIX
+
+    hash_value = TEST_HASH_PREFIX + "free-elective"
+    run(repo.ensure_user(live_db, hash_value))
+
+    saved = run(
+        repo.set_user_program(
+            live_db, hash_value, program_code="643170151", free_elective_credits=6
+        )
+    )
+    assert saved is not None and saved["free_elective_credits"] == 6
+    profile = run(repo.user_profile(live_db, hash_value))
+    assert profile is not None and profile["free_elective_credits"] == 6
+
+    # ไม่ส่งค่ามา = ต้องคงของเดิมไว้ (coalesce) ไม่ใช่รีเซ็ตเป็น 0
+    kept = run(repo.set_user_program(live_db, hash_value, study_year=4))
+    assert kept is not None and kept["free_elective_credits"] == 6
+
+    # ส่ง 0 มาจริง = ผู้ใช้แก้ให้เป็นศูนย์ ต้องทับ
+    zeroed = run(repo.set_user_program(live_db, hash_value, free_elective_credits=0))
+    assert zeroed is not None and zeroed["free_elective_credits"] == 0
+
+
+def test_set_user_program_rejects_free_elective_credits_over_the_cap(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    CHECK 0-60 ต้องยิงจริงที่ DB — ชั้น API validate ซ้ำได้ แต่ต้องมีตาข่ายท้าย
+
+    ขอบบนเป็น 60 ไม่ใช่ 6 (โควตา) เพราะคนโอนหน่วยกิตมาผ่านเกินโควตาได้
+    planner จะนับให้ไม่เกินโควตาเอง
+    """
+    from .conftest import TEST_HASH_PREFIX
+
+    hash_value = TEST_HASH_PREFIX + "free-elective-cap"
+    run(repo.ensure_user(live_db, hash_value))
+
+    with pytest.raises(Exception) as failure:
+        run(repo.set_user_program(live_db, hash_value, free_elective_credits=61))
+
+    assert "free_elective_credits" in str(failure.value) or "check" in str(
+        failure.value
+    ).lower()
 
 
 def test_replace_completed_courses_is_idempotent(
@@ -1240,6 +1398,7 @@ COVERED_FUNCTIONS = frozenset(
         "latest_term",
         # ทางอ่าน (planner)
         "curriculum_plan",
+        "curriculum_groups",
         "prerequisites_for_program",
         "program_info",
         "user_profile",

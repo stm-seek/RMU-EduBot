@@ -184,7 +184,12 @@ async def load_progress(
     """
     ดึงทุกอย่างที่ planner ต้องใช้ — คืน ``None`` เมื่อยังคำนวณไม่ได้
 
-    จำนวนคิวรีคงที่ (5 ครั้ง) ไม่ขึ้นกับจำนวนวิชา — ไม่มี N+1
+    จำนวนคิวรีคงที่ (6 ครั้ง) ไม่ขึ้นกับจำนวนวิชา — ไม่มี N+1
+
+    คิวรีที่ 6 คือ ``curriculum_groups`` ต้องโหลดด้วยแม้จะเพิ่มคิวรีอีกหนึ่งครั้ง
+    เพราะถ้าไม่ส่ง ``group_rows`` เข้า planner ตัวเลขที่บอทตอบในแชตจะคิดจาก
+    **จำนวนวิชา** ส่วนหน้า /liff คิดจาก **หน่วยกิตที่นับได้ตามโควตาหมวด**
+    ผู้ใช้คนเดียวกันถามสองช่องทางแล้วได้เปอร์เซ็นต์ไม่เท่ากัน คือบั๊กที่ผู้ใช้เห็นก่อนเรา
     """
     profile = await repo.user_profile(db, user_hash)
     if not profile or not profile.get("completed_courses"):
@@ -199,6 +204,7 @@ async def load_progress(
     prereq_rows = await repo.prerequisites_for_program(db, program_code)
     done = await repo.completed_courses(db, int(profile["id"]))
     program = await repo.program_info(db, program_code)
+    group_rows = await repo.curriculum_groups(db, program_code)
 
     progress = planner.evaluate(
         program_code,
@@ -206,6 +212,8 @@ async def load_progress(
         [row["course_code"] for row in done],
         prereq_rows=prereq_rows,
         total_credits_required=(program or {}).get("total_credits"),
+        group_rows=group_rows,
+        free_elective_credits=profile.get("free_elective_credits") or 0,
     )
     return progress, profile
 
