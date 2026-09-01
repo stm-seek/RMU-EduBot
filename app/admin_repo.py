@@ -89,6 +89,23 @@ ORDER BY is_active DESC, course_code, requires_code
 LIMIT %s
 """
 
+# กฎเสริมของ AI — เรียง ``created_at`` เป็นตัวที่สองโดยเจตนา (ไม่ใช่
+# ``updated_at DESC`` เหมือนตารางอื่น) เพราะลำดับที่เห็นในหน้า admin คือลำดับ
+# เดียวกับที่ข้อพวกนี้ถูกต่อเข้า prompt — แก้คำผิดข้อหนึ่งแล้วลำดับในหน้าเว็บ
+# สลับ จะอ่านไม่ออกว่ากฎที่ AI เห็นเรียงยังไง
+SQL_ADMIN_PROMPT_RULES = """
+SELECT rule_key, rule_text, note, is_active, created_at, updated_at, updated_by
+FROM ai_prompt_rules
+ORDER BY is_active DESC, created_at, rule_key
+LIMIT %s
+"""
+
+# นับข้อที่ "เปิดใช้" อยู่ — ใช้บังคับเพดานจำนวนข้อก่อนเพิ่ม/เปิดข้อใหม่
+# (เพดานข้ามแถวทำเป็น CHECK ใน Postgres ไม่ได้ ดู 009_ai_prompt_rules.sql)
+SQL_ADMIN_PROMPT_RULES_ACTIVE_COUNT = """
+SELECT count(*) AS active FROM ai_prompt_rules WHERE is_active
+"""
+
 # ── อ่าน: chat_logs (อ่านอย่างเดียว — คือ input ของการเขียน FAQ) ─────────────
 #
 # **ไม่ SELECT ``user_id``** ทั้งที่คอลัมน์นั้นเป็น hash แล้ว: หน้านี้มีไว้อ่าน
@@ -135,6 +152,8 @@ SELECT
     (SELECT count(*) FROM instructors WHERE room IS NOT NULL) AS with_room,
     (SELECT count(*) FROM curriculum_rules) AS curriculum_rules,
     (SELECT count(*) FROM prerequisites) AS prerequisites,
+    (SELECT count(*) FROM ai_prompt_rules) AS ai_prompt_rules,
+    (SELECT count(*) FROM ai_prompt_rules WHERE is_active) AS ai_prompt_rules_active,
     (SELECT count(*) FROM chat_logs
       WHERE answered_by IN ('fallback', 'no_data')) AS unanswered
 """
@@ -175,6 +194,12 @@ SQL_ADMIN_PREREQUISITE_ROW = """
 SELECT program_code, course_code, requires_code, kind, source, is_active
 FROM prerequisites
 WHERE program_code = %s AND course_code = %s AND requires_code = %s
+"""
+
+SQL_ADMIN_PROMPT_RULE_ROW = """
+SELECT rule_key, rule_text, note, is_active
+FROM ai_prompt_rules
+WHERE rule_key = %s
 """
 
 # ── เขียน: upsert (สร้างใหม่หรือแก้ ใช้ statement เดียว) ────────────────────
@@ -267,6 +292,18 @@ ON CONFLICT (program_code, course_code, requires_code) DO UPDATE SET
     updated_by = EXCLUDED.updated_by
 """
 
+# กฎเสริมของ AI — ``created_at`` ไม่อยู่ใน DO UPDATE โดยเจตนา: ลำดับที่กฎถูก
+# ต่อเข้า prompt เรียงตามวันที่สร้าง แก้ข้อความแล้วข้อนั้นไม่ควรกระโดดไปท้ายแถว
+SQL_ADMIN_UPSERT_PROMPT_RULE = """
+INSERT INTO ai_prompt_rules (rule_key, rule_text, note, updated_at, updated_by)
+VALUES (%s, %s, %s, now(), %s)
+ON CONFLICT (rule_key) DO UPDATE SET
+    rule_text  = EXCLUDED.rule_text,
+    note       = EXCLUDED.note,
+    updated_at = now(),
+    updated_by = EXCLUDED.updated_by
+"""
+
 # ── เขียน: เปิด/ปิด (แทนการลบ) ──────────────────────────────────────────────
 #
 # แยกจาก upsert เป็นคนละคำสั่ง เพราะฟอร์มแก้เนื้อหาไม่ควรมีอำนาจเปลี่ยนสถานะ
@@ -295,6 +332,11 @@ WHERE program_code = %s AND course_code = %s
 SQL_ADMIN_TOGGLE_PREREQUISITE = """
 UPDATE prerequisites SET is_active = %s, updated_at = now(), updated_by = %s
 WHERE program_code = %s AND course_code = %s AND requires_code = %s
+"""
+
+SQL_ADMIN_TOGGLE_PROMPT_RULE = """
+UPDATE ai_prompt_rules SET is_active = %s, updated_at = now(), updated_by = %s
+WHERE rule_key = %s
 """
 
 SQL_ADMIN_INSERT_AUDIT = """
@@ -376,6 +418,7 @@ TABLE_KEYS: dict[str, tuple[str, ...]] = {
     "instructors": ("full_name",),
     "curriculum_rules": ("program_code", "course_code"),
     "prerequisites": ("program_code", "course_code", "requires_code"),
+    "ai_prompt_rules": ("rule_key",),
 }
 
 TABLE_ROW_SQL: dict[str, str] = {
@@ -384,6 +427,7 @@ TABLE_ROW_SQL: dict[str, str] = {
     "instructors": SQL_ADMIN_INSTRUCTOR_ROW,
     "curriculum_rules": SQL_ADMIN_CURRICULUM_RULE_ROW,
     "prerequisites": SQL_ADMIN_PREREQUISITE_ROW,
+    "ai_prompt_rules": SQL_ADMIN_PROMPT_RULE_ROW,
 }
 
 TABLE_TOGGLE_SQL: dict[str, str] = {
@@ -392,6 +436,7 @@ TABLE_TOGGLE_SQL: dict[str, str] = {
     "instructors": SQL_ADMIN_TOGGLE_INSTRUCTOR,
     "curriculum_rules": SQL_ADMIN_TOGGLE_CURRICULUM_RULE,
     "prerequisites": SQL_ADMIN_TOGGLE_PREREQUISITE,
+    "ai_prompt_rules": SQL_ADMIN_TOGGLE_PROMPT_RULE,
 }
 
 
@@ -461,6 +506,25 @@ async def list_prerequisites(
     db: SupportsQuery, program_code: str, limit: int = DEFAULT_LIMIT
 ) -> list[dict]:
     return await db.fetch_all(SQL_ADMIN_PREREQUISITES, (program_code, limit))
+
+
+async def list_prompt_rules(
+    db: SupportsQuery, limit: int = DEFAULT_LIMIT
+) -> list[dict]:
+    """กฎเสริมของ AI ทุกข้อ (รวมข้อที่ปิดไว้ — ปิดแล้วต้องเปิดกลับได้)"""
+    return await db.fetch_all(SQL_ADMIN_PROMPT_RULES, (limit,))
+
+
+async def active_prompt_rule_count(db: SupportsQuery) -> int:
+    """
+    จำนวนกฎเสริมที่เปิดใช้อยู่ — ใช้กันไม่ให้บล็อกกฎเสริมบวมเกิน prompt หลัก
+
+    นับที่ DB ไม่ใช่นับจากรายการที่โหลดมาแสดง เพราะสองคนกดเพิ่มพร้อมกันได้
+    (ยังไม่ใช่การกันแบบ atomic — เพดานนี้กันความบวมของ prompt ไม่ใช่กันคนร้าย
+    และค่าที่เกินไปหนึ่งข้อไม่ทำให้ระบบพัง ตอนประกอบ prompt ตัดให้อีกชั้นแล้ว)
+    """
+    row = await db.fetch_one(SQL_ADMIN_PROMPT_RULES_ACTIVE_COUNT)
+    return int((row or {}).get("active") or 0)
 
 
 async def list_chat_logs(
@@ -790,6 +854,40 @@ async def save_prerequisite(
     return {"action": action, "changes": changes}
 
 
+async def save_prompt_rule(
+    db: SupportsExecute,
+    *,
+    admin_username: str,
+    rule_key: str,
+    rule_text: str,
+    note: str | None,
+) -> dict:
+    """
+    เขียนกฎเสริมของ AI หนึ่งข้อ (สร้างใหม่ถ้า ``rule_key`` ยังไม่มี)
+
+    ที่นี่ **ไม่ตรวจเนื้อหา** ให้ตรวจที่ :mod:`app.admin` ที่เดียว (ความยาว
+    ตัวอักษรควบคุม จำนวนข้อที่เปิดใช้) เหมือนตารางอื่นในไฟล์นี้ — ชั้นนี้มี
+    หน้าที่เดียวคือ "อ่านค่าเก่า → เขียน → บันทึก audit"
+
+    ไม่มีการลบเช่นเดิม: เลิกใช้กฎข้อไหนให้ปิดด้วย ``toggle_row`` ประวัติว่า
+    เคยมีกฎอะไรบังคับ AI อยู่ช่วงไหนเป็นข้อมูลที่ต้องตอบให้ได้ย้อนหลัง
+    """
+    key = (rule_key,)
+    before = await fetch_row(db, "ai_prompt_rules", key)
+    after = {"rule_text": rule_text, "note": note}
+    await db.execute(
+        SQL_ADMIN_UPSERT_PROMPT_RULE,
+        (rule_key, rule_text, note, admin_username),
+    )
+    action = "update" if before else "create"
+    changes = diff(before, after)
+    await write_audit(
+        db, admin_username=admin_username, action=action, table="ai_prompt_rules",
+        key=key, changes=changes,
+    )
+    return {"action": action, "changes": changes}
+
+
 async def toggle_row(
     db: SupportsExecute,
     *,
@@ -825,6 +923,8 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_ADMIN_INSTRUCTORS": SQL_ADMIN_INSTRUCTORS,
     "SQL_ADMIN_CURRICULUM_RULES": SQL_ADMIN_CURRICULUM_RULES,
     "SQL_ADMIN_PREREQUISITES": SQL_ADMIN_PREREQUISITES,
+    "SQL_ADMIN_PROMPT_RULES": SQL_ADMIN_PROMPT_RULES,
+    "SQL_ADMIN_PROMPT_RULES_ACTIVE_COUNT": SQL_ADMIN_PROMPT_RULES_ACTIVE_COUNT,
     "SQL_ADMIN_CHAT_LOGS": SQL_ADMIN_CHAT_LOGS,
     "SQL_ADMIN_CHAT_LOGS_UNANSWERED": SQL_ADMIN_CHAT_LOGS_UNANSWERED,
     "SQL_ADMIN_COUNTS": SQL_ADMIN_COUNTS,
@@ -833,16 +933,19 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_ADMIN_INSTRUCTOR_ROW": SQL_ADMIN_INSTRUCTOR_ROW,
     "SQL_ADMIN_CURRICULUM_RULE_ROW": SQL_ADMIN_CURRICULUM_RULE_ROW,
     "SQL_ADMIN_PREREQUISITE_ROW": SQL_ADMIN_PREREQUISITE_ROW,
+    "SQL_ADMIN_PROMPT_RULE_ROW": SQL_ADMIN_PROMPT_RULE_ROW,
     "SQL_ADMIN_UPSERT_FAQ": SQL_ADMIN_UPSERT_FAQ,
     "SQL_ADMIN_UPSERT_DOCUMENT": SQL_ADMIN_UPSERT_DOCUMENT,
     "SQL_ADMIN_UPDATE_INSTRUCTOR": SQL_ADMIN_UPDATE_INSTRUCTOR,
     "SQL_ADMIN_UPSERT_CURRICULUM_RULE": SQL_ADMIN_UPSERT_CURRICULUM_RULE,
     "SQL_ADMIN_UPSERT_PREREQUISITE": SQL_ADMIN_UPSERT_PREREQUISITE,
+    "SQL_ADMIN_UPSERT_PROMPT_RULE": SQL_ADMIN_UPSERT_PROMPT_RULE,
     "SQL_ADMIN_TOGGLE_FAQ": SQL_ADMIN_TOGGLE_FAQ,
     "SQL_ADMIN_TOGGLE_DOCUMENT": SQL_ADMIN_TOGGLE_DOCUMENT,
     "SQL_ADMIN_TOGGLE_INSTRUCTOR": SQL_ADMIN_TOGGLE_INSTRUCTOR,
     "SQL_ADMIN_TOGGLE_CURRICULUM_RULE": SQL_ADMIN_TOGGLE_CURRICULUM_RULE,
     "SQL_ADMIN_TOGGLE_PREREQUISITE": SQL_ADMIN_TOGGLE_PREREQUISITE,
+    "SQL_ADMIN_TOGGLE_PROMPT_RULE": SQL_ADMIN_TOGGLE_PROMPT_RULE,
     "SQL_ADMIN_INSERT_AUDIT": SQL_ADMIN_INSERT_AUDIT,
     "SQL_ADMIN_AUDIT_RECENT": SQL_ADMIN_AUDIT_RECENT,
     "SQL_ADMIN_ACCOUNT_BY_USERNAME": SQL_ADMIN_ACCOUNT_BY_USERNAME,

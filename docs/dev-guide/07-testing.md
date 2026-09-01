@@ -1,13 +1,13 @@
 # 07 — การทดสอบ
 
-## 7.1 ตัวเลขล่าสุด (รันจริงเมื่อ 30 สิงหาคม 2569)
+## 7.1 ตัวเลขล่าสุด (รันจริงเมื่อ 31 สิงหาคม 2569)
 
 ```
-unit test        769 ผ่าน   (ไม่ต้องมีอินเทอร์เน็ต ไม่ต้องมี Postgres — 8 วินาที)
-doctest           63 ผ่าน   (ตัวอย่างในเอกสารประกอบโค้ดถูกรันจริง)
-integration      100 ผ่าน  2 ตก  1 xfail   (ต้องมี Postgres จริง + seed จึงเป็น opt-in)
+unit test        837 ผ่าน   (ไม่ต้องมีอินเทอร์เน็ต ไม่ต้องมี Postgres — 8 วินาที)
+doctest           65 ผ่าน   (ตัวอย่างในเอกสารประกอบโค้ดถูกรันจริง)
+integration      100 ผ่าน  3 ตก  1 xfail   (ต้องมี Postgres จริง + seed จึงเป็น opt-in)
              ─────────
-รวม              935 ตัว
+รวม            1,005 ตัว
 ```
 
 คำสั่งที่ใช้ (ตัวเลขในเล่มควรรันดูเองอีกครั้งก่อนส่ง):
@@ -21,24 +21,25 @@ $env:PYTHONUTF8='1'; $env:RMU_DB_TESTS='1'; python -m pytest tests/integration -
 ถ้าไม่ตั้ง `RMU_DB_TESTS=1` เทส integration จะขึ้น **skipped** ไม่ใช่ failed
 (เจตนา: คนที่ไม่มี Postgres ต้องรันเทสได้)
 
-### เทส integration ที่ตกอยู่ 2 ตัว (รู้สาเหตุแล้ว ไม่ใช่บั๊กของระบบ)
+### เทส integration ที่ตกอยู่ 3 ตัว (รู้สาเหตุแล้ว ไม่ใช่บั๊กของระบบ)
 
 | เทส | สาเหตุ | ต้องทำอะไร |
 |---|---|---|
 | `test_00_smoke.py::test_operational_table_is_empty[faqs]` | ฐานข้อมูลที่ใช้พัฒนามีแถวทดสอบค้างอยู่ในตาราง `faqs` 1 แถว (`is_active = false`) เทสตัวนี้ตรวจว่าตารางที่ยังไม่ใช้งานต้องว่าง | ลบแถวทดสอบทิ้ง หรือรันเทสกับฐานข้อมูลที่ seed ใหม่ |
 | `test_10_repository.py::test_every_repository_function_is_covered_by_this_module` | มีฟังก์ชันใหม่ `search_faqs` ใน `app/repository.py` แต่ยังไม่ถูกเพิ่มในรายชื่อ `COVERED_FUNCTIONS` ของไฟล์เทส | เขียนเทสให้ `search_faqs` แล้วเพิ่มชื่อในรายการ |
+| `test_30_router.py::test_instructor_group_buttons_survive_postback_round_trip` | คำตอบเรื่องอาจารย์เปลี่ยนเป็น Flex Message แล้ว เทสยังอ่าน `messages[0]["text"]` (ของเดิมเป็นข้อความล้วน) | แก้เทสให้อ่านเนื้อหาจากโครง Flex |
 
-> **ถ้าจะใส่ตัวเลขผลทดสอบในเล่ม** ให้แก้สองข้อนี้ก่อนแล้วรันใหม่ จะได้
+> **ถ้าจะใส่ตัวเลขผลทดสอบในเล่ม** ให้แก้สามข้อนี้ก่อนแล้วรันใหม่ จะได้
 > "ผ่านทั้งหมด" ซึ่งอ่านดีกว่า และตรงความจริงกว่าการรายงานเฉพาะตัวที่ผ่าน
 
 ## 7.2 unit test แยกตามไฟล์
 
 | ไฟล์ | จำนวน | ทดสอบอะไร |
 |---|---|---|
-| `test_admin.py` | 192 | หน้า admin: ล็อกอิน, สิทธิ์, allowlist ตาราง, audit log |
+| `test_admin.py` | 226 | หน้า admin: ล็อกอิน, สิทธิ์, allowlist ตาราง, audit log, กฎเสริมของ AI |
 | `test_repository.py` | 101 | SQL ทุกคำสั่งของชั้นข้อมูล (ตรวจด้วย `sqlglot` + fake connection) |
 | `test_router.py` | 79 | การตัดสินใจของบอทว่าคำถามไหนไปชั้นไหน |
-| `test_ai_chat.py` | 54 | โหมดปรึกษา AI: จำนวนตา, หมดเวลา, เข้า/ออกโหมด |
+| `test_ai_chat.py` | 66 | โหมดปรึกษา AI: จำนวนตา, หมดเวลา, เข้า/ออกโหมด, การประกอบ system prompt |
 | `test_webhook.py` | 39 | ลายเซ็น, ตอบ 200 ทันที, งานเบื้องหลัง |
 | `test_progress.py` | 35 | การประกอบคำตอบเรื่องความก้าวหน้า |
 | `test_llm.py` | 32 | retry, สลับโมเดลสำรอง, เพดานเวลา, error ที่ไม่ควร retry |
@@ -59,7 +60,7 @@ $env:PYTHONUTF8='1'; $env:RMU_DB_TESTS='1'; python -m pytest tests/integration -
 | ไฟล์ | จำนวน | ทดสอบอะไร |
 |---|---|---|
 | `test_00_smoke.py` | 27 | schema ครบ, extension เปิดอยู่, ข้อมูล seed ครบจำนวน |
-| `test_10_repository.py` | 55 | ทุก query ยิง Postgres จริงแล้วได้ผลถูก |
+| `test_10_repository.py` | 56 | ทุก query ยิง Postgres จริงแล้วได้ผลถูก |
 | `test_20_pool.py` | 9 | connection pool กับฐานข้อมูลจริง |
 | `test_30_router.py` | 10 | บทสนทนาจริงตั้งแต่ข้อความ → คำตอบ |
 | `test_90_restart.py` | 2 | ข้อมูลไม่หายหลังรีสตาร์ต container |

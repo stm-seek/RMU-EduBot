@@ -38,8 +38,8 @@
 | README เขียนว่า | ความจริง |
 |---|---|
 | "ยังไม่มี FAQ matching" | **มีแล้ว** (ชั้นที่ 2 ทำเสร็จ) แต่ตาราง `faqs` มีแต่แถวทดสอบ 1 แถวที่ปิดใช้งานไว้ (`is_active = false`) ยังไม่มีเนื้อหาจริง |
-| "ยังไม่ได้รันบน Postgres จริง" | **รันแล้ว** และมี integration test 103 ตัวยืนยัน |
-| "เทส 512 unit + 46 doctests" | ตัวเลขปัจจุบันคือ **769 unit + 63 doctest + 103 integration** |
+| "ยังไม่ได้รันบน Postgres จริง" | **รันแล้ว** และมี integration test 104 ตัวยืนยัน |
+| "เทส 512 unit + 46 doctests" | ตัวเลขปัจจุบันคือ **837 unit + 65 doctest + integration 104 ตัว (ผ่าน 100 ตก 3 xfail 1)** — รัน 31 ส.ค. 2569 |
 | admin ล็อกอินด้วย LINE Login + `ADMIN_USER_HASHES` | เปลี่ยนเป็น **username + password** ในตาราง `admin_accounts` แล้ว |
 | "ยังใช้ text + Quick Reply ก่อน (ไม่มี Flex)" | มี `app/line/flex.py` แล้ว |
 | Quick start บอกพอร์ต 8000 | ใช้จริงคือ **8001** |

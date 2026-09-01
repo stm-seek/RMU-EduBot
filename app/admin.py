@@ -49,6 +49,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
 from . import admin_repo
+from . import ai_chat
 from .config import Settings, get_settings
 from .db import SupportsExecute, SupportsQuery
 
@@ -625,6 +626,25 @@ class PrerequisiteSaveRequest(AdminRequest):
     source: str = Field(min_length=2, max_length=200)
 
 
+class PromptRuleSaveRequest(AdminRequest):
+    """
+    กฎเสริมของ AI หนึ่งข้อ — ช่องเดียวที่หน้าเว็บแตะ prompt ของ AI ได้
+
+    **ไม่มีช่องใดในนี้ที่แก้ prompt หลักได้** prompt หลักอยู่ใน
+    ``app/ai_chat.py`` (ค่าคงที่ในโค้ด) ที่นี่ส่งได้แค่ข้อความที่จะถูก
+    **ต่อท้าย** ในบล็อก "ข้อจำกัดเพิ่มเติม" เท่านั้น
+
+    ``max_length`` ของ ``rule_text`` ตรงกับ ``ai_chat.PROMPT_RULE_TEXT_LIMIT``
+    และ CHECK ใน migration 009 — สามที่ต้องเท่ากัน ไม่งั้นคนกรอกจะเจอ error
+    จาก Postgres (อ่านไม่รู้เรื่อง) แทน error จากฟอร์ม
+    """
+
+    rule_key: str = Field(min_length=2, max_length=80)
+    rule_text: str = Field(min_length=2, max_length=ai_chat.PROMPT_RULE_TEXT_LIMIT)
+    # บันทึกภายใน ไม่ถูกส่งให้ AI — มีไว้ให้คนถัดไปรู้ว่ากฎข้อนี้มาจากเรื่องอะไร
+    note: str | None = Field(default=None, max_length=500)
+
+
 class ToggleRequest(AdminRequest):
     # ชื่อตารางถูกจำกัดด้วย ``TABLE_KEYS`` ไม่ใช่ด้วย pattern — allowlist
     # อยู่ที่เดียวกับ SQL ของมัน จะไม่มีวันหลุดกัน
@@ -699,6 +719,7 @@ async def admin_state(
     db = _readable_db()
     program = payload.program_code or settings.default_program_code
     log.info("admin เปิดหน้า: username=%r", admin)
+    prompt_rules = await admin_repo.list_prompt_rules(db)
     return {
         "program_code": program,
         "counts": await admin_repo.counts(db),
@@ -707,7 +728,32 @@ async def admin_state(
         "instructors": await admin_repo.list_instructors(db),
         "curriculum_rules": await admin_repo.list_curriculum_rules(db, program),
         "prerequisites": await admin_repo.list_prerequisites(db, program),
+        "ai_prompt_rules": prompt_rules,
+        "ai_prompt": _prompt_preview(prompt_rules),
         "audit": await admin_repo.list_audit(db),
+    }
+
+
+def _prompt_preview(rows: list[dict]) -> dict:
+    """
+    ตัวอย่าง prompt ที่ AI จะได้รับ — ประกอบด้วย :mod:`app.ai_chat` ตัวจริง
+
+    ส่ง ``core`` (prompt หลัก) ออกไป **เพื่อให้อ่าน ไม่ใช่เพื่อให้แก้**: หน้าเว็บ
+    แสดงเป็นข้อความอ่านอย่างเดียว คนกรอกจึงเห็นด้วยตาว่าส่วนไหนแก้ได้ ส่วนไหน
+    อยู่ในโค้ด (ไม่มี endpoint ใดในไฟล์นี้รับ ``core`` กลับเข้ามา)
+
+    ประกอบจากแถวที่เพิ่งอ่านมาสด ๆ ไม่ใช่จาก cache ของ ``ai_chat`` — หน้า admin
+    ต้องเห็นผลของสิ่งที่ตัวเองเพิ่งบันทึกทันที ส่วนบอทจะตามมาช้าสุดตาม
+    ``cache_seconds`` (หน้าเว็บบอกตัวเลขนี้ให้คนกรอกรู้)
+    """
+    active = [row["rule_text"] for row in rows if row.get("is_active")]
+    composed = ai_chat.compose_system_prompt(active)
+    return {
+        "core": ai_chat.SYSTEM_PROMPT,
+        "extra": composed[len(ai_chat.SYSTEM_PROMPT):],
+        "active_count": len(active),
+        "max_active": ai_chat.PROMPT_RULE_LIMIT,
+        "cache_seconds": int(ai_chat.PROMPT_RULES_CACHE_TTL),
     }
 
 
@@ -877,6 +923,71 @@ async def save_prerequisite(
     return _saved(result)
 
 
+@router.post("/ai_prompt_rule")
+async def save_prompt_rule(
+    payload: PromptRuleSaveRequest, request: Request, settings: SettingsDep
+) -> dict:
+    """
+    เพิ่ม/แก้ **ข้อจำกัดเพิ่มเติม** ของ AI หนึ่งข้อ
+
+    ขอบเขตที่ endpoint นี้ทำได้ (และทำได้แค่นี้จริง ๆ):
+
+    * เขียนข้อความหนึ่งบรรทัดลงตาราง ``ai_prompt_rules``
+    * ข้อความนั้นถูกต่อ **ท้าย** ``ai_chat.SYSTEM_PROMPT`` ในบล็อกที่มีหัวเรื่อง
+      กำกับว่าเป็นข้อจำกัดเพิ่มเติม และมีบรรทัดปิดท้ายบอกโมเดลว่าห้ามถือว่า
+      บล็อกนี้ยกเลิกกฎด้านบน (ดู :func:`app.ai_chat.compose_system_prompt`)
+
+    สิ่งที่ทำ **ไม่ได้**: แก้/ลบ/แทนที่ prompt หลัก — prompt หลักเป็นค่าคงที่ใน
+    โค้ดและไม่มี route ไหนในไฟล์นี้เขียนมันได้
+
+    การตรวจก่อนเขียน (ทำที่นี่ที่เดียว ชั้น repo ไม่ตรวจ):
+
+    * ตัวอักษรควบคุม/หลายบรรทัด → ยุบเป็นบรรทัดเดียว (กันการแทรกหัวเรื่องปลอม
+      เข้าไปในโครงสร้าง prompt)
+    * ล้างแล้วเหลือสั้นเกินไป = 400 (ช่องว่าง/ขีดเปล่า ๆ ไม่ใช่กฎ)
+    * เพดานจำนวนข้อที่ *เปิดใช้* — บล็อกกฎเสริมยาวกว่ากฎหลักเท่ากับกลบกฎหลัก
+      ในทางปฏิบัติ และกินงบ token ของประวัติสนทนาทุกข้อความ
+    """
+    admin = require_admin(request, settings)
+
+    rule_text = ai_chat.clean_prompt_rule(payload.rule_text)
+    if len(rule_text) < 2:
+        raise _http_error(400, "ข้อความของกฎสั้นเกินไป (ต้องมีอย่างน้อย 2 ตัวอักษร)")
+
+    rule_key = ai_chat.clean_prompt_rule(payload.rule_key)
+    if len(rule_key) < 2:
+        raise _http_error(400, "rule_key สั้นเกินไป (ต้องมีอย่างน้อย 2 ตัวอักษร)")
+
+    db = _writable_db()
+
+    # เช็คเพดานเฉพาะตอน "สร้างข้อใหม่" — แถวใหม่เกิดมาพร้อม is_active = TRUE
+    # ส่วนการแก้ข้อความของข้อเดิมไม่ได้เพิ่มจำนวนข้อที่เปิดใช้ (upsert ไม่แตะ
+    # is_active) จึงไม่ควรถูกบล็อกเวลาที่ข้ออื่นเต็มเพดานอยู่แล้ว
+    if await admin_repo.fetch_row(db, "ai_prompt_rules", (rule_key,)) is None:
+        active = await admin_repo.active_prompt_rule_count(db)
+        if active >= ai_chat.PROMPT_RULE_LIMIT:
+            raise _http_error(
+                400,
+                f"เปิดใช้กฎเสริมได้สูงสุด {ai_chat.PROMPT_RULE_LIMIT} ข้อ "
+                f"(ตอนนี้เปิดอยู่ {active} ข้อ) — ปิดข้อที่ไม่ใช้ก่อนเพิ่มข้อใหม่",
+            )
+
+    result = await admin_repo.save_prompt_rule(
+        db,
+        admin_username=admin,
+        rule_key=rule_key,
+        rule_text=rule_text,
+        note=(payload.note or None),
+    )
+    log.info(
+        "admin แก้กฎเสริมของ AI: rule_key=%r action=%s (username=%r)",
+        rule_key,
+        result["action"],
+        admin,
+    )
+    return _saved(result)
+
+
 @router.post("/toggle")
 async def toggle(
     payload: ToggleRequest, request: Request, settings: SettingsDep
@@ -900,9 +1011,23 @@ async def toggle(
             f"({', '.join(expected)}) แต่ส่งมา {len(payload.key)}",
         )
 
+    db = _writable_db()
+
+    # เพดานจำนวนกฎเสริมที่เปิดใช้ ต้องบังคับที่ปุ่มเปิดด้วย ไม่ใช่แค่ตอนเพิ่ม
+    # ข้อใหม่ — ไม่งั้นเลี่ยงได้ด้วยการเพิ่มให้เต็ม ปิดหนึ่งข้อ เพิ่มอีกข้อ
+    # แล้วเปิดข้อที่ปิดไว้กลับมา (จำนวนข้อที่เปิดใช้จะเกินเพดานทันที)
+    if payload.table == "ai_prompt_rules" and payload.is_active:
+        active = await admin_repo.active_prompt_rule_count(db)
+        if active >= ai_chat.PROMPT_RULE_LIMIT:
+            raise _http_error(
+                400,
+                f"เปิดใช้กฎเสริมได้สูงสุด {ai_chat.PROMPT_RULE_LIMIT} ข้อ "
+                f"(ตอนนี้เปิดอยู่ {active} ข้อ) — ปิดข้ออื่นก่อนเปิดข้อนี้",
+            )
+
     try:
         result = await admin_repo.toggle_row(
-            _writable_db(),
+            db,
             admin_username=admin,
             table=payload.table,
             key=tuple(payload.key),

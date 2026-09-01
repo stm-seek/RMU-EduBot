@@ -60,6 +60,7 @@
 | `scrape_runs` | ประวัติการดึงข้อมูลแต่ละรอบ (ใช้ตรวจว่าข้อมูลเก่าแค่ไหน) |
 | `admin_accounts` | บัญชีผู้ดูแลหน้า `/admin` (username + scrypt hash) |
 | `admin_audit_logs` | ใครแก้อะไรในหน้า `/admin` เมื่อไร |
+| `ai_prompt_rules` | ข้อจำกัดเพิ่มเติมของโหมดปรึกษา AI ที่ admin เพิ่มได้จากหน้า `/admin` — **prompt หลักไม่ได้อยู่ในตารางนี้** (อยู่ในโค้ด `app/ai_chat.py`) |
 
 ## 4.2 ไฟล์ migration (รันตามลำดับเลข)
 
@@ -73,6 +74,15 @@
 | `006_admin.sql` | คอลัมน์ `is_active` + `admin_audit_logs` สำหรับหน้า `/admin` |
 | `007_answered_by_faq.sql` | เพิ่มค่า `faq` เข้า CHECK constraint ของ `chat_logs` |
 | `008_admin_accounts.sql` | ตาราง `admin_accounts` — เปลี่ยนวิธีล็อกอิน admin จาก LINE Login มาเป็น username/password |
+| `009_ai_prompt_rules.sql` | ตาราง `ai_prompt_rules` — ข้อจำกัดเพิ่มเติมที่ต่อท้าย system prompt ของ AI (ไม่มี seed, ตารางเริ่มต้นว่าง) |
+
+> **009 ไม่ได้รันเองบนเครื่องที่มี volume อยู่แล้ว** — ไฟล์ใน `db/migrations/` ถูก
+> mount เข้า `docker-entrypoint-initdb.d` ซึ่ง Postgres รัน *ครั้งแรกที่สร้าง
+> volume* เท่านั้น เครื่องที่มีข้อมูลอยู่แล้วต้องรันมือ (ไฟล์เขียนให้รันซ้ำได้):
+>
+> ```bash
+> docker exec -i rmu_bot_db psql -U rmubot -d rmu_bot -v ON_ERROR_STOP=1 < db/migrations/009_ai_prompt_rules.sql
+> ```
 
 `chat_logs.answered_by` มี **CHECK constraint** คุมค่าที่ใส่ได้ → เพิ่มป้ายใหม่ใน
 โค้ดต้องเพิ่ม migration ด้วย ไม่งั้น INSERT พังทั้งแถว (ป้ายใหม่ตัวล่าสุดคือ `faq`)

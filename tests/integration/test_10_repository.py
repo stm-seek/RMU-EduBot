@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 import pytest
 
-from app import repository as repo
+from app import ai_chat, repository as repo
 from app.config import get_settings
 from app.db import Database
 
@@ -1160,6 +1160,66 @@ def test_replace_completed_courses_is_idempotent(
     assert len(run(repo.completed_courses(live_db, user_id))) == 2
 
 
+def test_active_prompt_rules_reads_the_real_table(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    กฎเสริมของ AI — สิ่งที่เทสได้ *เฉพาะ* กับ Postgres จริงคือ "ตารางมีจริง"
+
+    unit test ใช้ DB ปลอมจึงผ่านได้แม้ยังไม่ได้รัน ``009_ai_prompt_rules.sql``
+    บนเครื่องนั้น (migration ใน ``db/migrations/`` รันเองแค่ตอนสร้าง volume
+    ครั้งแรก) — ตัวนี้จะแดงถ้าลืมรันมือ
+
+    ตารางนี้เริ่มต้น **ว่าง** และไม่มี seed → เทสไม่ยืนยันจำนวนแถว แต่ยืนยันว่า
+    แถวที่คืนมามีคอลัมน์ที่ ``app.ai_chat`` ใช้ และเป็นข้อที่เปิดใช้เท่านั้น
+    """
+    rows = run(repo.active_prompt_rules(live_db, ai_chat.PROMPT_RULE_LIMIT))
+
+    assert isinstance(rows, list)
+    assert len(rows) <= ai_chat.PROMPT_RULE_LIMIT
+    for row in rows:
+        assert row["rule_key"]
+        assert row["rule_text"]
+
+    # กฎหลักต้องอยู่ครบเสมอ ไม่ว่าตารางจะมีอะไรอยู่
+    composed = ai_chat.compose_system_prompt(
+        [row["rule_text"] for row in rows]
+    )
+    assert composed.startswith(ai_chat.SYSTEM_PROMPT)
+
+
+# ── search_faqs (pg_trgm เหมือน search_documents) ────────────────────────────
+
+
+def test_search_faqs_runs_and_respects_threshold(
+    live_db: Database, run: Callable[..., Any]
+) -> None:
+    """
+    ยืนยันว่า SQL ของชั้น FAQ รันบน Postgres จริงได้ — เหมือน
+    :func:`test_search_documents_runs_at_all` ประเด็นคือ ``%%`` ที่ escape ไว้
+    ต้องกลายเป็นตัวดำเนินการของ pg_trgm ไม่ใช่ placeholder ของ psycopg
+
+    ``faqs`` ไม่มี seed และผู้ดูแลเพิ่มเองได้จากหน้า ``/admin`` → เทสนี้
+    **ไม่ยืนยันเนื้อหา** แถว แต่ยืนยันสัญญาของฟังก์ชันที่ router พึ่งพา:
+    เกณฑ์คะแนนเป็นตัวตัด, ``limit`` ถูกเคารพ, และมี ``score`` ให้เอาไปเก็บเป็น
+    ``confidence`` ใน ``chat_logs``
+    """
+    question = "ลงทะเบียนเรียนล่าช้าต้องทำอย่างไร"
+
+    # คะแนนเต็ม 1.0 เป็นเพดาน → เกณฑ์เกิน 1.0 ต้องไม่เหลือแถวใด ๆ
+    assert run(repo.search_faqs(live_db, question, min_score=1.01)) == []
+
+    rows = run(repo.search_faqs(live_db, question, limit=2, min_score=0.0))
+    assert isinstance(rows, list)
+    assert len(rows) <= 2
+
+    scores = [row["score"] for row in rows]
+    assert all(isinstance(score, float) for score in scores)
+    assert scores == sorted(scores, reverse=True), "ต้องเรียงคะแนนมากไปน้อย"
+    for row in rows:
+        assert row["score"] >= 0.0
+
+
 # ── ยามเฝ้าความครบถ้วน ───────────────────────────────────────────────────────
 
 COVERED_FUNCTIONS = frozenset(
@@ -1168,6 +1228,7 @@ COVERED_FUNCTIONS = frozenset(
         "document_categories",
         "documents_in_category",
         "search_documents",
+        "search_faqs",
         "instructor_groups",
         "instructors_in_group",
         "search_instructors",
@@ -1183,6 +1244,7 @@ COVERED_FUNCTIONS = frozenset(
         "program_info",
         "user_profile",
         "completed_courses",
+        "active_prompt_rules",
         # ทางเขียน (บทสนทนา + โหมดปรึกษา AI)
         "ensure_user",
         "insert_chat_log",

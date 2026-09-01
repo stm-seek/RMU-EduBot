@@ -18,7 +18,7 @@ from app import repository as repo
 from app import router as rt
 from app.db import Database
 
-from ..helpers import assert_line_limits
+from ..helpers import assert_line_limits, flex_body_text
 
 pytestmark = pytest.mark.integration
 
@@ -111,7 +111,7 @@ def test_instructor_group_buttons_survive_postback_round_trip(
         assert answer.answered_by == "quick_reply", group
         assert answer.intent_key == f"instructors:{group}"
         assert_line_limits(answer.messages)
-        assert group in answer.messages[0]["text"]
+        assert group in flex_body_text(answer.messages[0])
 
 
 def test_instructor_answer_shows_real_contact_caveat(

@@ -181,21 +181,63 @@ body {
 
 /* ── แถบแท็บ ──────────────────────────────────────────────────────────────── */
 
+/* แถบแท็บต้องรับได้ถึง ~20 หมวดโดยไม่มีแท็บไหน "หายไป" — วิธีที่เลือก:
+   จอกว้าง (>=760px) ให้แท็บ **ตัดขึ้นบรรทัดใหม่** เห็นครบทุกอันในคราวเดียว
+   จอแคบให้เลื่อนแนวนอน แล้วมี **เงาไล่สีที่ขอบ** โผล่เฉพาะตอนที่เลื่อนต่อได้จริง
+   (คลาส is-more-left / is-more-right ที่ JS ใส่จากค่า scrollLeft)
+   ไม่ทำเมนู "More" แบบซ่อนของไว้ในดรอปดาวน์ เพราะหมวดที่ถูกซ่อนคือหมวดที่ไม่มีใครกด */
 .tabbar {
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
-.tabbar__scroll {
+.tabbar__inner {
+  position: relative;
   max-width: 1080px; margin: 0 auto;
+}
+/* เงาขอบเป็น ::before/::after ของกล่องนอก ไม่ใช่ของตัวที่เลื่อน — ถ้าไปแปะบน
+   ตัวที่เลื่อน มันจะเลื่อนตามไปกับแท็บแล้วบังแท็บกลางแถบ */
+.tabbar__inner::before,
+.tabbar__inner::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 30px;
+  pointer-events: none; z-index: 1;
+  opacity: 0; transition: opacity .15s ease;
+}
+.tabbar__inner::before {
+  left: 0;
+  background: linear-gradient(to right, var(--bg), transparent);
+}
+.tabbar__inner::after {
+  right: 0;
+  background: linear-gradient(to left, var(--bg), transparent);
+}
+.tabbar__inner.is-more-left::before,
+.tabbar__inner.is-more-right::after { opacity: 1; }
+.tabbar__scroll {
   display: flex; gap: 6px;
   padding: 8px 14px;
   overflow-x: auto;
   scrollbar-width: none;
   scroll-snap-type: x proximity;
+  /* เลื่อนด้วยปุ่มลูกศรแล้วให้ไถลไป ไม่กระโดด (คนที่ตั้งค่าลดแอนิเมชันไว้ได้ค่าเดิม) */
+  scroll-behavior: smooth;
 }
 .tabbar__scroll::-webkit-scrollbar { display: none; }
+/* จอกว้าง: ตัดบรรทัดแทนการเลื่อน เห็นทุกหมวดพร้อมกัน ไม่ต้องมีปุ่มลูกศร
+   และไม่ต้องมีเงาขอบเพราะไม่มีอะไรล้นออกไปให้พลาด */
+@media (min-width: 760px) {
+  .tabbar__scroll {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    row-gap: 6px;
+  }
+  .tabbar__inner::before, .tabbar__inner::after { content: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tabbar__scroll { scroll-behavior: auto; }
+}
 .tab {
   flex: none; scroll-snap-align: start;
+  max-width: 100%;
   display: inline-flex; align-items: center; gap: 6px;
   min-height: 40px; padding: 6px 14px;
   border: 1px solid var(--border);
@@ -689,6 +731,21 @@ code {
   display: flex; flex-wrap: wrap; gap: 6px 14px;
   font-size: .76rem; color: var(--text-faint); margin-top: 12px;
 }
+/* กล่องแสดง prompt ของ AI — อ่านอย่างเดียว ไม่มี input ไม่มีปุ่มบันทึก
+   ตั้งใจให้ "หน้าตาไม่เหมือนช่องกรอก" เพื่อไม่ให้มีใครเข้าใจผิดว่าพิมพ์ทับได้ */
+.prompt {
+  margin: 0; padding: 12px 13px; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .78rem; line-height: 1.6;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); color: var(--text-dim);
+  max-height: 320px; overflow: auto;
+}
+.prompt--extra { background: var(--brand-soft); border-color: var(--ok-border); color: var(--text); }
+.promptlabel {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: .8rem; font-weight: 600; margin: 0 0 6px;
+}
 .stack > * + * { margin-top: 12px; }
 </style>
 </head>
@@ -730,7 +787,10 @@ code {
 </header>
 
 <nav class="tabbar" id="tabbar" hidden aria-label="หมวดข้อมูล">
-  <div class="tabbar__scroll" id="tabs" role="tablist"></div>
+  <!-- ชั้น tabbar__inner มีไว้วางเงาขอบซ้าย-ขวา (ดู CSS) ตัวที่เลื่อนยังเป็น #tabs เดิม -->
+  <div class="tabbar__inner" id="tabbarinner">
+    <div class="tabbar__scroll" id="tabs" role="tablist"></div>
+  </div>
 </nav>
 </div>
 
@@ -1469,6 +1529,49 @@ const TABS = [
                   ["concurrent", "ลงพร้อมกันได้ (concurrent)"]] },
       { name: "source", label: "ที่มาของข้อมูล", required: true, min: 2, max: 200, wide: true,
         hint: "เช่น “มคอ.2 หน้า 42” — ข้อมูลที่ไม่รู้ที่มา แก้กลับไม่ได้เมื่อผิด" },
+    ],
+  },
+  {
+    id: "ai_prompt_rules",
+    label: "กฎเสริมของ AI",
+    table: "ai_prompt_rules",
+    endpoint: "/api/admin/ai_prompt_rule",
+    key: ["rule_key"],
+    rows: () => state.ai_prompt_rules,
+    lead: "ข้อห้ามเพิ่มเติมที่ต่อท้าย prompt ของระบบให้คำปรึกษาด้วย AI — " +
+      "เช่น “ห้ามให้คำแนะนำเรื่องยา” “ห้ามตอบเรื่องการเมือง”",
+    note: "กฎหลักของ AI อยู่ในโค้ด (app/ai_chat.py) หน้านี้แก้ไม่ได้และไม่มี " +
+      "ช่องให้แก้ — เพิ่มได้เฉพาะข้อห้าม “ที่ต่อท้าย” ซึ่งลบล้างกฎหลักไม่ได้ " +
+      "ดูข้อความจริงที่ AI จะได้รับในกล่องด้านล่าง",
+    empty: {
+      title: "ยังไม่มีกฎเสริมแม้แต่ข้อเดียว",
+      body: "ตอนนี้ AI ใช้กฎหลักในโค้ดอย่างเดียว (ห้ามแต่งข้อมูลราชการ " +
+        "ห้ามขอข้อมูลส่วนตัว ปฏิเสธคำถามนอกเรื่องเรียน) เพิ่มข้อแรกเมื่อเจอ " +
+        "เรื่องที่ต้องห้ามเพิ่มจากหน้างาน",
+      steps: [
+        "ตั้ง rule_key เป็นภาษาอังกฤษสั้น ๆ เช่น no_medical_advice",
+        "เขียนเป็นข้อห้ามหนึ่งบรรทัด ขึ้นต้นด้วย “ห้าม…” ให้ชัดที่สุด",
+        "กดบันทึกแล้วดูกล่อง “ข้อความที่ต่อท้าย” ว่าตรงกับที่ต้องการ",
+      ],
+    },
+    summary: ["rule_key", "rule_text"],
+    columns: [
+      { name: "rule_key", label: "rule_key", cls: "nowrap" },
+      { name: "rule_text", label: "ข้อความที่ต่อเข้า prompt", cls: "clip" },
+      { name: "note", label: "บันทึกภายใน", cls: "clip" },
+      { name: "updated_by", label: "คนแก้", cls: "nowrap" },
+    ],
+    fields: [
+      { name: "rule_key", label: "rule_key", required: true, min: 2, max: 80,
+        hint: "กุญแจของแถว — ใส่ค่าเดิมคือแก้ ใส่ค่าใหม่คือเพิ่ม เช่น no_medical_advice" },
+      { name: "rule_text", label: "ข้อห้าม/ข้อจำกัดที่จะต่อท้าย prompt",
+        type: "textarea", required: true, min: 2, max: 300, wide: true,
+        hint: "หนึ่งข้อหนึ่งบรรทัด ไม่เกิน 300 ตัวอักษร (ขึ้นบรรทัดใหม่จะถูกยุบ " +
+          "เป็นช่องว่าง) — เขียนเป็นข้อห้ามที่ตรวจได้ เช่น " +
+          "“ห้ามให้คำแนะนำเรื่องยาหรือการรักษาโรค ให้แนะนำให้พบแพทย์”" },
+      { name: "note", label: "บันทึกภายใน (AI ไม่เห็นข้อความนี้)", max: 500,
+        wide: true,
+        hint: "เขียนไว้ให้คนดูแลคนถัดไปรู้ว่ากฎข้อนี้มาจากเรื่องอะไร" },
     ],
   },
   { id: "chat_logs", label: "คำถามที่ตอบไม่ได้" },
@@ -2250,6 +2353,7 @@ function legend() {
   const box = document.createElement("div");
   box.className = "legend";
   box.style.marginTop = "0";
+  box.style.padding = "10px";
   for (const line of [
     "“ปิดใช้” = บอทเลิกเอาแถวนั้นไปตอบ แต่ข้อมูลยังอยู่ เปิดกลับได้ทุกเมื่อ",
     "หน้านี้ไม่มีปุ่มลบโดยเจตนา — ลบแล้วรอบเก็บข้อมูลถัดไปจะเอากลับมาเงียบ ๆ",
@@ -2486,6 +2590,7 @@ function renderSummary() {
     { label: "อาจารย์ที่มีเลขห้อง", num: counts.with_room, den: counts.instructors, zeroIsProblem: true },
     { label: "วิชาในแผนการเรียน", num: counts.curriculum_rules },
     { label: "เงื่อนไขวิชาบังคับก่อน", num: counts.prerequisites, zeroIsProblem: true },
+    { label: "กฎเสริมของ AI ที่เปิดใช้", num: counts.ai_prompt_rules_active, den: counts.ai_prompt_rules },
     { label: "คำถามที่บอทตอบไม่ได้", num: counts.unanswered },
   ]) {
     stats.appendChild(statCard(item));
@@ -2882,28 +2987,122 @@ function renderTabs() {
     bar.appendChild(button);
   }
 
-  bar.addEventListener("keydown", (event) => {
-    const keys = { ArrowRight: 1, ArrowLeft: -1 };
-    const index = TABS.findIndex((tab) => tab.id === activeTab);
-    let next = null;
-    if (event.key in keys) next = (index + keys[event.key] + TABS.length) % TABS.length;
-    if (event.key === "Home") next = 0;
-    if (event.key === "End") next = TABS.length - 1;
-    if (next === null) return;
-    event.preventDefault();
-    activeTab = TABS[next].id;
-    editingKey = null;
-    clearNotices();
-    render();
-    const moved = el(`tab_${activeTab}`);
-    if (moved) {
-      moved.focus();
-      moved.scrollIntoView({ block: "nearest", inline: "center" });
-    }
-  });
+  // ผูก listener ของ **ตัวแถบ** ครั้งเดียวตลอดอายุหน้า: renderTabs() ถูกเรียกทุก
+  // รอบ render() แต่ล้างแค่ลูก ๆ (textContent = "") ตัวแถบเดิมยังอยู่ — ผูกซ้ำทุกรอบ
+  // แล้วกดลูกศรหนึ่งครั้งจะเด้งไปหลายแท็บตามจำนวนรอบที่ render มาแล้ว
+  if (!bar.dataset.bound) {
+    bar.dataset.bound = "1";
+    bar.addEventListener("keydown", (event) => {
+      const keys = { ArrowRight: 1, ArrowLeft: -1 };
+      const index = TABS.findIndex((tab) => tab.id === activeTab);
+      let next = null;
+      if (event.key in keys) next = (index + keys[event.key] + TABS.length) % TABS.length;
+      if (event.key === "Home") next = 0;
+      if (event.key === "End") next = TABS.length - 1;
+      if (next === null) return;
+      event.preventDefault();
+      activeTab = TABS[next].id;
+      editingKey = null;
+      clearNotices();
+      render();
+      const moved = el(`tab_${activeTab}`);
+      if (moved) {
+        moved.focus();
+        moved.scrollIntoView({ block: "nearest", inline: "center" });
+      }
+    });
+    bar.addEventListener("scroll", markTabOverflow, { passive: true });
+    window.addEventListener("resize", markTabOverflow);
+  }
 
+  // เลื่อนแท็บที่เลือกเข้ามาให้เห็น — inline/block เป็น "nearest" ทั้งคู่ เพื่อไม่ให้
+  // ทั้งหน้าถูกเลื่อนตาม (บนจอกว้างแท็บตัดบรรทัดอยู่แล้ว บรรทัดนี้จึงไม่ทำอะไร)
   const current = el(`tab_${activeTab}`);
   if (current) current.scrollIntoView({ block: "nearest", inline: "nearest" });
+  markTabOverflow();
+}
+
+/**
+ * บอกว่ายังมีแท็บต่อทางซ้าย/ขวาอีกไหม แล้วเปิด-ปิดเงาขอบตามนั้น
+ *
+ * เช็กจากค่าจริงของ scrollLeft/scrollWidth ไม่ใช่จากจำนวนแท็บ — เงาจึงไม่โผล่
+ * ค้างเวลาแท็บพอดีจอ (หรือตอนจอกว้างที่แท็บตัดบรรทัดแล้วไม่มีการเลื่อนเลย)
+ */
+function markTabOverflow() {
+  const bar = el("tabs");
+  const box = el("tabbarinner");
+  if (!bar || !box) return;
+  const slack = bar.scrollWidth - bar.clientWidth;
+  // scroll-snap จับขอบซ้ายของแท็บแรกไปชนขอบกล่อง ทำให้ "ซ้ายสุด" จริง ๆ ไม่ใช่ 0
+  // แต่เท่ากับ padding-left — ถ้าเทียบกับ 0 เงาซ้ายจะค้างอยู่ตอนที่ไม่มีอะไรถูกซ่อน
+  const pad = parseFloat(getComputedStyle(bar).paddingLeft) || 0;
+  // เผื่ออีก 2px กันเศษทศนิยมของ layout ที่ทำให้เงาขวาค้างตอนเลื่อนสุดแล้ว
+  box.classList.toggle("is-more-left", bar.scrollLeft > pad + 2);
+  box.classList.toggle("is-more-right", slack > 2 && bar.scrollLeft < slack - 2);
+}
+
+/**
+ * กล่องแสดง prompt จริงของ AI — **อ่านอย่างเดียว**
+ *
+ * มีสองส่วนแยกกันชัด ๆ โดยเจตนา: ส่วน "กฎหลัก" (มาจากโค้ด แก้จากหน้านี้ไม่ได้
+ * และไม่มีช่องกรอกให้เลย) กับส่วน "ข้อความที่ต่อท้าย" (มาจากตารางในแท็บนี้)
+ * คนกรอกจะเห็นด้วยตาว่าตัวเองแก้อะไรได้ และเห็นว่ากฎที่เพิ่มไปโผล่ตรงไหน
+ *
+ * ข้อความทั้งสองก้อนประกอบที่ **เซิร์ฟเวอร์** ด้วยฟังก์ชันเดียวกับที่บอทใช้
+ * (``ai_chat.compose_system_prompt``) ไม่ได้ต่อสตริงเองในหน้าเว็บ — ไม่งั้น
+ * ตัวอย่างที่เห็นจะเพี้ยนจากของจริงได้เงียบ ๆ เมื่อฝั่งเซิร์ฟเวอร์เปลี่ยน
+ */
+function renderPromptPreview() {
+  const info = state.ai_prompt || {};
+  const card = document.createElement("section");
+  card.className = "card";
+
+  const head = document.createElement("div");
+  head.className = "card__head";
+  const title = document.createElement("h2");
+  title.textContent = "ข้อความจริงที่ส่งให้ AI";
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = `เปิดใช้ ${info.active_count ?? 0}/${info.max_active ?? 0} ข้อ · ` +
+    `แก้แล้วบอทจะใช้ค่าใหม่ช้าสุดราว ${info.cache_seconds ?? 60} วินาที`;
+  head.append(title, sub);
+  card.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "card__body stack";
+
+  body.appendChild(promptBlock(
+    "1. กฎหลัก — อยู่ในโค้ด แก้จากหน้านี้ไม่ได้",
+    info.core || "(โหลดไม่ได้)",
+    false,
+  ));
+
+  const extra = info.extra || "";
+  body.appendChild(promptBlock(
+    "2. ข้อความที่ต่อท้าย — มาจากตารางด้านล่างนี้",
+    extra.trim() ? extra.trim()
+      : "(ยังไม่มีกฎเสริมที่เปิดใช้ — AI ได้รับกฎหลักเปล่า ๆ)",
+    true,
+  ));
+
+  card.appendChild(body);
+  return card;
+}
+
+function promptBlock(label, body, editable) {
+  const box = document.createElement("div");
+  const heading = document.createElement("p");
+  heading.className = "promptlabel";
+  heading.textContent = label;
+  const badge = document.createElement("span");
+  badge.className = editable ? "badge badge--on" : "badge badge--off";
+  badge.textContent = editable ? "แก้ได้จากหน้านี้" : "แก้ได้ที่โค้ดเท่านั้น";
+  heading.appendChild(badge);
+  const pre = document.createElement("pre");
+  pre.className = editable ? "prompt prompt--extra" : "prompt";
+  pre.textContent = body;
+  box.append(heading, pre);
+  return box;
 }
 
 function render() {
@@ -2922,6 +3121,7 @@ function render() {
     view.appendChild(renderAudit());
   } else {
     view.appendChild(renderForm(tab));
+    if (tab.id === "ai_prompt_rules") view.appendChild(renderPromptPreview());
     view.appendChild(renderTable(tab));
     if (!editingKey) fillForm(tab, null);
   }

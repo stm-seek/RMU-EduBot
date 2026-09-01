@@ -61,3 +61,6 @@ snapshot_prerequisites.txt
 # ไฟล์ชั่วคราวจากการเปิด tunnel / ทดลองในเบราว์เซอร์
 .tunnel_url
 _stub.js
+
+# log ของ cloudflared quick tunnel
+.cloudflared.log

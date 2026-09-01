@@ -807,6 +807,31 @@ async def replace_completed_courses(
     return row or {"removed": 0, "added": 0}
 
 
+# ── กฎเสริมของ AI (ผู้ดูแลเพิ่มจากหน้า /admin) ──────────────────────────────
+#
+# ทางอ่านของ **บอท** อยู่ที่นี่ ไม่ใช่ใน admin_repo: ไฟล์นี้คือชั้นที่บอทใช้
+# ตอนตอบ ส่วน admin_repo คือชั้นที่หน้าเว็บใช้ตอนแก้ (คนละสิทธิ์กัน)
+#
+# เรียงตาม ``created_at`` = ลำดับที่กฎถูกต่อเข้า prompt และเป็นลำดับเดียวกับ
+# ที่หน้า /admin แสดง — คนที่อ่านหน้าเว็บจะเห็นสิ่งเดียวกับที่ AI เห็น
+#
+# ``LIMIT %s`` ไม่ใช่ของประดับ: ข้อความทุกข้อในผลลัพธ์ถูกต่อเข้า prompt ทุกครั้ง
+# ที่มีคนคุยกับ AI ตารางนี้บวมเท่ากับค่า token ต่อข้อความบวมตามไปด้วย
+
+SQL_ACTIVE_PROMPT_RULES = """
+SELECT rule_key, rule_text
+FROM ai_prompt_rules
+WHERE is_active
+ORDER BY created_at, rule_key
+LIMIT %s
+"""
+
+
+async def active_prompt_rules(db: SupportsQuery, limit: int) -> list[dict]:
+    """กฎเสริมที่เปิดใช้อยู่ เรียงตามลำดับที่จะต่อเข้า prompt"""
+    return await db.fetch_all(SQL_ACTIVE_PROMPT_RULES, (limit,))
+
+
 # ── ทะเบียนรวมของ SQL ทั้งไฟล์ (ใช้ในเทส) ───────────────────────────────────
 
 ALL_QUERIES: dict[str, str] = {
@@ -838,4 +863,5 @@ ALL_QUERIES: dict[str, str] = {
     "SQL_COMPLETED_COURSES": SQL_COMPLETED_COURSES,
     "SQL_SET_USER_PROGRAM": SQL_SET_USER_PROGRAM,
     "SQL_REPLACE_COMPLETED_COURSES": SQL_REPLACE_COMPLETED_COURSES,
+    "SQL_ACTIVE_PROMPT_RULES": SQL_ACTIVE_PROMPT_RULES,
 }
