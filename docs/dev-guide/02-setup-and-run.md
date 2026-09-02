@@ -39,7 +39,19 @@ docker ps --filter name=rmu_bot_db --format "{{.Status}} {{.Ports}}"
 # ต้องเห็น (healthy) 127.0.0.1:5432
 ```
 
-ครั้งแรกสุด (ยังไม่มี container เลย) ใช้ `make db-up` แล้ว `make seed`
+ครั้งแรกสุด (ยังไม่มี container เลย) ใช้ `docker compose up -d db` ครั้งเดียว —
+migration **และ** seed รันเองตอนสร้าง volume (ตัวเรียก seed คือ
+`db/migrations/009z_seed.sh` ดู §4.3) ไม่ต้อง `make seed` ตามหลัง
+
+แต่ต้องตรวจทุกครั้งที่สร้าง volume ใหม่ เพราะ init ที่ล้มกลางทางจะถูก
+`restart: unless-stopped` ปลุกกลับมาเป็น `healthy` ทั้งที่ schema ไม่ครบ
+(PGDATA ไม่ว่างแล้ว Postgres จึงข้าม init ทั้งชุด ไม่มี error ค้างให้เห็น):
+
+```powershell
+docker compose logs db | Select-String -Pattern "ERROR|FATAL"
+docker compose exec db psql -U rmubot -d rmu_bot -At -c "select count(*) from information_schema.tables where table_schema='public'"
+# ต้องได้ 26 ตาราง — ไม่ครบให้ down -v แล้ว up -d db ใหม่ (ข้อมูลผู้ใช้หาย)
+```
 
 ### 2) เซิร์ฟเวอร์
 
@@ -149,7 +161,7 @@ docker exec -i rmu_bot_db psql -U rmubot -d rmu_bot   # user คือ rmubot �
 | คำสั่ง | ทำอะไร |
 |---|---|
 | `make db-up` / `db-down` / `db-reset` / `db-shell` | คุม Postgres ผ่าน docker compose |
-| `make seed` | นำเข้าข้อมูล 1,066 แถว + แผนการเรียน (idempotent รันซ้ำได้) |
+| `make seed` | นำเข้าข้อมูล 1,066 แถว + แผนการเรียน (idempotent) — **ใช้เฉพาะกับ DB ที่มีอยู่แล้ว** volume ใหม่ seed เองอยู่แล้ว |
 | `make test` / `make doctest` | รันชุดทดสอบ |
 | `make check` / `make verify` | ตรวจ SQL ด้วย sqlglot + ตรวจ FK/ลำดับ INSERT |
 | `make scrape` | ดึงข้อมูลจากเว็บทะเบียนใหม่ทั้งชุด |

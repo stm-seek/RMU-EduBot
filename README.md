@@ -85,18 +85,19 @@ pip install -r requirements-dev.txt          # + scraper, ตรวจ SQL, เ�
 Copy-Item .env.example .env
 # แก้ .env ใส่ LINE_CHANNEL_SECRET, LLM_API_KEY, USER_ID_PEPPER
 
-# 3) เริ่ม database
+# 3) เริ่ม database + นำเข้าข้อมูล — คำสั่งเดียวจบ ไม่ต้อง psql เอง
 docker compose up -d db
-# migration ใน db/migrations/ รันอัตโนมัติตอนสร้าง volume ครั้งแรก
+# migration ใน db/migrations/ + seed ใน db/seed/ รันอัตโนมัติตอนสร้าง volume ครั้งแรก
+# (ตัวเรียก seed คือ db/migrations/009z_seed.sh — ต้องรันก่อน 010_electives.sql)
 
-# 4) นำเข้าข้อมูล
-docker compose exec -T db psql -U rmubot -d rmu_bot -v ON_ERROR_STOP=1 < db/seed/002_seed_data.sql
+# 4) ตรวจ — init ที่ล้มกลางทางจะถูก restart กลับมาเป็น healthy ทั้งที่ schema ไม่ครบ
+docker compose logs db | Select-String -Pattern "ERROR|FATAL"
+docker compose exec db psql -U rmubot -d rmu_bot -At -c "select count(*) from information_schema.tables where table_schema='public'"
+# ต้องได้ 26 ตาราง / ถ้าไม่ครบ: docker compose down -v แล้ว up -d db ใหม่
 
-# 5) ตรวจ
-docker compose exec db psql -U rmubot -d rmu_bot -c "SELECT program_code, program_name, total_credits FROM programs;"
-
-# 6) รันแอป
+# 5) รันแอป
 python run.py                       # → http://127.0.0.1:8000/health
+# หรือให้แอปอยู่ใน Docker ด้วย: docker compose up -d --build → http://127.0.0.1:8001/health
 ```
 
 > **Windows: ต้องรันด้วย `python run.py` ไม่ใช่ `uvicorn app.main:app`**

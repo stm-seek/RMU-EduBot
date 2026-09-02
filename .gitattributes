@@ -1,0 +1,5 @@
+# core.autocrlf=true ของ Git for Windows จะ checkout ไฟล์เป็น CRLF
+# ซึ่งทำให้ shell script ที่ถูก mount เข้า container Linux ล้มทันที
+# (`set -e\r` → sh มองว่าเป็น option แปลก, args ของ psql ติด \r ไปด้วย)
+# db/migrations/009z_seed.sh รันอยู่ใน docker-entrypoint-initdb.d จึงต้องเป็น LF
+*.sh text eol=lf

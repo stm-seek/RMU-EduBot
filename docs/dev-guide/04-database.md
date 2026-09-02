@@ -97,6 +97,32 @@
 seed ทุกไฟล์เป็น **idempotent** (ใช้ `ON CONFLICT ... DO UPDATE`) รันซ้ำได้ไม่พัง
 — ข้อนี้เคยเป็นบั๊ก แก้แล้วและมีเทสคุมไว้
 
+### seed เข้า DB เองตอน `up -d` (และทำไมลำดับสำคัญ)
+
+compose mount `./db/seed` ไว้ที่ `/seed:ro` แล้วให้ `db/migrations/009z_seed.sh`
+เรียก `psql -f` ทั้งสองไฟล์ ไฟล์นี้อยู่ใน `docker-entrypoint-initdb.d` จึงรันตาม
+ลำดับชื่อ — `009z_` ตกอยู่ **หลัง** `009_*` และ **ก่อน** `010_*` ซึ่งจำเป็น เพราะ:
+
+- `010_electives.sql` ส่วนที่ 4 เติม `curriculum_rules.group_code` ด้วย
+  `WHERE group_code IS NULL` → ถ้า seed มาทีหลัง 32 วิชาในแผนจะไม่มีหมวดสังกัด
+  ตารางครบแต่ progress รายหมวดกับหน้า `/liff` เพี้ยน (ไม่มี error ให้เห็น)
+- ส่วนที่ 6 คิด `course_id` จาก `coalesce(max(course_id), 0) + 1` — **ห้ามเอา
+  `coalesce` ออก** ถ้า `courses` ว่าง `max()` เป็น NULL → ชน NOT NULL ของ PK →
+  rollback ทั้งไฟล์ (010 อยู่ใน `BEGIN; … COMMIT;` เดียว) → `curriculum_groups`
+  หายทั้งตาราง, `ON_ERROR_STOP` + `set -e` หยุด init ไม่รัน 011 ต่อ ปลายทางคือ
+  `/api/admin/state` ตอบ 500 (`UndefinedTable`) — บั๊กนี้เคยเกิดจริง
+
+ข้อห้ามสองข้อของกลไกนี้ (เขียนไว้ในหัวไฟล์ทั้งสองที่ด้วย):
+
+- **ห้าม** mount ไฟล์ seed ซ้อนเข้า `/docker-entrypoint-initdb.d/xxx.sql` ตรง ๆ —
+  parent เป็น `:ro` Docker สร้าง mountpoint ในนั้นไม่ได้ คอนเทนเนอร์ขึ้นไม่ติด
+- **ห้ามใช้ `exit` / `return`** ใน `009z_seed.sh` — entrypoint จะ `.` (source)
+  ไฟล์นี้เมื่อไม่มี exec bit (กรณีปกติของ repo ที่ checkout บน Windows) คำสั่ง
+  พวกนั้นจะพา entrypoint ออกไปด้วย ใช้ `if` ครอบแทน
+
+`.gitattributes` บังคับ `*.sh text eol=lf` ไว้แล้ว — `core.autocrlf=true` ของ
+Git for Windows จะทำให้สคริปต์นี้เป็น CRLF และล้มทันทีใน container Linux
+
 ## 4.4 เครื่องมือตรวจฐานข้อมูลที่เขียนไว้เอง
 
 | สคริปต์ | ตรวจอะไร |

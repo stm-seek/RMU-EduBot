@@ -281,22 +281,31 @@ ON CONFLICT (program_code, course_code) DO NOTHING;
 -- curriculum_rules** เลือกเสรียังเป็นโควตาเปล่าตามข้อ 4 ในหัวไฟล์
 --
 -- courses.course_id ไม่มี DEFAULT (ตารางนี้มาจาก scraper ที่กำหนด id เอง)
--- จึงต้องคิด id จาก max()+1 และใช้ WHERE NOT EXISTS แทน ON CONFLICT
+-- จึงต้องคิด id จาก coalesce(max(),0)+1 และใช้ WHERE NOT EXISTS แทน ON CONFLICT
 -- (UNIQUE อยู่ที่ course_id ไม่ใช่ course_code — course_code ซ้ำได้จริง)
+--
+-- **coalesce ห้ามเอาออก** — บั๊กที่เคยทำให้ Docker พังทั้งชุด:
+-- ตอน docker-entrypoint-initdb.d รันไฟล์นี้ ตาราง courses ยังว่าง (seed ไม่ได้
+-- mount เข้า initdb.d) max() จึงเป็น NULL → course_id NULL → ชน NOT NULL ของ
+-- PRIMARY KEY → rollback ทั้ง transaction นี้ = curriculum_groups หายทั้งตาราง
+-- และ entrypoint (ON_ERROR_STOP=1 + set -e) หยุดกลางทาง ไม่รัน 011 ต่อ
+-- ปลายทางคือ /api/admin/state ตอบ 500 เพราะ UndefinedTable
+-- id 1,2 ที่ได้ตอน DB ว่างไม่ชนกับ seed: scraper แจก id ช่วง 27,9xx
+--
 -- แยกเป็นสอง statement เพราะสองแถวใน INSERT เดียวจะได้ course_id ชนกัน
 --
 -- credits_text ปล่อย NULL: ใบผลการเรียนบอกแต่จำนวนหน่วยกิต ไม่บอก (บรรยาย-ปฏิบัติ-ศึกษาเอง)
 -- ไม่ใส่ program_courses: ตารางนั้นคือ "โครงสร้างหลักสูตรตามหน้าเว็บ" ซึ่งมี
 -- category_row_id อ้างแถวในหน้านั้น สองวิชานี้ไม่ปรากฏในหน้านั้นจึงไม่มีหมวดให้อ้าง
 INSERT INTO courses (course_id, course_code, name_th, credits, faculty_text, source_url, scraped_at)
-SELECT (SELECT max(course_id) + 1 FROM courses), '2027321',
+SELECT (SELECT coalesce(max(course_id), 0) + 1 FROM courses), '2027321',
        'เทคโนโลยีอาหารหมักพื้นบ้าน', 3,
        'ไม่ทราบคณะ (ไม่อยู่ในหน้าหลักสูตรที่ scrape)',
        NULL, now()
 WHERE NOT EXISTS (SELECT 1 FROM courses WHERE course_code = '2027321');
 
 INSERT INTO courses (course_id, course_code, name_th, credits, faculty_text, source_url, scraped_at)
-SELECT (SELECT max(course_id) + 1 FROM courses), '7041103',
+SELECT (SELECT coalesce(max(course_id), 0) + 1 FROM courses), '7041103',
        'การบำรุงรักษาอุปกรณ์คอมพิวเตอร์', 3,
        'ไม่ทราบคณะ (ไม่อยู่ในหน้าหลักสูตรที่ scrape)',
        NULL, now()

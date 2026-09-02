@@ -9,8 +9,16 @@
 #
 # แก้โค้ดใน app/ หรือ web/ แล้วต้อง build ใหม่: docker compose up -d --build app
 #
-# migration ใน db/migrations/ จะรัน *อัตโนมัติครั้งแรกที่สร้าง volume*
+# migration ใน db/migrations/ + seed ใน db/seed/ จะรัน *อัตโนมัติครั้งแรกที่สร้าง
+# volume* (ผ่าน 009z_seed.sh) — ``up -d`` ครั้งเดียวได้ DB ที่พร้อมใช้ ไม่ต้อง psql เอง
 # ถ้าแก้ไฟล์ SQL แล้วอยากรันใหม่: docker compose down -v && docker compose up -d
+#
+# **กับดัก**: ถ้า init ล้มกลางทาง คอนเทนเนอร์จะตาย แล้ว restart: unless-stopped
+# ปลุกขึ้นมาใหม่เป็น ``healthy`` ทั้งที่ schema ไม่ครบ (PGDATA ไม่ว่างแล้ว
+# Postgres จึงข้าม init ทั้งชุดและไม่มี error ค้างให้เห็น) — ตรวจทุกครั้งด้วย
+#   docker compose logs db | Select-String -Pattern "ERROR|FATAL"
+#   docker compose exec db psql -U rmubot -d rmu_bot -At -c "select count(*) from information_schema.tables where table_schema='public'"
+# ต้องได้ 26 ตาราง
 # ชื่อกลุ่มที่โชว์ในหน้า Containers ของ Docker Desktop
 # ไม่ตั้งไว้ compose จะใช้ชื่อโฟลเดอร์ (line-bot-jang) และรับแค่ a-z 0-9 - _
 name: rmu-edubot
@@ -34,6 +42,14 @@ services:
       - pgdata:/var/lib/postgresql/data
       # ไฟล์ใน docker-entrypoint-initdb.d รันตามลำดับชื่อไฟล์ตอน init ครั้งแรก
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
+      # seed ไม่ใช่ migration (generate จาก scraper — ดู db/export_seed.py) แต่
+      # 010_electives.sql ต้องเห็นข้อมูลใน courses/curriculum_rules ก่อนถึงจะ
+      # เติม group_code และคิด course_id ได้ถูก → mount ไว้ที่ /seed แล้วให้
+      # db/migrations/009z_seed.sh เป็นตัวเรียก psql (ลำดับอยู่ระหว่าง 009 กับ 010)
+      #
+      # **ห้าม** mount ไฟล์ seed ซ้อนเข้า /docker-entrypoint-initdb.d/xxx.sql ตรง ๆ
+      # parent ของมันเป็น :ro → Docker สร้าง mountpoint ใหม่ในนั้นไม่ได้ จะขึ้นไม่ติด
+      - ./db/seed:/seed:ro
     healthcheck:
       test:
         ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rmubot} -d ${POSTGRES_DB:-rmu_bot}"]
