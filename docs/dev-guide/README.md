@@ -19,7 +19,7 @@
 | ไฟล์ | เนื้อหา | ใช้กับบทที่ |
 |---|---|---|
 | [01-overview.md](01-overview.md) | ระบบทำอะไรได้ / ยังไม่ได้ + ตัวเลขข้อมูลจริง | 1, 3, 4 |
-| [02-setup-and-run.md](02-setup-and-run.md) | ติดตั้ง ตั้งค่า สตาร์ต ปิด แบบ copy-paste | 3 |
+| [02-setup-and-run.md](02-setup-and-run.md) | ติดตั้ง ตั้งค่า สตาร์ต ปิด ลง Rich Menu แบบ copy-paste | 3 |
 | [03-architecture.md](03-architecture.md) | สถาปัตยกรรม 3 ชั้น + เส้นทางของหนึ่งข้อความ + เหตุผลการเลือกเทคโนโลยี | 3 |
 | [04-database.md](04-database.md) | 22 ตาราง, migration, ข้อมูลที่นำเข้า | 3 |
 | [05-features.md](05-features.md) | ฟีเจอร์ทีละตัว → โค้ดไฟล์ไหน → ป้ายที่บันทึกลง log | 4 |

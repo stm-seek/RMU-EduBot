@@ -59,6 +59,21 @@ make rich-menu-apply      # create -> upload -> set default
 make rich-menu-list       # ดูเมนูที่มีบน LINE (แล้ว rich-menu-delete เก็บกวาด)
 ```
 
+เครื่องที่ลง Docker ล้วน (ไม่มี python/httpx บน host) ใช้ service `tools` แทน —
+mount โปรเจกต์ทั้งก้อนเข้าคอนเทนเนอร์แล้วรัน `python` ข้างในให้ เพราะ image ของ
+แอปมีแค่ `app/` กับ `web/` ไม่มี `scripts/` กับ `assets/`:
+
+```powershell
+docker compose run --rm tools scripts/rich_menu.py --dry-run
+docker compose run --rm tools scripts/rich_menu.py
+docker compose run --rm tools scripts/rich_menu.py --list
+```
+
+**เมนูอยู่บนเซิร์ฟเวอร์ LINE ผูกกับ channel ไม่ได้อยู่ในโค้ดหรือ DB** — ใครเอา
+โปรเจกต์นี้ไปต่อกับ channel ของตัวเองต้องสั่งสร้างเมนูเองครั้งหนึ่ง `git pull`
+ไม่ได้เมนูมาด้วย (ขั้นตอนเต็ม + ใบโหมดปรึกษา `RICH_MENU_CONSULT_ID` อยู่ใน
+[`docs/dev-guide/02-setup-and-run.md` §2.6](docs/dev-guide/02-setup-and-run.md))
+
 **Rich Menu ไม่แสดงบน LINE for PC** ต้องทดสอบบนมือถือ และ**แก้ภาพของเมนูที่
 อัปโหลดไปแล้วไม่ได้** ต้องสร้างใบใหม่แล้วลบใบเก่าทิ้ง
 
@@ -98,6 +113,10 @@ docker compose exec db psql -U rmubot -d rmu_bot -At -c "select count(*) from in
 # 5) รันแอป
 python run.py                       # → http://127.0.0.1:8000/health
 # หรือให้แอปอยู่ใน Docker ด้วย: docker compose up -d --build → http://127.0.0.1:8001/health
+
+# 6) ติดตั้ง Rich Menu บน channel ของตัวเอง (ครั้งเดียวต่อ channel — ดู §2.6 ของ dev-guide)
+docker compose run --rm tools scripts/rich_menu.py --dry-run   # ตรวจก่อน ไม่ยิง API
+docker compose run --rm tools scripts/rich_menu.py             # ลงจริง แล้วเปิดแชทบนมือถือ
 ```
 
 > **Windows: ต้องรันด้วย `python run.py` ไม่ใช่ `uvicorn app.main:app`**

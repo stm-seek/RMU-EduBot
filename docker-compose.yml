@@ -100,6 +100,39 @@ services:
       retries: 5
       start_period: 20s
 
+  # เครื่องมือ CLI ของโปรเจกต์ (Rich Menu / สร้างผู้ดูแล / นำเข้าแผนการเรียน)
+  #
+  # ทำไมต้องมี service นี้: Dockerfile คัดลอกเข้า image แค่ ``app/`` กับ ``web/``
+  # — ``scripts/`` กับ ``assets/`` ไม่อยู่ใน image เครื่องที่ลง Docker ล้วน ๆ
+  # (ไม่มี python/httpx บน host) จึงรันสคริปต์ในโปรเจกต์ไม่ได้เลย
+  # service นี้ mount โปรเจกต์ทั้งก้อนทับ /app แล้วใช้ python ในคอนเทนเนอร์รันให้
+  #
+  #   docker compose run --rm tools scripts/rich_menu.py --dry-run
+  #   docker compose run --rm tools scripts/rich_menu.py
+  #   docker compose run --rm tools scripts/admin_user.py --username admin
+  #
+  # profiles: ["tools"] = ``up -d`` ไม่แตะ service นี้ ขึ้นเมื่อสั่งเท่านั้น
+  # ไม่มี depends_on เพราะงาน Rich Menu ไม่ใช้ DB เลย (แค่ token กับเน็ต) —
+  # ส่วน admin_user.py ต้องให้ ``db`` ขึ้นอยู่ก่อน ไม่งั้น psycopg ฟ้อง refused
+  #
+  # entrypoint เป็น python เฉย ๆ → อะไรที่พิมพ์ต่อท้ายคือ args ของ python
+  tools:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rmu_bot_app
+    profiles: ["tools"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rmubot}:${POSTGRES_PASSWORD:-rmubot_dev_password}@db:5432/${POSTGRES_DB:-rmu_bot}
+      PYTHONUTF8: "1"
+      TZ: Asia/Bangkok
+    volumes:
+      - .:/app
+    entrypoint: ["python"]
+    command: ["--version"]
+
   # pgAdmin — ไม่จำเป็น แต่สะดวกตอน dev
   # เปิดด้วย: docker compose --profile tools up -d
   pgadmin:

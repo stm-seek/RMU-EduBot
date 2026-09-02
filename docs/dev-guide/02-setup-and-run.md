@@ -165,10 +165,83 @@ docker exec -i rmu_bot_db psql -U rmubot -d rmu_bot   # user คือ rmubot �
 | `make test` / `make doctest` | รันชุดทดสอบ |
 | `make check` / `make verify` | ตรวจ SQL ด้วย sqlglot + ตรวจ FK/ลำดับ INSERT |
 | `make scrape` | ดึงข้อมูลจากเว็บทะเบียนใหม่ทั้งชุด |
-| `make rich-menu-dry` / `rich-menu-apply` | ตรวจ/อัปโหลด Rich Menu ขึ้น LINE |
+| `make rich-menu-dry` / `rich-menu-apply` | ตรวจ/อัปโหลด Rich Menu ขึ้น LINE (ขั้นตอนเต็มอยู่ §2.6) |
 | `python scripts/admin_user.py --username <ชื่อ>` | สร้าง/รีเซ็ตรหัสผู้ดูแลหน้า `/admin` |
 
 > ⚠️ **`make migrate` ล้าสมัย** — รัน migration ถึงแค่ `005_planner.sql`
 > ยังไม่รวม `006_admin.sql`, `007_answered_by_faq.sql`, `008_admin_accounts.sql`
 > ถ้าตั้งเครื่องใหม่ต้องรันสามไฟล์นั้นเองต่อ (หรือใช้ `make db-reset` ซึ่ง
 > Postgres จะรันทุกไฟล์ใน `db/migrations/` ให้ตอนสร้าง volume ใหม่)
+
+## 2.6 ติดตั้ง Rich Menu ให้ channel ใหม่ (ทำครั้งเดียวต่อ channel)
+
+**Rich Menu ไม่ได้อยู่ในโค้ดและไม่ได้อยู่ใน DB — มันอยู่บนเซิร์ฟเวอร์ของ LINE
+ผูกกับ channel** ใครเอาโปรเจกต์นี้ไปต่อกับ channel ของตัวเอง (เพื่อน เครื่องใหม่
+channel ทดสอบอีกใบ) ต้องสั่งสร้างเมนูของ channel นั้นเอง `git pull` ไม่ได้เมนูมาด้วย
+อาการเวลายังไม่ได้ทำ: บอทตอบข้อความได้ปกติ แต่ในแชทไม่มีแถบเมนูให้กดเลย
+
+ต้องมีก่อนอย่างเดียวคือ `.env` ที่มี `LINE_CHANNEL_ACCESS_TOKEN` (long-lived)
+ของ channel นั้น — ปุ่มทุกช่องเป็น `postback` ล้วน **ไม่มี URL/LIFF ฝังในเมนู**
+จึงไม่ต้องรอ tunnel, `PUBLIC_BASE_URL` หรือ LIFF ID ให้พร้อมก่อน ทำก่อนหรือหลัง
+ตั้ง webhook ก็ได้ ส่วนภาพ `assets/rich_menu.png` (1200x810) กับ
+`assets/rich_menu_consult.png` อยู่ใน repo แล้ว ไม่ต้องทำภาพใหม่
+
+### เครื่องที่ลง Docker ล้วน (ไม่มี python/httpx บน host)
+
+```powershell
+docker compose run --rm tools scripts/rich_menu.py --dry-run   # ตรวจภาพ + ดู JSON ไม่ยิง API
+docker compose run --rm tools scripts/rich_menu.py             # create -> upload -> set default
+docker compose run --rm tools scripts/rich_menu.py --list      # ดูใบที่อยู่บน channel
+```
+
+จบแค่นี้ — เปิดแชทบอทบน**มือถือ** จะเห็นเมนู 6 ช่อง ไม่ต้องรีสตาร์ตแอปเพราะ
+เมนูหลักอยู่ฝั่ง LINE ทั้งหมด แอปไม่ได้ถือ id ของมันไว้
+
+`tools` เป็น service ใน `docker-compose.yml` ที่ mount โปรเจกต์ทั้งก้อนทับ `/app`
+แล้วใช้ `python` ในคอนเทนเนอร์รันให้ — จำเป็นเพราะ image ของแอปคัดลอกเข้าไปแค่
+`app/` กับ `web/` ไม่มี `scripts/` กับ `assets/` และเพราะอยู่ใน
+`profiles: ["tools"]` มันจึงไม่ขึ้นมาตอน `up -d` ใช้กับสคริปต์อื่นได้เหมือนกัน เช่น
+`docker compose run --rm tools scripts/admin_user.py --username admin`
+(ตัวนั้นต้องมี `db` ขึ้นอยู่ก่อน ไม่งั้น psycopg ฟ้อง connection refused)
+
+### เครื่องที่ลง python + `requirements.txt` แล้ว
+
+| คำสั่ง | ทำอะไร |
+|---|---|
+| `make rich-menu-dry` | ตรวจภาพ + พิมพ์ JSON ไม่ยิง API |
+| `make rich-menu-apply` | สร้าง + อัปโหลดภาพ + ตั้ง default |
+| `make rich-menu-list` | ดู id / ขนาด / จำนวนปุ่มของทุกใบบน channel |
+| `make rich-menu-delete RICHMENU_ID=<id>` | ลบใบเก่า |
+| `make rich-menu-apply-consult` | ใบโหมดปรึกษา (ไม่ตั้ง default) |
+
+### ใบที่สอง — โหมดปรึกษา AI (ทำหรือไม่ทำก็ได้)
+
+ตอนผู้ใช้เข้าโหมดปรึกษา AI แอปจะสลับเมนูของ *คนนั้นคนเดียว* ไปเป็นใบ 2 ปุ่ม
+(จบการปรึกษา · เมนูหลัก) แล้วสลับกลับเมื่อจบ — ทำผ่าน `link_rich_menu` /
+`unlink_rich_menu` ใน `app/main.py` ถ้าไม่ตั้งค่านี้ ระบบยังทำงานปกติทุกอย่าง
+แค่ไม่สลับเมนู
+
+```powershell
+docker compose run --rm tools scripts/rich_menu.py --variant consult --no-default
+# ได้ richmenu-xxxx -> ใส่ RICH_MENU_CONSULT_ID=richmenu-xxxx ใน .env
+docker compose up -d app        # ค่านี้อ่านตอนเริ่มโปรเซส ต้องรีสตาร์ตแอป
+```
+
+สคริปต์**ปฏิเสธ**ถ้าลืม `--no-default` เพราะใบนี้ถ้าตั้งเป็น default ทั้งบัญชี
+ผู้ใช้ทุกคนจะเหลือ 2 ปุ่มทันที
+
+### กับดักที่เสียเวลามาแล้ว
+
+* **ไม่ขึ้นบน LINE for PC เลย** ต้องทดสอบบนมือถือ และเห็นตอนเปิดห้องแชทรอบถัดไป
+  (ช้าได้ถึง ~1 นาที) — ปิดแล้วเปิดห้องแชทใหม่ช่วยให้มาไวขึ้น
+* **แก้ภาพของใบที่อัปโหลดไปแล้วไม่ได้** ต้องสร้างใบใหม่แล้ว `--delete` ใบเก่า
+  และ API create/delete จำกัด **100 ครั้ง/ชั่วโมง** ต่อ channel
+* ภาพต้องเป็น **1200x810 เท่านั้น** เพราะพิกัดปุ่มใน `app/line/rich_menu.py`
+  (`COLUMN_EDGES` / `ROW_EDGES`) วัดมาจากไฟล์นั้น ไม่ใช่หาร 3 หาร 2 เอา —
+  สคริปต์ตรวจขนาด/ชนิดไฟล์/ไม่เกิน 1 MB ให้ก่อนยิง API เปลี่ยนภาพ = ต้องวัด
+  พิกัดใหม่ แล้วรัน `pytest tests/test_rich_menu.py` (คุมว่าช่องไม่ทับกันและ
+  ไม่ล้นขอบภาพ แต่ไม่รู้ว่าตรงกับภาพใหม่จริงไหม — ต้องดูด้วยตาบนมือถือ)
+* เมนูผูกกับ **channel** ไม่ใช่กับ token — ออก token ใหม่เมนูยังอยู่ แต่ย้ายไป
+  channel อื่นต้องสร้างใหม่ และ `--list` ตอบตาม token ที่อยู่ใน `.env` ตอนนั้น
+* ปุ่มส่ง `postback` เป็น `action=<x>&src=rich` → ใน `chat_logs` แยกได้ว่ามาจาก
+  Rich Menu ไม่ใช่ผู้ใช้พิมพ์เอง เพิ่ม/ย้ายปุ่มต้องแก้ทั้ง `SLOTS` และ router
