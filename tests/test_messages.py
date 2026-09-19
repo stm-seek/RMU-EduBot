@@ -144,6 +144,19 @@ def test_main_menu_actions_have_no_duplicates() -> None:
     assert len(data) == len(set(data))
 
 
+def test_main_menu_actions_use_the_new_planning_hubs() -> None:
+    labels = [action["label"] for action in msg.MAIN_MENU_ACTIONS]
+    data = [action["data"] for action in msg.MAIN_MENU_ACTIONS]
+
+    assert "วางแผนการเรียน" in labels
+    assert "action=study_plan" in data
+    assert "วางแผนเกรด" in labels
+    assert "action=grade_plan" in data
+    assert "ความก้าวหน้า" not in labels
+    assert "action=plan" not in data
+    assert "action=progress" not in data
+
+
 def test_fallback_message_admits_no_data_and_offers_contact() -> None:
     """
     Requirement ข้อ 14: ไม่มีข้อมูล → บอกตรง ๆ + ให้ช่องทางเจ้าหน้าที่
@@ -155,6 +168,11 @@ def test_fallback_message_admits_no_data_and_offers_contact() -> None:
     assert "ไม่พบข้อมูล" in message["text"]
     assert "0-4372-2118" in message["text"]
     assert message["quickReply"]["items"], "ต้องเสนอเมนูให้เลือกต่อ"
+
+
+def test_fallback_message_has_an_explicit_main_menu_action() -> None:
+    items = msg.fallback_message()["quickReply"]["items"]
+    assert items[0]["action"] == msg.MAIN_MENU_FALLBACK_ACTION
 
 
 def test_no_data_message_names_the_missing_topic() -> None:

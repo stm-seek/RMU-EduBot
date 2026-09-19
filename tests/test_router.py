@@ -196,7 +196,7 @@ async def test_postback_without_db_answers_no_data() -> None:
     ต่อ DB ไม่ได้ → ต้องบอกว่า "ยังไม่มีข้อมูล" ทุกหัวข้อที่ต้องใช้ DB
     ห้าม 500 และห้ามเงียบ (LINE จะ retry แล้ว user ได้ข้อความซ้ำ)
     """
-    for action in ["documents", "instructors", "plan", "loan", "calendar"]:
+    for action in ["documents", "instructors", "loan", "calendar"]:
         result = await bot_router.handle_postback(f"action={action}", None)
 
         assert_line_limits(result.messages)
@@ -497,57 +497,156 @@ async def test_instructors_intent_key_includes_group() -> None:
 # ── แผนการเรียน ─────────────────────────────────────────────────────────────
 
 
-async def test_plan_reports_only_what_it_knows() -> None:
-    """
-    ไม่มีแผนปี/เทอมของหลักสูตรเลย → ห้ามรับปากว่าจัดแผนได้
-    ต้องบอกเหตุผลและเสนอสิ่งที่ทำได้จริง (รหัสวิชา 7 หลัก) แทน
-    """
-    result = await bot_router._plan_answer(plan_db())
+async def test_plan_answers_with_the_registration_guide() -> None:
+    result = await bot_router.handle_postback("action=plan", None)
 
     assert_line_limits(result.messages)
-    assert result.answered_by == bot_router.BUTTON_ANSWER
+    assert result.answered_by == "quick_reply"
+    assert result.intent_key == "plan"
     text = result.messages[0]["text"]
-    assert "45 วิชา" in text
-    assert "ยังจัดแผนรายเทอมให้ไม่ได้" in text
-    assert "รหัสวิชา 7 หลัก" in text
+    assert "https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1" in text
+    assert "เข้าสู่เว็บไซต์มหาวิทยาลัย ผ่านลิงก์ 🔗" in text
+    assert "2.เลือกเมนูแผนการเรียน" in text
+    assert "3.ตรวจสอบรายละเอียดแผนการเรียนและรายวิชาในแต่ละภาคการศึกษาได้เลยครับ" in text
 
 
-async def test_plan_offers_the_planner_once_the_study_plan_is_loaded() -> None:
-    """
-    สถานะจริงตอนนี้: มีแผนปี/เทอม 32 วิชา แต่ prerequisites ยังว่าง
+async def test_study_plan_hub_offers_its_three_topics() -> None:
+    result = await bot_router.handle_postback("action=study_plan", None)
 
-    ต้องบอกว่าคำนวณความก้าวหน้าได้แล้ว **พร้อมกับ** ไม่เคลมว่ารู้เงื่อนไข
-    วิชาบังคับก่อน — เคลมเกินตรงนี้แปลว่านักศึกษาจะเชื่อลำดับที่ไม่ได้ยืนยัน
-    """
-    with_plan = dict(COVERAGE_NO_PLAN, curriculum_rules=32)
-    result = await bot_router._plan_answer(plan_db(with_plan))
+    assert_line_limits(result.messages)
+    assert result.answered_by == "quick_reply"
+    items = result.messages[0]["quickReply"]["items"]
+    assert [(item["action"]["label"], item["action"]["data"]) for item in items] == [
+        ("แผนการเรียน", "action=plan"),
+        ("ผลการเรียน หน่วยกิต", "action=grades"),
+        ("ตรวจสอบจบ", "action=grad_check"),
+    ]
 
+
+async def test_grades_answer_includes_steps_and_definitions() -> None:
+    result = await bot_router.handle_postback("action=grades", None)
+
+    assert_line_limits(result.messages)
     text = result.messages[0]["text"]
-    labels = [item["action"]["label"] for item in result.messages[0]["quickReply"]["items"]]
+    assert "https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1" in text
+    assert "2.เลือกเมนู ผลการเรียน" in text
+    assert "C.register หมายถึง หน่วยกิตที่ลงทะเบียนของเทอมการศึกษานี้" in text
+    assert "C.Earn หมายถึง หน่วยกิตที่สอบผ่าน" in text
+    assert "CA  หมายถึง หน่วยกิตที่ลงทะเบียนเรียนทั้งหมด" in text
+    assert "GP หมายถึง คะแนนรวมของรายวิชา (เกรดที่ได้ คูณ หน่วยกิต)" in text
+    assert "GPA หมายถึง เกรดเฉลี่ยประจำเทอม" in text
 
-    assert "แผนการเรียนมาตรฐาน 32 วิชา" in text
-    assert "ยังจัดแผนรายเทอมให้ไม่ได้" not in text
-    assert "ไม่ใช่เงื่อนไขบังคับ" in text
-    # ปุ่มนี้อยู่ใน MAIN_MENU_ACTIONS อยู่แล้ว — ต้องมีใบเดียว ไม่ใช่สองใบซ้อน
-    assert labels.count("ความก้าวหน้า") == 1
 
+async def test_grad_check_answer_explains_pass_fail_and_next_steps() -> None:
+    result = await bot_router.handle_postback("action=grad_check", None)
 
-async def test_plan_switches_message_when_prerequisites_arrive() -> None:
-    """เมื่อกรอก มคอ.2 แล้ว ข้อความต้องเปลี่ยนเป็นเชิญให้ถามได้เลย"""
-    complete = dict(COVERAGE_NO_PLAN, curriculum_rules=68, prerequisites=24)
-    result = await bot_router._plan_answer(plan_db(complete))
-
+    assert_line_limits(result.messages)
     text = result.messages[0]["text"]
-    assert "ยังจัดแผนรายเทอมให้ไม่ได้" not in text
-    assert "ถามได้เลย" in text
-    assert "ไม่ใช่เงื่อนไขบังคับ" not in text
+    assert "https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1" in text
+    assert "2.เลือกเมนู ตรวจสอบจบ" in text
+    assert "3.เลือก แสดงรายละเอียดแบบที่ 1 ทั้งหลักสูตรวิชา" in text
+    assert "3.ตรวจสอบรายละเอียดความคืบหน้าของหน่วยกิตได้เลยครับ" in text
+    assert "หากนักศึกษาต้องการทราบว่ายังขาดวิชาเรียน หรือ ขาดอีกกี่หน่วยกิต" in text
+    items = result.messages[0]["quickReply"]["items"]
+    assert [item["action"]["data"] for item in items] == [
+        "action=missing_credits",
+        "action=missing_courses",
+    ]
 
 
-async def test_plan_answers_no_data_when_nothing_loaded() -> None:
-    empty = dict.fromkeys(COVERAGE_NO_PLAN, 0)
-    result = await bot_router._plan_answer(plan_db(empty))
+async def test_grade_plan_hub_offers_gpa_calculation() -> None:
+    result = await bot_router.handle_postback("action=grade_plan", None)
 
-    assert result.answered_by == "no_data"
+    assert_line_limits(result.messages)
+    assert result.answered_by == "quick_reply"
+    text = result.messages[0]["text"]
+    assert "คำนวณเกรด และ คำนวณเกรดที่ต้องการ" in text
+    assert "https://www.stepupth.com/gpa" in text
+    assert "quickReply" not in result.messages[0]
+
+
+async def test_gpa_calc_answer_uses_the_calculator_url() -> None:
+    result = await bot_router.handle_postback("action=gpa_calc", None)
+
+    assert_line_limits(result.messages)
+    text = result.messages[0]["text"]
+    assert "https://www.stepupth.com/gpa" in text
+    assert "คำนวณเกรดที่ต้องการ" in text
+
+
+@pytest.mark.parametrize(
+    ("action", "topic"),
+    [
+        ("missing_credits", "ขาดอีก 30 หน่วยกิต"),
+        ("missing_courses", "MIN 54 | PASS 42"),
+    ],
+)
+async def test_missing_requirement_answers_are_honest(action: str, topic: str) -> None:
+    result = await bot_router.handle_postback(f"action={action}", None)
+
+    assert_line_limits(result.messages)
+    assert result.answered_by == "quick_reply"
+    assert result.intent_key == action
+    text = result.messages[0]["text"]
+    assert topic in text
+    assert "ระหว่างพัฒนา" not in text
+    assert "https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1" in text
+    assert "แสดงรายละเอียดแบบที่ 1 ทั้งหลักสูตรวิชา" in text
+    assert "ตรวจสอบจบ" in text
+
+
+@pytest.mark.parametrize("text", ["คำนวณ GPA", "คำนวณเกรด", "GPA เท่าไหร่"])
+async def test_gpa_questions_open_the_calculator(text: str) -> None:
+    result = await bot_router.handle_text(text, None)
+
+    assert result.intent_key == "gpa_calc"
+    assert "https://www.stepupth.com/gpa" in result.messages[0]["text"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ความก้าวหน้า",
+        "จบได้ไหม",
+        "ขาดอีกกี่หน่วยกิต",
+        "เหลืออีกกี่วิชา",
+        "เรียนไปได้เท่าไหร่แล้ว",
+    ],
+)
+async def test_graduation_questions_open_the_graduation_check(text: str) -> None:
+    result = await bot_router.handle_text(text, None)
+
+    assert result.intent_key == "grad_check"
+    assert "https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1" in (
+        result.messages[0]["text"]
+    )
+
+
+async def test_gpa_definition_opens_the_grades_explanation() -> None:
+    result = await bot_router.handle_text("GPA คืออะไร", None)
+
+    assert result.intent_key == "grades"
+    assert "GPA หมายถึง เกรดเฉลี่ยประจำเทอม" in result.messages[0]["text"]
+
+
+@pytest.mark.parametrize("text", ["ขอใบ GPA", "ขอ transcript GPA"])
+async def test_gpa_documents_are_not_sent_to_the_calculator(text: str) -> None:
+    result = await bot_router.handle_text(text, None)
+
+    assert result.intent_key != "gpa_calc"
+
+
+async def test_gpa_with_graduation_question_prioritizes_graduation_check() -> None:
+    result = await bot_router.handle_text("GPA 1.88 จบได้ไหม", None)
+
+    assert result.intent_key == "grad_check"
+
+
+async def test_old_progress_postback_is_no_longer_registered() -> None:
+    result = await bot_router.handle_postback("action=progress", None)
+
+    assert result.answered_by == "fallback"
+    assert result.intent_key is None
 
 
 # ── ข้อความอิสระ ────────────────────────────────────────────────────────────
@@ -773,28 +872,24 @@ async def test_menu_button_reuses_the_welcome_message_but_not_its_label() -> Non
     assert tapped.messages == (await bot_router.handle_follow()).messages
 
 
-async def test_welcome_offers_the_liff_button_when_configured() -> None:
+async def test_welcome_has_no_liff_button_when_configured() -> None:
     """
     ทางเข้าหน้า LIFF ต้องอยู่บนเมนูต้อนรับ — Rich Menu ทั้ง 6 ช่องเป็น
     postback ล้วน เปิดหน้า LIFF ไม่ได้ (LINE ต้องใช้ ``uri`` action)
     ถ้าไม่มีปุ่มนี้ ผู้ใช้ใหม่จะไปถึงหน้าติ๊กวิชาได้ก็ต่อเมื่อเผอิญถามเรื่อง
     ความก้าวหน้าก่อน
     """
-    settings = make_settings(liff_id="1234-abcd")
-    result = await bot_router.handle_follow(settings=settings)
+    result = await bot_router.handle_follow(
+        settings=make_settings(liff_id="1234-abcd")
+    )
 
     assert_line_limits(result.messages)
-    items = result.messages[0]["quickReply"]["items"]
-    first = items[0]["action"]
+    actions = [
+        item["action"] for item in result.messages[0]["quickReply"]["items"]
+    ]
 
-    # ต้องเป็นปุ่มแรก ไม่ให้ถูกดันตกท้ายแถวจนต้องเลื่อนหา
-    assert first["type"] == "uri"
-    assert first["label"] == bot_router.LIFF_MENU_LABEL
-    assert first["uri"] == "https://liff.line.me/1234-abcd"
-    assert len(first["label"]) <= 20, "label ของ quick reply ยาวได้ 20 ตัวอักษร"
-
-    # ข้อความต้องบอกว่าปุ่มนี้ทำอะไร ไม่ใช่โผล่มาเฉย ๆ
-    assert bot_router.LIFF_MENU_LABEL in result.messages[0]["text"]
+    assert all(action["type"] == "postback" for action in actions)
+    assert bot_router.LIFF_MENU_LABEL not in result.messages[0]["text"]
 
 
 async def test_welcome_hides_the_liff_button_and_its_line_together() -> None:
@@ -814,7 +909,7 @@ async def test_welcome_hides_the_liff_button_and_its_line_together() -> None:
     assert result.messages == (await bot_router.handle_follow()).messages
 
 
-async def test_menu_postback_carries_settings_to_the_liff_button() -> None:
+async def test_menu_postback_ignores_liff_settings() -> None:
     """
     กด "เมนูหลัก" ต้องได้ปุ่ม LIFF ด้วย — เส้นทางนี้ผ่าน ``handle_postback``
     ซึ่งเคยไม่ส่ง ``settings`` ต่อ ทำให้ปุ่มโผล่แค่ตอนเพิ่มเพื่อนครั้งแรก
@@ -826,7 +921,7 @@ async def test_menu_postback_carries_settings_to_the_liff_button() -> None:
     labels = [
         item["action"]["label"] for item in result.messages[0]["quickReply"]["items"]
     ]
-    assert bot_router.LIFF_MENU_LABEL in labels
+    assert bot_router.LIFF_MENU_LABEL not in labels
     assert result.intent_key == "menu"
 
 

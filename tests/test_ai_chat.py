@@ -355,6 +355,25 @@ def test_system_prompt_forbids_making_up_official_data() -> None:
     assert "ภาษาไทย" in ai_chat.SYSTEM_PROMPT
 
 
+def test_system_prompt_knows_the_planning_and_grade_flows() -> None:
+    prompt = ai_chat.SYSTEM_PROMPT
+
+    assert "วางแผนการเรียน" in prompt
+    assert "วางแผนเกรด" in prompt
+    assert "https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1" in prompt
+    assert "username/password" in prompt
+    assert "แสดงรายละเอียดแบบที่ 1 ทั้งหลักสูตรวิชา" in prompt
+    assert "https://www.stepupth.com/gpa" in prompt
+    assert "C.register คือหน่วยกิตที่ลงทะเบียนของเทอมการศึกษานี้" in prompt
+    assert "C.Earn คือหน่วยกิตที่สอบผ่าน" in prompt
+    assert "CA คือหน่วยกิตที่ลงทะเบียนเรียนทั้งหมด" in prompt
+    assert "GP คือคะแนนรวมของรายวิชา (เกรดที่ได้ คูณ หน่วยกิต)" in prompt
+    assert "GPA คือเกรดเฉลี่ยประจำเทอม" in prompt
+    assert "PASS หมายถึงกลุ่มวิชานั้นผ่านแล้ว" in prompt
+    assert "FAIL หมายถึงยังต้องลงทะเบียนเพิ่มตาม MIN" in prompt
+    assert "\u0e2b\u0e49\u0e32\u0e21\u0e40\u0e14\u0e32\u0e04\u0e27\u0e32\u0e21\u0e01\u0e49\u0e32\u0e27\u0e2b\u0e19\u0e49\u0e32\u0e2a\u0e48\u0e27\u0e19\u0e15\u0e31\u0e27\u0e02\u0e2d\u0e07\u0e19\u0e31\u0e01\u0e28\u0e36\u0e01\u0e29\u0e32" in prompt
+
+
 def test_system_prompt_asks_for_a_single_polite_tail() -> None:
     """
     "ลงท้ายครับ" แบบเดิมทำให้โมเดลเขียน "ครับ" สองรอบ (สั่งลงท้าย + ทำตาม
@@ -511,7 +530,9 @@ def test_duplicate_rules_are_listed_once_and_the_count_is_capped() -> None:
     assert composed.count("- ห้ามซ้ำ") == 1
 
     many = [f"ห้ามข้อที่ {i}" for i in range(ai_chat.PROMPT_RULE_LIMIT + 5)]
-    lines = ai_chat.compose_system_prompt(many).count("\n- ")
+    composed = ai_chat.compose_system_prompt(many)
+    extra_rules_block = composed.split(ai_chat.EXTRA_RULES_HEADER, 1)[1]
+    lines = extra_rules_block.count("\n- ")
     assert lines == ai_chat.PROMPT_RULE_LIMIT
 
 

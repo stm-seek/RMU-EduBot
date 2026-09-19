@@ -131,19 +131,21 @@ def clamp_messages(messages: list[dict]) -> list[dict]:
 # ── ข้อความมาตรฐานของระบบ ───────────────────────────────────────────────────
 
 MAIN_MENU_ACTIONS = [
-    postback_action("แผนการเรียน", "action=plan"),
-    # ความก้าวหน้าตามหลักสูตร — ชั้น planner (คำนวณจากวิชาที่ผู้ใช้ติ๊กไว้)
-    # อยู่ในเมนูเพราะเป็นคำถามที่ถามซ้ำทุกเทอม และพิมพ์เองยาว
-    postback_action("ความก้าวหน้า", "action=progress"),
+    postback_action("วางแผนการเรียน", "action=study_plan"),
+    postback_action("วางแผนเกรด", "action=grade_plan"),
     postback_action("ปฏิทินการศึกษา", "action=calendar"),
     postback_action("เอกสาร/คำร้อง", "action=documents"),
     postback_action("ติดต่ออาจารย์", "action=instructors"),
     postback_action("ทุน/กู้ยืม", "action=loan"),
     # แบบประเมินระบบ (งานวิจัย/ธีสิส) — ต้องอยู่ในเมนูหลัก เพราะทั้งอาจารย์
     # ผู้เชี่ยวชาญและนักศึกษาต้องเข้าถึงได้เองโดยไม่ต้องให้ใครส่งลิงก์ให้
-    # 7 ปุ่มยังห่างเพดาน 13 ของ LINE (ที่เหลือเผื่อปุ่มพิเศษ เช่น LIFF/ปรึกษา AI)
+    # 7 ปุ่มยังห่างเพดาน 13 ของ LINE (ที่เหลือเผื่อปุ่มพิเศษ)
     postback_action("แบบประเมิน", "action=survey"),
 ]
+
+# ปุ่มทางกลับแบบสั้นสำหรับคำตอบ fallback — ให้ผู้ใช้เปิดเมนูหลักได้ทันที
+# แม้ไม่ได้อยู่ในบริบทของ Quick Reply ชุดเต็ม
+MAIN_MENU_FALLBACK_ACTION = postback_action("เมนูหลัก", "action=menu")
 
 # ── แบบประเมินระบบ (งานวิจัย) ────────────────────────────────────────────────
 # เก็บ URL ไว้ที่เดียว: ลิงก์ฟอร์มยาวและก๊อปผิดง่าย ถ้ากระจายหลายที่แล้ว
@@ -263,7 +265,7 @@ def fallback_message() -> dict:
         "ขออภัยครับ ระบบยังไม่พบข้อมูลที่ตรงกับคำถามนี้\n\n"
         "ลองเลือกหัวข้อด้านล่าง หรือติดต่อสำนักส่งเสริมวิชาการและงานทะเบียน\n"
         "โทร 0-4372-2118 ต่อ 269",
-        quick_reply(MAIN_MENU_ACTIONS),
+        quick_reply([MAIN_MENU_FALLBACK_ACTION, *MAIN_MENU_ACTIONS]),
     )
 
 

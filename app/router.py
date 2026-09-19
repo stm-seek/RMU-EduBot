@@ -281,10 +281,14 @@ def _list_quick_reply(buttons: list[dict]) -> dict:
 # → ไม่มีทางตอบผิดหมวด และไม่เสียค่า LLM
 
 POSTBACK_HANDLERS: dict[str, str] = {
+    "study_plan": "วางแผนการเรียน",
+    "grade_plan": "วางแผนเกรด",
     "plan": "แผนการเรียน",
-    # ความก้าวหน้าตามหลักสูตร — ``action=progress`` = ภาพรวม,
-    # ``action=progress&next=1`` = เสนอวิชาเทอมถัดไป (ดู app/progress.py)
-    "progress": "ความก้าวหน้าตามหลักสูตร",
+    "grades": "ผลการเรียนและหน่วยกิต",
+    "grad_check": "ตรวจสอบจบ",
+    "gpa_calc": "คำนวณ GPA",
+    "missing_credits": "ขาดอีกกี่หน่วยกิต",
+    "missing_courses": "ขาดวิชาเรียนอะไรบ้าง",
     "calendar": "ปฏิทินการศึกษา",
     "documents": "เอกสาร/คำร้อง",
     "instructors": "ติดต่ออาจารย์",
@@ -305,6 +309,21 @@ POSTBACK_HANDLERS: dict[str, str] = {
 # คำที่พิมพ์แล้วต้องได้แบบประเมิน — อาจารย์/ผู้เชี่ยวชาญบางท่านพิมพ์เอง
 # ไม่กดปุ่ม (และ Quick Reply ไม่ขึ้นบนเดสก์ท็อปอยู่แล้ว)
 SURVEY_PATTERN = re.compile(r"แบบประเมิน|ประเมิน|แบบสอบถาม")
+GRADUATION_TEXT_PATTERN = re.compile(
+    r"ความก้าวหน้า|ตรวจสอบ(?:การ)?จบ|จบได้ไหม|ยังขาด|ขาดวิชา|"
+    r"ขาดอีกกี่หน่วยกิต|เหลืออีกกี่วิชา|หน่วยกิตที่เหลือ|เหลืออีกเท่าไหร่|"
+    r"เรียนไปได้เท่าไหร่|ผ่านไปได้เท่าไร"
+)
+GPA_CALC_TEXT_PATTERN = re.compile(
+    r"คำนวณ\s*GPA|คำนวณเกรด|GPA|เกรดเฉลี่ย", re.IGNORECASE
+)
+GPA_DEFINITION_TEXT_PATTERN = re.compile(
+    r"(?:GPA|เกรดเฉลี่ย)\s*(?:คือ|หมายถึง)", re.IGNORECASE
+)
+GRADE_DOCUMENT_TEXT_PATTERN = re.compile(
+    r"ใบ\s*(?:GPA|เกรด|แสดงผลการเรียน|รายงานผลการเรียน)|transcript",
+    re.IGNORECASE,
+)
 
 
 def _survey_answer(answered_by: str = BUTTON_ANSWER) -> RouteResult:
@@ -447,15 +466,26 @@ async def _dispatch_postback(
             return await _instructors_answer(db, group)
         return await _instructor_groups_answer(db)
 
+    if action == "study_plan":
+        return _study_plan_answer()
+
+    if action == "grade_plan":
+        return _grade_plan_answer()
+
     if action == "plan":
-        return await _plan_answer(db)
+        return _plan_answer()
 
-    if action == "progress":
-        from . import progress as prog
+    if action == "grades":
+        return _grades_answer()
 
-        if params.get("next"):
-            return await prog.next_term_answer(db, user_hash, settings)
-        return await prog.progress_answer(db, user_hash, settings)
+    if action == "grad_check":
+        return _grad_check_answer()
+
+    if action == "gpa_calc":
+        return _gpa_calc_answer()
+
+    if action in ("missing_credits", "missing_courses"):
+        return _missing_requirement_answer(action)
 
     if action == "course":
         code = params.get("code", "")
@@ -641,64 +671,186 @@ async def _instructors_answer(db: SupportsQuery | None, group: str) -> RouteResu
 # ── แผนการเรียน ─────────────────────────────────────────────────────────────
 
 
-async def _plan_answer(db: SupportsQuery | None) -> RouteResult:
-    """
-    ตอบเรื่องแผนการเรียนอย่างซื่อสัตย์
-
-    ระบบทะเบียนไม่เผยแพร่ prerequisite และแผนปี/เทอม → ต้องกรอกมือจาก มคอ.2
-    ซึ่งยังไม่มีเล่ม จึง **ห้ามเดา** ตอนนี้ตอบได้แค่ "วิชาไหนเปิดเทอมไหน"
-    จาก ``offering_patterns`` ที่สรุปจากตารางสอนย้อนหลัง
-    """
-    if db is None:
-        return _no_data("แผนการเรียน", "plan")
-
-    coverage = await repo.planning_coverage(db, _program_code())
-    rules = coverage.get("curriculum_rules") or 0
-    prerequisites = coverage.get("prerequisites") or 0
-    patterns = coverage.get("patterns") or 0
-
-    if not patterns and not rules:
-        return _no_data("แผนการเรียน", "plan")
-
-    lines = [
-        f"  • รายวิชาในหลักสูตร {coverage.get('program_courses') or 0} วิชา",
-        f"  • รู้ว่าเปิดเทอมไหน {patterns} วิชา"
-        f" (เทอม 1: {coverage.get('opens_sem1') or 0},"
-        f" เทอม 2: {coverage.get('opens_sem2') or 0},"
-        f" ฤดูร้อน: {coverage.get('opens_sem3') or 0})",
-    ]
-
-    if rules:
-        lines.insert(
-            0, f"  • แผนการเรียนมาตรฐาน {rules} วิชา (รู้ว่าวิชาไหนอยู่ปี/เทอมไหน)"
-        )
-
-    if prerequisites and rules:
-        footer = "ถามได้เลยครับ เช่น “ลงวิชา 7071201 ได้เลยไหม”"
-    elif rules:
-        # สถานะตอนนี้: มีแผนปี/เทอมแล้ว แต่ prerequisites ยังว่าง
-        # → คำนวณได้จริง แต่ต้องไม่เคลมว่ารู้เงื่อนไขวิชาบังคับก่อน
-        footer = (
-            "คำนวณให้ได้แล้วครับว่าผ่านไปเท่าไร เหลืออะไร และเทอมหน้าควรลงอะไร\n"
-            "(กดปุ่ม “ความก้าวหน้า” — ครั้งแรกต้องติ๊กวิชาที่ผ่านมาก่อน)\n\n"
-            "ยังไม่มีข้อมูลวิชาบังคับก่อน (prerequisite) ที่ระบบทะเบียนไม่เผยแพร่\n"
-            "ลำดับที่ได้จึงเป็นเทอมที่แผนแนะนำ ไม่ใช่เงื่อนไขบังคับครับ"
-        )
-    else:
-        footer = (
-            "ยังจัดแผนรายเทอมให้ไม่ได้ครับ เพราะยังไม่มีแผนปี/เทอมของหลักสูตรนี้\n\n"
-            "ระหว่างนี้พิมพ์รหัสวิชา 7 หลักมาได้ครับ จะบอกว่าวิชานั้นเปิดเทอมไหน"
-        )
-
+def _study_plan_answer() -> RouteResult:
     return RouteResult(
         messages=[
             msg.text_message(
-                join_lines("ข้อมูลแผนการเรียนที่ระบบมีตอนนี้", lines, footer),
-                _menu_quick_reply(),
+                "เลือกสิ่งที่อยากดูได้เลยครับ",
+                msg.quick_reply(
+                    [
+                        msg.postback_action("แผนการเรียน", "action=plan"),
+                        msg.postback_action("ผลการเรียน หน่วยกิต", "action=grades"),
+                        msg.postback_action("ตรวจสอบจบ", "action=grad_check"),
+                    ]
+                ),
+            )
+        ],
+        answered_by=BUTTON_ANSWER,
+        intent_key="study_plan",
+        confidence=1.0,
+    )
+
+
+# ── คำนวณเกรด ────────────────────────────────────────────────────────────────
+# ปุ่ม "วางแผนเกรด" (grade_plan) และการพิมพ์ถามเรื่องคำนวณเกรด (gpa_calc) ตอบ
+# ข้อความชุดเดียวกัน — วิธีใช้เว็บคิดเกรด 2 แบบ เก็บไว้ที่เดียวข้อความจะได้ไม่เพี้ยนกัน
+GRADE_CALC_MESSAGE = (
+    "หากต้องการคำนวณ GPA สามารถใช้เว็บไซต์คำนวณเกรดได้ครับ "
+    "โดยเว็บไซต์มี 2 แบบ คือ คำนวณเกรด และ คำนวณเกรดที่ต้องการ\n\n"
+    "วิธีใช้\n"
+    "1. คำนวณเกรด\n"
+    "ใช้สำหรับคำนวณ GPA จากวิชาที่ลงทะเบียนในเทอมนี้\n"
+    "• กรอก เกรดเฉลี่ยสะสม GPAx ปัจจุบัน\n"
+    "• กรอก หน่วยกิตสะสมทั้งหมดถึงปัจจุบัน\n"
+    "• กรอก ชื่อวิชา หน่วยกิต และเกรดที่คาดว่าจะได้ ของแต่ละวิชา\n"
+    "• หากมีหลายวิชา สามารถกด เพิ่มวิชา\n"
+    "• กด คำนวณ เพื่อดูผลลัพธ์\n\n"
+    "2. คำนวณเกรดที่ต้องการ\n"
+    "ใช้สำหรับดูว่า หากต้องการ GPA ตามเป้าหมาย ควรได้เกรดประมาณเท่าไรในเทอมนี้\n"
+    "• กรอก GPAX ที่ต้องการ\n"
+    "• กรอก เกรดรวมปัจจุบัน GPAx\n"
+    "• กรอก หน่วยกิตสะสมถึงปัจจุบัน\n"
+    "• กรอก หน่วยกิตรวมที่เรียนในเทอมนี้ (ไม่เกิน 21 หน่วยกิตตามที่เว็บไซต์กำหนด)\n"
+    "• กด คำนวณเกรดที่ต้องการ เพื่อดูผลลัพธ์\n\n"
+    "🔗 เข้าสู่เว็บไซต์คำนวณเกรดลิงก์นี้เลยครับ\n"
+    "https://www.stepupth.com/gpa"
+)
+
+
+def _grade_plan_answer() -> RouteResult:
+    return RouteResult(
+        messages=[msg.text_message(GRADE_CALC_MESSAGE)],
+        answered_by=BUTTON_ANSWER,
+        intent_key="grade_plan",
+        confidence=1.0,
+    )
+
+
+def _plan_answer() -> RouteResult:
+    """ชี้ทางดูแผนการเรียนจากระบบทะเบียนของมหาวิทยาลัย"""
+    return RouteResult(
+        messages=[
+            msg.text_message(
+                "ถ้าต้องการดูแผนการเรียน สามารถตรวจสอบได้จากระบบบริการการศึกษา มรม.ได้ด้วยวิธีการดังนี้ครับ\n"
+                "1.เข้าสู่เว็บไซต์มหาวิทยาลัย ผ่านลิงก์ 🔗 https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1\n"
+                "2.เลือกเมนูแผนการเรียน\n"
+                "3.ตรวจสอบรายละเอียดแผนการเรียนและรายวิชาในแต่ละภาคการศึกษาได้เลยครับ"
             )
         ],
         answered_by=BUTTON_ANSWER,
         intent_key="plan",
+        confidence=1.0,
+    )
+
+
+def _grades_answer() -> RouteResult:
+    return RouteResult(
+        messages=[
+            msg.text_message(
+                "ถ้าต้องการดูเกรดและหน่วยกิตของตัวเอง สามารถตรวจสอบได้จากระบบบริการการศึกษา มรม.ได้ด้วยวิธีการดังนี้ครับ\n\n"
+                "1.เข้าสู่ระบบ ผ่านลิงก์ 🔗 https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1\n"
+                "2.เลือกเมนู ผลการเรียน\n"
+                "3.ตรวจสอบรายละเอียดผลการเรียนได้เลยครับ\n\n"
+                "คำแนะนำเพิ่มเติมสำหรับการตรวจสอบ\n"
+                "C.register หมายถึง หน่วยกิตที่ลงทะเบียนของเทอมการศึกษานี้\n"
+                "C.Earn หมายถึง หน่วยกิตที่สอบผ่าน\n"
+                "CA  หมายถึง หน่วยกิตที่ลงทะเบียนเรียนทั้งหมด\n"
+                "GP หมายถึง คะแนนรวมของรายวิชา (เกรดที่ได้ คูณ หน่วยกิต)\n"
+                "GPA หมายถึง เกรดเฉลี่ยประจำเทอม"
+            )
+        ],
+        answered_by=BUTTON_ANSWER,
+        intent_key="grades",
+        confidence=1.0,
+    )
+
+
+def _grad_check_answer() -> RouteResult:
+    return RouteResult(
+        messages=[
+            msg.text_message(
+                "ถ้าต้องการตรวจสอบว่าต้องเรียนอะไรให้ครบก่อนจบ ความคืนหน้าของการเรียนและหน่วยกิตสามารถตรวจสอบได้จากระบบบริการการศึกษา มรม.ได้ด้วยวิธีการดังนี้ครับ\n\n"
+                "1.เข้าสู่ระบบ ผ่านลิงก์ 🔗 https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1\n"
+                "2.เลือกเมนู ตรวจสอบจบ\n"
+                "3.เลือก แสดงรายละเอียดแบบที่ 1 ทั้งหลักสูตรวิชา\n"
+                "3.ตรวจสอบรายละเอียดความคืบหน้าของหน่วยกิตได้เลยครับ\n\n"
+                "หากนักศึกษาต้องการทราบว่ายังขาดวิชาเรียน หรือ ขาดอีกกี่หน่วยกิตสามารถขอคำแนะนำเพิ่มเติมเลยครับ\n"
+                "กดปุ่ม “ขาดอีกกี่หน่วยกิต” หรือ “ขาดวิชาเรียนอะไรบ้าง” เพื่อขอคำแนะนำวิธีดูได้เลยครับ",
+                msg.quick_reply(
+                    [
+                        msg.postback_action("ขาดอีกกี่หน่วยกิต", "action=missing_credits"),
+                        msg.postback_action("ขาดวิชาเรียนอะไรบ้าง", "action=missing_courses"),
+                    ]
+                ),
+            )
+        ],
+        answered_by=BUTTON_ANSWER,
+        intent_key="grad_check",
+        confidence=1.0,
+    )
+
+
+def _gpa_calc_answer() -> RouteResult:
+    return RouteResult(
+        messages=[msg.text_message(GRADE_CALC_MESSAGE)],
+        answered_by=BUTTON_ANSWER,
+        intent_key="gpa_calc",
+        confidence=1.0,
+    )
+
+
+# ขั้นตอนเข้าระบบทะเบียน — ใช้ร่วมกันทั้งสองหัวข้อ (ขาดหน่วยกิต / ขาดวิชา)
+# เก็บไว้ที่เดียว: ถ้า URL หรือชื่อเมนูเปลี่ยน จะได้แก้จุดเดียว
+_REGIS_LOGIN_STEPS = (
+    "เข้าระบบทะเบียน:\n"
+    "1. เข้า https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1\n"
+    "2. ล็อกอินด้วย username/password ของนักศึกษา\n"
+    "3. เลือกเมนู “ตรวจสอบจบ”\n"
+    "4. เลือก “แสดงรายละเอียดแบบที่ 1 ทั้งหลักสูตรวิชา”"
+)
+
+
+def _missing_requirement_answer(action: str) -> RouteResult:
+    if action == "missing_credits":
+        intro = (
+            "หากต้องการตรวจสอบว่าตนเองยังขาดหน่วยกิตอีกเท่าไร "
+            "สามารถดูได้จากข้อมูลหน่วยกิตในระบบบริการนักศึกษา มรม. เมนู ตรวจสอบจบ"
+        )
+        detail = (
+            "วิธีดู\n"
+            "1. ดูหน่วยกิตต่ำสุด ว่าหลักสูตรกำหนดไว้ทั้งหมดเท่าไร\n"
+            "2. ดูหน่วยกิตที่ผ่าน ว่าเรียนผ่านแล้วกี่หน่วยกิต\n"
+            "3. ดูหน่วยกิตที่ขาด เพื่อดูว่าต้องเก็บเพิ่มอีกกี่หน่วยกิต\n"
+            "ตัวอย่าง: หน่วยกิตต่ำสุด 120 หน่วยกิต เรียนที่ผ่าน 90 หน่วยกิต "
+            "→ ขาดอีก 30 หน่วยกิต\n\n"
+            "หากมี หน่วยกิตรอ แปลว่ากำลังรอผลการเรียนจากวิชาที่ลงทะเบียนในภาคการเรียน"
+            "ปัจจุบัน ให้นำไปลบจากหน่วยกิตที่ขาดเพื่อดูว่าเทอมต่อไปยังขาดอีกกี่หน่วยกิต\n"
+            "ตัวอย่าง: หน่วยกิตต่ำสุด 120 หน่วยกิต เรียนที่ผ่าน 90 หน่วยกิต หน่วยกิตที่รอ 18 "
+            "→ ขาดอีก 12 หน่วยกิต"
+        )
+    else:
+        intro = (
+            "หากต้องการทราบว่ายังมีวิชาใดที่ต้องเรียน สามารถดูจากระบบบริการนักศึกษา มรม. "
+            "เมนูแผนการเรียนควบคู่กับเมนูตรวจสอบจบได้เลยครับ"
+        )
+        detail = (
+            "วิธีดู\n"
+            "1. ดูรายวิชาเรียนที่หลักสูตรกำหนด จาก เมนู แผนการเรียน\n"
+            "2. ตรวจสอบสถานะหน่วยกิตของแต่ละกลุ่มวิชา จากเมนู ตรวจสอบจบ\n"
+            "หากสถานะขึ้น PASS แปลว่า กลุ่มวิชานี้ผ่าน ลงทะเบียนครบตามหลักสูตรกำหนด\n"
+            "หากสถานะขึ้น FAIL แปลว่า กลุ่มวิชานี้ยังไม่ครบตามหลักสูตรกำหนด "
+            "ต้องเรียนเพิ่มตามวิชาภายใต้กลุ่มวิชา (กรณีเป็นกลุ่มวิชาเลือก) "
+            "หรือ ตามแผนการเรียนกำหนด (กรณีเป็นวิชาบังคับ)\n\n"
+            "ตัวอย่าง กลุ่มวิชาเฉพาะด้าน (บังคับ) สถานะ FAIL | MIN 54 | PASS 42 "
+            "(ต้องลงเพิ่ม 12 หน่วยกิต) รายวิชาที่ต้องเรียนเพิ่มคือรายวิชาที่ยังไม่มี"
+            "หน่วยกิตขึ้นในระบบ (-) หรือผลการเรียนเป็น F"
+        )
+    return RouteResult(
+        messages=[
+            msg.text_message(f"{intro}\n\n{_REGIS_LOGIN_STEPS}\n\n{detail}")
+        ],
+        answered_by=BUTTON_ANSWER,
+        intent_key=action,
         confidence=1.0,
     )
 
@@ -763,34 +915,21 @@ async def _dispatch_text(
     llm: Any | None = None,
     user_hash: str | None = None,
 ) -> RouteResult:
-    # ── ชั้น planner: คำนวณจากข้อมูลจริง มาก่อน LLM เสมอ ────────────────────
-    # เหตุผลเดียวกับที่รหัสวิชา 7 หลักถูกดักก่อนโหมดปรึกษาอยู่แล้ว: เรื่องที่
-    # คำนวณได้แน่นอน (หน่วยกิต ลำดับวิชา) ห้ามให้ LLM เดา ต่อให้ผู้ใช้กำลัง
-    # อยู่ในโหมดปรึกษาก็ตาม
-    from . import progress as prog
-
+    # รหัสวิชา 7 หลักถูกดักก่อนโหมดปรึกษา เพื่อตอบจากฐานข้อมูลแทนการเดา
     match = COURSE_CODE_PATTERN.search(cleaned)
     if match:
-        code = match.group(1)
-        # "ลงวิชา 7071201 ได้เลยไหม" ถามเงื่อนไขการลง ไม่ได้ถามรายละเอียดวิชา
-        # ตอบไม่ได้ (ยังไม่ติ๊กวิชา / วิชาไม่อยู่ในแผน) → ถอยไปทางเดิม
-        if prog.ELIGIBILITY_PATTERN.search(cleaned):
-            eligibility = await prog.eligibility_answer(db, user_hash, settings, code)
-            if eligibility is not None:
-                return eligibility
-        return await _course_answer(db, code, answered_by="course")
+        return await _course_answer(db, match.group(1), answered_by="course")
 
-    if prog.NEXT_TERM_PATTERN.search(cleaned):
-        return await prog.next_term_answer(db, user_hash, settings)
+    if GRADUATION_TEXT_PATTERN.search(cleaned):
+        return _grad_check_answer()
 
-    # เรื่องเกรดต้องดักก่อน PROGRESS_PATTERN เพราะ "GPA 1.88 จบได้ไหม" เข้า
-    # เงื่อนไขทั้งสองอัน ("จบได้ไหม" อยู่ใน PROGRESS_PATTERN) แต่คนถามหมายถึงเกรด
-    # ส่วน GPA_NOT_PATTERN กันคำขอเอกสารที่มีคำว่าเกรดอยู่ ("ขอใบเกรด")
-    if prog.GPA_PATTERN.search(cleaned) and not prog.GPA_NOT_PATTERN.search(cleaned):
-        return await prog.gpa_answer(db, user_hash, settings, cleaned)
+    if GPA_DEFINITION_TEXT_PATTERN.search(cleaned):
+        return _grades_answer()
 
-    if prog.PROGRESS_PATTERN.search(cleaned):
-        return await prog.progress_answer(db, user_hash, settings)
+    if GPA_CALC_TEXT_PATTERN.search(cleaned) and not GRADE_DOCUMENT_TEXT_PATTERN.search(
+        cleaned
+    ):
+        return _gpa_calc_answer()
 
     # ── ชั้นที่ 3: โหมดปรึกษา AI — ตรวจก่อน search ─────────────────────────
     # ข้อความระหว่างอยู่ในโหมดต้องตอบด้วย LLM (คนในโหมดต้องการคำตอบ
@@ -1205,19 +1344,9 @@ async def handle_follow(
     (เดิมนับเป็น ``rich_menu`` ทั้งคู่ ทำให้ยอดกดเมนูเกินความจริงทุกครั้ง
     ที่มีคนเพิ่มเพื่อนใหม่)
 
-    ``settings`` มีไว้ใส่ปุ่มเปิดหน้า LIFF (ติ๊กวิชาที่ผ่านแล้ว) — ทางเข้า
-    หน้านั้นที่สั้นที่สุด เพราะ Rich Menu ทั้ง 6 ช่องเป็น postback ล้วน
-    เปิด LIFF ไม่ได้ (ต้องเป็น ``uri`` action) ถ้ายังไม่ได้ตั้ง ``LIFF_ID``
-    ทั้งปุ่มและบรรทัดที่พูดถึงปุ่มจะหายไปพร้อมกัน ไม่ทิ้งคำสัญญาลอย ๆ
+    ``settings`` เก็บไว้เพื่อความเข้ากันได้กับผู้เรียกเดิม แต่ข้อความต้อนรับ
+    ปัจจุบันไม่ต้องใช้ค่าจาก settings แล้ว
     """
-    from . import progress as prog
-
-    liff = prog.liff_button(settings, LIFF_MENU_LABEL)
-    tick_line = (
-        f"  • กด “{LIFF_MENU_LABEL}” บอกระบบว่าเรียนอะไรไปแล้ว แล้วถามความก้าวหน้า/เกรดได้\n"
-        if liff
-        else ""
-    )
     return RouteResult(
         messages=[
             msg.text_message(
@@ -1228,13 +1357,11 @@ async def handle_follow(
                 "  • พิมพ์รหัสวิชา 7 หลัก เพื่อดูรายละเอียดรายวิชา\n"
                 "  • พิมพ์คำที่อยากค้นมาได้เลย เช่น ชื่อเอกสารหรือชื่ออาจารย์\n"
                 "  • กด “ปรึกษา AI” บนเมนู หรือพิมพ์ “ปรึกษา” ตามด้วยคำถาม\n"
-                f"{tick_line}"
+                "  • กด “วางแผนการเรียน” ดูแผน/ผลการเรียน และตรวจสอบจบ\n"
+                "  • กด “วางแผนเกรด” เพื่อคำนวณ GPA\n"
                 "  • กด “แบบประเมิน” เพื่อช่วยประเมินระบบนี้ (มีทั้งใบของอาจารย์และนักศึกษา)\n"
-                "\n"
-                "ยังทำไม่ได้: ตรวจวิชาบังคับก่อน — ระบบทะเบียนไม่เผยแพร่\n"
-                "ข้อมูลส่วนนี้ วิชาที่เสนอจึงเรียงตามแผนการเรียนแทน\n\n"
                 "เลือกจากปุ่มด้านล่างได้เลยครับ",
-                _menu_quick_reply(*liff),
+                _menu_quick_reply(),
             )
         ],
         answered_by=BUTTON_ANSWER if intent_key == "menu" else "follow",

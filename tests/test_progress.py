@@ -3,7 +3,7 @@
 
 สิ่งที่ไฟล์นี้ยืนยัน:
 
-1. ปุ่ม/ข้อความเรื่องความก้าวหน้าถูกส่งไปที่ชั้น planner **ไม่ใช่** ไปค้นเอกสาร
+1. ชั้น planner ที่ยังเก็บไว้ต้องตอบจากข้อมูลที่ติ๊กไว้จริง ไม่ใช่เดา
 2. ยังไม่ได้ติ๊กวิชา → บอกวิธีให้ข้อมูล ไม่เดาจากชั้นปี และป้ายเป็น ``no_data``
 3. คำตอบต้องมีคำเตือนว่ายังไม่มีข้อมูลวิชาบังคับก่อน (ตราบใดที่ตารางยังว่าง)
 4. ข้อความที่ส่งออกไม่ละเมิด limit ของ LINE
@@ -101,10 +101,8 @@ def settings():
     ],
 )
 @pytest.mark.asyncio
-async def test_progress_questions_reach_the_planner(text: str, settings) -> None:
-    result = await router.handle_text(
-        text, db_with(["1000001"]), settings=settings, user_hash=USER_HASH
-    )
+async def test_progress_engine_answers_progress_questions(text: str, settings) -> None:
+    result = await prog.progress_answer(db_with(["1000001"]), USER_HASH, settings)
 
     assert result.answered_by == "planner"
     assert result.intent_key == "progress"
@@ -113,20 +111,18 @@ async def test_progress_questions_reach_the_planner(text: str, settings) -> None
 
 @pytest.mark.parametrize("text", ["เทอมหน้าลงอะไรดี", "เทอมถัดไปเรียนอะไรต่อ"])
 @pytest.mark.asyncio
-async def test_next_term_questions_reach_the_planner(text: str, settings) -> None:
-    result = await router.handle_text(
-        text, db_with(["1000001"]), settings=settings, user_hash=USER_HASH
-    )
+async def test_next_term_engine_answers_next_term_questions(
+    text: str, settings
+) -> None:
+    result = await prog.next_term_answer(db_with(["1000001"]), USER_HASH, settings)
 
     assert result.answered_by == "planner"
     assert result.intent_key == "next_term"
 
 
 @pytest.mark.asyncio
-async def test_progress_button_uses_the_planner(settings) -> None:
-    result = await router.handle_postback(
-        "action=progress", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
-    )
+async def test_progress_engine_answers_progress(settings) -> None:
+    result = await prog.progress_answer(db_with(["1000001"]), USER_HASH, settings)
 
     assert result.answered_by == "planner"
     assert_line_limits(result.messages)
@@ -134,12 +130,7 @@ async def test_progress_button_uses_the_planner(settings) -> None:
 
 @pytest.mark.asyncio
 async def test_next_button_asks_for_next_term(settings) -> None:
-    result = await router.handle_postback(
-        "action=progress&next=1",
-        db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
-    )
+    result = await prog.next_term_answer(db_with(["1000001"]), USER_HASH, settings)
 
     assert result.intent_key == "next_term"
 
@@ -154,8 +145,8 @@ async def test_no_profile_asks_to_tick_courses_instead_of_guessing(settings) -> 
 
     เดาแล้วผิดแบบที่ผู้ใช้จับไม่ได้ เพราะคำตอบหน้าตาเหมือนของจริงเป๊ะ
     """
-    result = await router.handle_postback(
-        "action=progress", db_with([], profile=None), settings=settings, user_hash=USER_HASH
+    result = await prog.progress_answer(
+        db_with([], profile=None), USER_HASH, settings
     )
     text = result.messages[0]["text"]
 
@@ -174,9 +165,7 @@ async def test_profile_without_ticked_courses_also_asks_first(settings) -> None:
         "entry_year": 2564,
         "completed_courses": 0,
     }
-    result = await router.handle_postback(
-        "action=progress", db_with([], profile=profile), settings=settings, user_hash=USER_HASH
-    )
+    result = await prog.progress_answer(db_with([], profile=profile), USER_HASH, settings)
 
     assert result.intent_key == "progress_no_profile"
 
@@ -184,11 +173,10 @@ async def test_profile_without_ticked_courses_also_asks_first(settings) -> None:
 @pytest.mark.asyncio
 async def test_liff_button_is_omitted_when_liff_id_missing() -> None:
     """ปุ่มที่กดแล้วไปหน้าเปล่าแย่กว่าไม่มีปุ่ม"""
-    result = await router.handle_postback(
-        "action=progress",
+    result = await prog.progress_answer(
         db_with([], profile=None),
-        settings=make_settings(liff_id=""),
-        user_hash=USER_HASH,
+        USER_HASH,
+        make_settings(liff_id=""),
     )
     labels = [
         item["action"]["label"]
@@ -200,9 +188,7 @@ async def test_liff_button_is_omitted_when_liff_id_missing() -> None:
 
 @pytest.mark.asyncio
 async def test_without_database_answers_no_data(settings) -> None:
-    result = await router.handle_postback(
-        "action=progress", None, settings=settings, user_hash=USER_HASH
-    )
+    result = await prog.progress_answer(None, USER_HASH, settings)
 
     assert result.answered_by == "no_data"
 
@@ -212,9 +198,7 @@ async def test_without_database_answers_no_data(settings) -> None:
 
 @pytest.mark.asyncio
 async def test_overview_reports_numbers_from_the_database(settings) -> None:
-    result = await router.handle_postback(
-        "action=progress", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
-    )
+    result = await prog.progress_answer(db_with(["1000001"]), USER_HASH, settings)
     text = flex_body_text(result.messages[0])
 
     assert "ผ่านแล้ว 1/2 วิชา" in text
@@ -229,9 +213,7 @@ async def test_answer_warns_that_prerequisites_are_unknown(settings) -> None:
     ตาราง prerequisites ยังว่างจริง — ถ้าไม่เตือน นักศึกษาจะเข้าใจว่าลำดับนี้
     คือเงื่อนไขวิชาบังคับก่อน แล้วไปลงวิชาที่ลงไม่ได้
     """
-    result = await router.handle_postback(
-        "action=progress", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
-    )
+    result = await prog.progress_answer(db_with(["1000001"]), USER_HASH, settings)
 
     assert "แผนการเรียนแนะนำ" in flex_body_text(result.messages[0])
 
@@ -239,11 +221,8 @@ async def test_answer_warns_that_prerequisites_are_unknown(settings) -> None:
 @pytest.mark.asyncio
 async def test_eligibility_question_answers_from_user_state(settings) -> None:
     """"ลงวิชา 2000001 ได้ไหม" ต้องตอบจากสถานะจริง ไม่ใช่รายละเอียดวิชาเฉย ๆ"""
-    result = await router.handle_text(
-        "ลงวิชา 2000001 ได้ไหม",
-        db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
+    result = await prog.eligibility_answer(
+        db_with(["1000001"]), USER_HASH, settings, "2000001"
     )
 
     assert result.answered_by == "planner"
@@ -253,8 +232,8 @@ async def test_eligibility_question_answers_from_user_state(settings) -> None:
 
 @pytest.mark.asyncio
 async def test_eligibility_says_passed_when_already_done(settings) -> None:
-    result = await router.handle_text(
-        "1000001 ลงได้ไหม", db_with(["1000001"]), settings=settings, user_hash=USER_HASH
+    result = await prog.eligibility_answer(
+        db_with(["1000001"]), USER_HASH, settings, "1000001"
     )
 
     assert "ผ่านวิชานี้แล้ว" in result.messages[0]["text"]
@@ -278,12 +257,7 @@ async def test_next_term_lists_only_courses_open_that_semester(settings) -> None
     เทอมล่าสุดในคลังคือ 2568/2 → เทอมถัดไปคือภาคเรียนที่ 1
     วิชาที่เปิดเฉพาะเทอม 2 ต้องไม่ถูกเสนอ
     """
-    result = await router.handle_postback(
-        "action=progress&next=1",
-        db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
-    )
+    result = await prog.next_term_answer(db_with(["1000001"]), USER_HASH, settings)
     text = flex_body_text(result.messages[0])
 
     assert "ภาคเรียนที่ 1" in text
@@ -304,11 +278,11 @@ async def test_next_term_lists_only_courses_open_that_semester(settings) -> None
     ],
 )
 @pytest.mark.asyncio
-async def test_grade_questions_reach_the_planner(text: str, intent: str, settings) -> None:
+async def test_grade_engine_answers_grade_questions(
+    text: str, intent: str, settings
+) -> None:
     """คำถามเรื่องเกรดต้องเข้าชั้นคำนวณ ไม่ใช่ปล่อยให้ LLM เดาเลข"""
-    result = await router.handle_text(
-        text, db_with(["1000001"]), settings=settings, user_hash=USER_HASH
-    )
+    result = await prog.gpa_answer(db_with(["1000001"]), USER_HASH, settings, text)
 
     assert result.answered_by == "planner"
     assert result.intent_key == intent
@@ -341,11 +315,11 @@ async def test_gpa_prompt_already_knows_the_remaining_credits(settings) -> None:
     นี่คือสิ่งที่ทำให้ต่างจากเว็บคิดเกรดทั่วไป ถ้าคำตอบไม่บอกตัวเลขนี้
     ผู้ใช้จะไม่เห็นความต่าง แล้วไปกรอกเว็บอื่นเองอยู่ดี
     """
-    result = await router.handle_text(
-        "เกรดเฉลี่ยคิดยังไง",
+    result = await prog.gpa_answer(
         db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
+        USER_HASH,
+        settings,
+        "เกรดเฉลี่ยคิดยังไง",
     )
     text = result.messages[0]["text"]
 
@@ -357,11 +331,11 @@ async def test_gpa_prompt_already_knows_the_remaining_credits(settings) -> None:
 @pytest.mark.asyncio
 async def test_reachable_target_reports_the_grade_needed(settings) -> None:
     """เป้าที่ยังทำได้ ต้องบอกทั้งแต้มเฉลี่ยและเกรดที่เทียบเท่า"""
-    result = await router.handle_text(
-        "เกรดตอนนี้ 2.75 อยากได้ 3.00",
+    result = await prog.gpa_answer(
         db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
+        USER_HASH,
+        settings,
+        "เกรดตอนนี้ 2.75 อยากได้ 3.00",
     )
     text = result.messages[0]["text"]
 
@@ -379,11 +353,11 @@ async def test_impossible_target_says_so_and_gives_the_ceiling(settings) -> None
     ให้กำลังใจแบบผิดข้อมูลแย่กว่าบอกความจริง เพราะนักศึกษาจะวางแผนต่อ
     บนตัวเลขที่เป็นไปไม่ได้ทั้งปี
     """
-    result = await router.handle_text(
-        "เกรด 2.75 อยากได้ 4.00",
+    result = await prog.gpa_answer(
         db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
+        USER_HASH,
+        settings,
+        "เกรด 2.75 อยากได้ 4.00",
     )
     text = result.messages[0]["text"]
 
@@ -395,11 +369,11 @@ async def test_impossible_target_says_so_and_gives_the_ceiling(settings) -> None
 async def test_honors_answer_covers_both_ranks_and_admits_unknown_rules(
     settings,
 ) -> None:
-    result = await router.handle_text(
-        "เกรด 2.0 ยังลุ้นเกียรตินิยมได้ไหม",
+    result = await prog.gpa_answer(
         db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
+        USER_HASH,
+        settings,
+        "เกรด 2.0 ยังลุ้นเกียรตินิยมได้ไหม",
     )
     text = result.messages[0]["text"]
 
@@ -415,11 +389,11 @@ async def test_grade_answer_discloses_the_scale_it_used(settings) -> None:
 
     ถ้าสเกลจริงต่างจากนี้ ตัวเลขทุกตัวเปลี่ยน ผู้ใช้ต้องตรวจได้เอง
     """
-    result = await router.handle_text(
-        "เกรด 2.75 อยากได้ 3.00",
+    result = await prog.gpa_answer(
         db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
+        USER_HASH,
+        settings,
+        "เกรด 2.75 อยากได้ 3.00",
     )
     text = result.messages[0]["text"]
 
@@ -430,8 +404,8 @@ async def test_grade_answer_discloses_the_scale_it_used(settings) -> None:
 @pytest.mark.asyncio
 async def test_grade_question_without_ticked_courses_asks_for_them(settings) -> None:
     """ไม่รู้ว่าเหลือกี่หน่วยกิต = คำนวณไม่ได้ ต้องชวนไปติ๊ก ไม่ใช่เดา"""
-    result = await router.handle_text(
-        "เกรด 2.75 อยากได้ 3.00", db_with([]), settings=settings, user_hash=USER_HASH
+    result = await prog.gpa_answer(
+        db_with([]), USER_HASH, settings, "เกรด 2.75 อยากได้ 3.00"
     )
 
     assert result.answered_by == "no_data"
@@ -446,11 +420,11 @@ async def test_manual_credit_override_is_used_and_acknowledged(settings) -> None
 
     ถ้าเตือนว่า "อาจไม่ตรง" แล้วไม่ให้ทางแก้ คำเตือนนั้นก็ไร้ประโยชน์
     """
-    result = await router.handle_text(
-        "เกรด 2.75 เก็บไปแล้ว 66 หน่วยกิต อยากได้ 3.00",
+    result = await prog.gpa_answer(
         db_with(["1000001"]),
-        settings=settings,
-        user_hash=USER_HASH,
+        USER_HASH,
+        settings,
+        "เกรด 2.75 เก็บไปแล้ว 66 หน่วยกิต อยากได้ 3.00",
     )
     text = result.messages[0]["text"]
 
