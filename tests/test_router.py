@@ -520,6 +520,8 @@ async def test_study_plan_hub_offers_its_three_topics() -> None:
         ("แผนการเรียน", "action=plan"),
         ("ผลการเรียน หน่วยกิต", "action=grades"),
         ("ตรวจสอบจบ", "action=grad_check"),
+        # ปุ่มกลับ — ฮับที่ไม่มีทางกลับจะกลายเป็นทางตัน
+        ("เมนูหลัก", "action=menu"),
     ]
 
 
@@ -551,6 +553,8 @@ async def test_grad_check_answer_explains_pass_fail_and_next_steps() -> None:
     assert [item["action"]["data"] for item in items] == [
         "action=missing_credits",
         "action=missing_courses",
+        # ปุ่มกลับ — หน้านี้มีปุ่มไปต่ออยู่แล้วแต่ไม่มีทางกลับเมนู
+        "action=menu",
     ]
 
 
@@ -562,7 +566,16 @@ async def test_grade_plan_hub_offers_gpa_calculation() -> None:
     text = result.messages[0]["text"]
     assert "คำนวณเกรด และ คำนวณเกรดที่ต้องการ" in text
     assert "https://www.stepupth.com/gpa" in text
-    assert "quickReply" not in result.messages[0]
+
+    actions = [item["action"] for item in result.messages[0]["quickReply"]["items"]]
+    # "ไปต่อ" = เปิดเว็บคิดเกรดจริง ไม่ใช่ postback กลับมาหน้าเดิม (ซึ่งจะได้
+    # ข้อความชุดเดิมซ้ำแล้ววนอยู่ที่เดิม) + เมนูหลักเป็นทางกลับ
+    assert actions[0]["type"] == "uri"
+    assert actions[0]["label"] == "คำนวณเกรด"
+    assert actions[0]["uri"] == "https://www.stepupth.com/gpa"
+    assert [action["label"] for action in actions[1:]] == [
+        action["label"] for action in msg.MAIN_MENU_ACTIONS
+    ]
 
 
 async def test_gpa_calc_answer_uses_the_calculator_url() -> None:
@@ -572,6 +585,10 @@ async def test_gpa_calc_answer_uses_the_calculator_url() -> None:
     text = result.messages[0]["text"]
     assert "https://www.stepupth.com/gpa" in text
     assert "คำนวณเกรดที่ต้องการ" in text
+    # ข้อความชุดเดียวกับปุ่มวางแผนเกรด → ต้องได้ปุ่มชุดเดียวกัน
+    assert result.messages[0]["quickReply"] == (
+        await bot_router.handle_postback("action=grade_plan", None)
+    ).messages[0]["quickReply"]
 
 
 @pytest.mark.parametrize(
@@ -593,6 +610,27 @@ async def test_missing_requirement_answers_are_honest(action: str, topic: str) -
     assert "https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1" in text
     assert "แสดงรายละเอียดแบบที่ 1 ทั้งหลักสูตรวิชา" in text
     assert "ตรวจสอบจบ" in text
+
+    labels = [
+        item["action"]["label"] for item in result.messages[0]["quickReply"]["items"]
+    ]
+    assert labels[0] == "ตรวจสอบจบ", "ต้องมีปุ่มไปต่อ ไม่จบเป็นทางตัน"
+
+
+@pytest.mark.parametrize("action", sorted(bot_router.POSTBACK_HANDLERS))
+async def test_every_postback_answer_has_a_way_back_or_forward(action: str) -> None:
+    """
+    ทุกหน้าต้องมีปุ่มกลับหรือปุ่มไปต่อ
+
+    หน้าที่ไม่มีปุ่มเลย = ทางตัน ผู้ใช้ต้องกด Rich Menu เองทั้งที่เพิ่งอ่านจบ
+    (เทสนี้ยิงโดยไม่มี DB ทุก action จึงตกไปที่คำตอบ "ไม่มีข้อมูล" หรือคำตอบ
+    ที่ไม่ต้องใช้ DB — ซึ่งก็ยังต้องมีปุ่มเหมือนกัน)
+    """
+    result = await bot_router.handle_postback(f"action={action}", None)
+
+    assert_line_limits(result.messages)
+    quick = result.messages[0].get("quickReply")
+    assert quick and quick["items"], f"action={action} ไม่มีปุ่มกลับ/ไปต่อ"
 
 
 @pytest.mark.parametrize("text", ["คำนวณ GPA", "คำนวณเกรด", "GPA เท่าไหร่"])

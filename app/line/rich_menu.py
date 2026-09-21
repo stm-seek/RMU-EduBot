@@ -124,7 +124,7 @@ def build_rich_menu() -> dict:
     >>> len(menu['areas'])
     6
     >>> menu['areas'][1]['action']['data']
-    'action=loan&src=rich'
+    'action=study_plan&src=rich'
     """
     return {
         "size": {"width": MENU_WIDTH, "height": MENU_HEIGHT},

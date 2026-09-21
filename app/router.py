@@ -257,8 +257,19 @@ def _answer_surface(params: dict[str, str]) -> str:
     return "quick_reply"
 
 
+# ปุ่ม "ไปต่อ" ของหน้าที่จบด้วยการชี้ไปที่ระบบทะเบียน — หน้าถัดไปในโฟลว์เดียวกัน
+# คือหน้าตรวจสอบจบ ซึ่งต่อยอดไปยัง "ขาดอีกกี่หน่วยกิต/ขาดวิชาเรียนอะไรบ้าง"
+GRAD_CHECK_ACTION = msg.postback_action("ตรวจสอบจบ", "action=grad_check")
+
+
 def _menu_quick_reply(*extra: dict) -> dict:
-    """ปุ่มพิเศษ + เมนูหลัก (รวมกันไม่เกิน 13 อยู่แล้ว)"""
+    """
+    ปุ่มพิเศษ + เมนูหลัก (รวมกันไม่เกิน 13 อยู่แล้ว)
+
+    **ทุกคำตอบต้องมีทางกลับหรือทางไปต่อ** — ข้อความที่จบในตัวเองโดยไม่แนบปุ่ม
+    จะกลายเป็นทางตัน ผู้ใช้ต้องกด Rich Menu เองทั้งที่เพิ่งอ่านจบ (เมนูหลัก 7 ปุ่ม
+    ยังห่างเพดาน 13 ของ LINE จึงต่อท้ายได้ทุกหน้า)
+    """
     return msg.quick_reply([*extra, *msg.MAIN_MENU_ACTIONS])
 
 
@@ -676,11 +687,11 @@ def _study_plan_answer() -> RouteResult:
         messages=[
             msg.text_message(
                 "เลือกสิ่งที่อยากดูได้เลยครับ",
-                msg.quick_reply(
+                _list_quick_reply(
                     [
                         msg.postback_action("แผนการเรียน", "action=plan"),
                         msg.postback_action("ผลการเรียน หน่วยกิต", "action=grades"),
-                        msg.postback_action("ตรวจสอบจบ", "action=grad_check"),
+                        GRAD_CHECK_ACTION,
                     ]
                 ),
             )
@@ -694,6 +705,8 @@ def _study_plan_answer() -> RouteResult:
 # ── คำนวณเกรด ────────────────────────────────────────────────────────────────
 # ปุ่ม "วางแผนเกรด" (grade_plan) และการพิมพ์ถามเรื่องคำนวณเกรด (gpa_calc) ตอบ
 # ข้อความชุดเดียวกัน — วิธีใช้เว็บคิดเกรด 2 แบบ เก็บไว้ที่เดียวข้อความจะได้ไม่เพี้ยนกัน
+GRADE_CALC_URL = "https://www.stepupth.com/gpa"
+
 GRADE_CALC_MESSAGE = (
     "หากต้องการคำนวณ GPA สามารถใช้เว็บไซต์คำนวณเกรดได้ครับ "
     "โดยเว็บไซต์มี 2 แบบ คือ คำนวณเกรด และ คำนวณเกรดที่ต้องการ\n\n"
@@ -713,13 +726,23 @@ GRADE_CALC_MESSAGE = (
     "• กรอก หน่วยกิตรวมที่เรียนในเทอมนี้ (ไม่เกิน 21 หน่วยกิตตามที่เว็บไซต์กำหนด)\n"
     "• กด คำนวณเกรดที่ต้องการ เพื่อดูผลลัพธ์\n\n"
     "🔗 เข้าสู่เว็บไซต์คำนวณเกรดลิงก์นี้เลยครับ\n"
-    "https://www.stepupth.com/gpa"
+    f"{GRADE_CALC_URL}"
 )
+
+
+def _grade_calc_quick_reply() -> dict:
+    """
+    ปุ่มของหน้าคำนวณเกรด — "ไปต่อ" คือเปิดเว็บคิดเกรดจริง
+
+    ไม่ใช้ postback กลับมาหน้าเดิม เพราะจะได้ข้อความชุดเดิมซ้ำแล้ววนอยู่ที่เดิม
+    (ปุ่มชื่อเดียวกับหัวข้อ "คำนวณเกรด" ที่ผู้ใช้ขอให้มี) + เมนูหลักเป็นทางกลับ
+    """
+    return _menu_quick_reply(msg.uri_action("คำนวณเกรด", GRADE_CALC_URL))
 
 
 def _grade_plan_answer() -> RouteResult:
     return RouteResult(
-        messages=[msg.text_message(GRADE_CALC_MESSAGE)],
+        messages=[msg.text_message(GRADE_CALC_MESSAGE, _grade_calc_quick_reply())],
         answered_by=BUTTON_ANSWER,
         intent_key="grade_plan",
         confidence=1.0,
@@ -734,7 +757,8 @@ def _plan_answer() -> RouteResult:
                 "ถ้าต้องการดูแผนการเรียน สามารถตรวจสอบได้จากระบบบริการการศึกษา มรม.ได้ด้วยวิธีการดังนี้ครับ\n"
                 "1.เข้าสู่เว็บไซต์มหาวิทยาลัย ผ่านลิงก์ 🔗 https://regis.rmu.ac.th/registrar/login.asp?avs516796184=1\n"
                 "2.เลือกเมนูแผนการเรียน\n"
-                "3.ตรวจสอบรายละเอียดแผนการเรียนและรายวิชาในแต่ละภาคการศึกษาได้เลยครับ"
+                "3.ตรวจสอบรายละเอียดแผนการเรียนและรายวิชาในแต่ละภาคการศึกษาได้เลยครับ",
+                _menu_quick_reply(GRAD_CHECK_ACTION),
             )
         ],
         answered_by=BUTTON_ANSWER,
@@ -756,7 +780,8 @@ def _grades_answer() -> RouteResult:
                 "C.Earn หมายถึง หน่วยกิตที่สอบผ่าน\n"
                 "CA  หมายถึง หน่วยกิตที่ลงทะเบียนเรียนทั้งหมด\n"
                 "GP หมายถึง คะแนนรวมของรายวิชา (เกรดที่ได้ คูณ หน่วยกิต)\n"
-                "GPA หมายถึง เกรดเฉลี่ยประจำเทอม"
+                "GPA หมายถึง เกรดเฉลี่ยประจำเทอม",
+                _menu_quick_reply(GRAD_CHECK_ACTION),
             )
         ],
         answered_by=BUTTON_ANSWER,
@@ -776,7 +801,7 @@ def _grad_check_answer() -> RouteResult:
                 "3.ตรวจสอบรายละเอียดความคืบหน้าของหน่วยกิตได้เลยครับ\n\n"
                 "หากนักศึกษาต้องการทราบว่ายังขาดวิชาเรียน หรือ ขาดอีกกี่หน่วยกิตสามารถขอคำแนะนำเพิ่มเติมเลยครับ\n"
                 "กดปุ่ม “ขาดอีกกี่หน่วยกิต” หรือ “ขาดวิชาเรียนอะไรบ้าง” เพื่อขอคำแนะนำวิธีดูได้เลยครับ",
-                msg.quick_reply(
+                _list_quick_reply(
                     [
                         msg.postback_action("ขาดอีกกี่หน่วยกิต", "action=missing_credits"),
                         msg.postback_action("ขาดวิชาเรียนอะไรบ้าง", "action=missing_courses"),
@@ -792,7 +817,7 @@ def _grad_check_answer() -> RouteResult:
 
 def _gpa_calc_answer() -> RouteResult:
     return RouteResult(
-        messages=[msg.text_message(GRADE_CALC_MESSAGE)],
+        messages=[msg.text_message(GRADE_CALC_MESSAGE, _grade_calc_quick_reply())],
         answered_by=BUTTON_ANSWER,
         intent_key="gpa_calc",
         confidence=1.0,
@@ -847,7 +872,10 @@ def _missing_requirement_answer(action: str) -> RouteResult:
         )
     return RouteResult(
         messages=[
-            msg.text_message(f"{intro}\n\n{_REGIS_LOGIN_STEPS}\n\n{detail}")
+            msg.text_message(
+                f"{intro}\n\n{_REGIS_LOGIN_STEPS}\n\n{detail}",
+                _menu_quick_reply(GRAD_CHECK_ACTION),
+            )
         ],
         answered_by=BUTTON_ANSWER,
         intent_key=action,
