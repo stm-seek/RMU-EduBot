@@ -16,7 +16,7 @@ IMAGE := assets/rich_menu.png
         scrape scrape-programs scrape-courses scrape-offerings \
         scrape-documents scrape-instructors export check verify test doctest clean \
         rich-menu-dry rich-menu-apply rich-menu-apply-consult rich-menu-list rich-menu-delete \
-        seed-curriculum
+        seed-curriculum deploy
 
 help:
 	@echo.
@@ -25,6 +25,9 @@ help:
 	@echo   -- รันเซิร์ฟเวอร์ --
 	@echo   dev               รันแอป (ใช้ตัวนี้ถ้าต้องต่อฐานข้อมูล)
 	@echo   dev-reload        รันแบบ auto-reload (ต่อฐานข้อมูลไม่ได้บน Windows)
+	@echo.
+	@echo   -- Docker (บอทที่ LINE คุยด้วย) --
+	@echo   deploy            << ต้องรันหลัง git pull >> build app ใหม่ + ตรวจว่าโค้ดตรงกัน
 	@echo.
 	@echo   -- Database (ต้องมี Docker) --
 	@echo   db-up             เริ่ม Postgres + pgvector
@@ -73,6 +76,15 @@ dev:
 # → ต่อฐานข้อมูลไม่ได้ ใช้เฉพาะตอนทำส่วนที่ไม่ต้องใช้ DB
 dev-reload:
 	set PYTHONUTF8=1 && $(PY) -m uvicorn app.main:app --reload --port 8000
+
+# ── Docker: อัปเดตบอทให้ตรงกับโค้ดในโฟลเดอร์ ────────────────────────────────
+
+# **คำสั่งที่ต้องรันหลัง git pull** — image คัดลอก app/ ตอน build ไม่มี bind mount
+# ถ้าไม่รัน LINE จะยังได้ข้อความชุดเก่าต่อไป (เจอจริง: commit da9c2bf ไม่ขึ้น)
+# ตัวตรวจท้ายคำสั่งคือ scripts/check_deploy.py
+deploy:
+	docker compose up -d --build app
+	set PYTHONUTF8=1 && $(PY) scripts/check_deploy.py
 
 # ── Database ────────────────────────────────────────────────────────────────
 

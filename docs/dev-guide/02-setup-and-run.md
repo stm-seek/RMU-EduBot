@@ -105,6 +105,30 @@ docker compose logs -f app     # log ของแอป (แทนไฟล์ .
 * รันสองทางพร้อมกันไม่ได้ ถ้า `python run.py` ยังค้างอยู่ compose จะขึ้น
   `ports are not available ... 8001` — ปิดตัวเดิมก่อน
 
+#### อัปเดตโค้ดที่เครื่องอื่น (หลัง `git pull`)
+
+`git` อัปเดตแค่ไฟล์ในโฟลเดอร์ **ไม่ได้อัปเดตบอทที่ LINE คุยด้วย** เพราะ image
+คัดลอก `app/` ตอน build เครื่องที่สอง (หรือของเพื่อน) จึงต้อง build ใหม่ทุกครั้ง
+ที่ดึงโค้ด:
+
+```powershell
+git pull
+make deploy        # = docker compose up -d --build app + ตรวจว่าโค้ดตรงกัน
+```
+
+ไม่มี `make` ก็รันตรง ๆ:
+
+```powershell
+docker compose up -d --build app
+python scripts/check_deploy.py
+```
+
+`scripts/check_deploy.py` เทียบ md5 ของ `app/router.py` ในคอนเทนเนอร์กับไฟล์จริง
+แล้วพิมพ์ข้อความที่บอทตอบจริงของ 3 หัวข้อ (ขาดอีกกี่หน่วยกิต /
+ขาดวิชาเรียนอะไรบ้าง / คำนวณเกรด) ให้เห็นว่าขึ้นของใหม่แล้ว — ไม่ต้องเดาจาก
+หน้าจอ LINE · ถ้าขึ้น "ไม่พบ container" แปลว่าเครื่องนั้นรันบอทบน host
+(`python run.py`) ซึ่งโค้ดใหม่มีผลทันทีเมื่อรีสตาร์ต process
+
 ### 3) tunnel — LINE ต้องเรียกเข้ามาทาง HTTPS
 
 ```powershell
