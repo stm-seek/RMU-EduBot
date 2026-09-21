@@ -48,12 +48,14 @@ POST /api/liff/completed_courses   บันทึกชุดวิชาที
 ชั้นที่ 1 ตอบจากฐานข้อมูลแล้ว: เอกสาร/คำร้อง (11 หมวด), ติดต่ออาจารย์
 (แยกตามสาขา), รายละเอียดรายวิชาจากรหัส 7 หลัก, สรุปว่าวิชาไหนเปิดเทอมไหน
 
-**Rich Menu 6 ช่อง** ลงกับ LINE แล้ว (ปรึกษา AI · กู้ยืม กยศ. · ติดต่ออาจารย์ ·
-ค้นรายวิชา · เอกสาร/คำร้อง · ทำอะไรได้บ้าง) ภาพต้นฉบับอยู่ที่
+**Rich Menu 6 ช่อง** ลงกับ LINE แล้ว (ปรึกษา AI · วางแผนการเรียน · ติดต่ออาจารย์ ·
+ค้นรายวิชา · เอกสาร/คำร้อง · วางแผนเกรด) ภาพต้นฉบับอยู่ที่
 `assets/rich_menu.png` (1200x810) และ**พิกัดปุ่มใน `app/line/rich_menu.py`
 วัดมาจากไฟล์ภาพนั้น** ไม่ใช่หาร 3 หาร 2 เอา — เปลี่ยนภาพต้องวัดใหม่
 
 ```powershell
+make rich-menu-check      # ตรวจว่าเมนูที่คนเห็นอยู่ล้าสมัยไหม (exit 1 = ล้าสมัย)
+make rich-menu-update     # << ใช้หลัง git pull >> อัปเดตเมนูให้ตรงกับโค้ด (ลบใบเก่าให้ด้วย)
 make rich-menu-dry        # ตรวจภาพ + ดู JSON ไม่ยิง API
 make rich-menu-apply      # create -> upload -> set default
 make rich-menu-list       # ดูเมนูที่มีบน LINE (แล้ว rich-menu-delete เก็บกวาด)
@@ -67,17 +69,19 @@ mount โปรเจกต์ทั้งก้อนเข้าคอนเ�
 docker compose run --rm tools scripts/rich_menu.py --dry-run
 docker compose run --rm tools scripts/rich_menu.py
 docker compose run --rm tools scripts/rich_menu.py --list
+docker compose run --rm tools scripts/update_rich_menu.py --check   # ล้าสมัยไหม
+docker compose run --rm tools scripts/update_rich_menu.py           # อัปเดตให้ตรงกับโค้ด
 ```
 
 **เมนูอยู่บนเซิร์ฟเวอร์ LINE ผูกกับ channel ไม่ได้อยู่ในโค้ดหรือ DB** — ใครเอา
 โปรเจกต์นี้ไปต่อกับ channel ของตัวเองต้องสั่งสร้างเมนูเองครั้งหนึ่ง `git pull`
-ไม่ได้เมนูมาด้วย (ขั้นตอนเต็ม + ใบโหมดปรึกษา `RICH_MENU_CONSULT_ID` อยู่ใน
+ไม่ได้เมนูมาด้วย — ถ้าในแชทยังเห็นเมนูใบเก่า ให้ `make rich-menu-update` (ขั้นตอนเต็ม
 [`docs/dev-guide/02-setup-and-run.md` §2.6](docs/dev-guide/02-setup-and-run.md))
 
 **Rich Menu ไม่แสดงบน LINE for PC** ต้องทดสอบบนมือถือ และ**แก้ภาพของเมนูที่
 อัปโหลดไปแล้วไม่ได้** ต้องสร้างใบใหม่แล้วลบใบเก่าทิ้ง
 
-เทส: **512 unit + 46 doctests** — ไม่แตะเน็ตเวิร์กจริงและไม่ต้องมี Postgres
+เทส: **966 unit + 72 doctests** — ไม่แตะเน็ตเวิร์กจริงและไม่ต้องมี Postgres
 (mock ด้วย `httpx.MockTransport` + fake connection, ตรวจ SQL ด้วย `sqlglot`)
 อีก **101 integration** ต้องมี Postgres จริงจึงเป็น opt-in ด้วย `RMU_DB_TESTS=1`
 
@@ -117,6 +121,7 @@ python run.py                       # → http://127.0.0.1:8000/health
 # 6) ติดตั้ง Rich Menu บน channel ของตัวเอง (ครั้งเดียวต่อ channel — ดู §2.6 ของ dev-guide)
 docker compose run --rm tools scripts/rich_menu.py --dry-run   # ตรวจก่อน ไม่ยิง API
 docker compose run --rm tools scripts/rich_menu.py             # ลงจริง แล้วเปิดแชทบนมือถือ
+docker compose run --rm tools scripts/update_rich_menu.py      # อัปเดตเมนูที่มีอยู่แล้วให้ตรงกับโค้ด
 ```
 
 > **Windows: ต้องรันด้วย `python run.py` ไม่ใช่ `uvicorn app.main:app`**

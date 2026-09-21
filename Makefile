@@ -15,7 +15,8 @@ IMAGE := assets/rich_menu.png
 .PHONY: help install dev dev-reload db-up db-down db-reset db-shell migrate seed \
         scrape scrape-programs scrape-courses scrape-offerings \
         scrape-documents scrape-instructors export check verify test doctest clean \
-        rich-menu-dry rich-menu-apply rich-menu-apply-consult rich-menu-list rich-menu-delete \
+        rich-menu-dry rich-menu-apply rich-menu-apply-consult rich-menu-update \
+        rich-menu-check rich-menu-list rich-menu-delete \
         seed-curriculum deploy
 
 help:
@@ -55,6 +56,8 @@ help:
 	@echo   rich-menu-dry     ดู JSON + ตรวจภาพ ไม่ยิง API
 	@echo   rich-menu-apply   สร้าง+อัปโหลด+ตั้ง default (ใช้ assets/rich_menu.png)
 	@echo   rich-menu-apply-consult  ใบโหมดปรึกษา 2 ปุ่ม (ไม่ตั้ง default)
+	@echo   rich-menu-update << ต้องรันหลัง git pull >> อัปเดตเมนูให้ตรงกับโค้ด
+	@echo   rich-menu-check   ตรวจว่าเมนูที่คนเห็นอยู่ล้าสมัยไหม (ไม่แก้อะไร)
 	@echo   rich-menu-list    ดูเมนูที่มีอยู่บน LINE
 	@echo   rich-menu-delete  ลบเมนู (RICHMENU_ID=...)
 	@echo.
@@ -115,7 +118,8 @@ migrate:
 # ── Rich Menu (LINE) ────────────────────────────────────────────────────────
 #
 # แก้ภาพของเมนูที่อัปโหลดแล้วไม่ได้ → ต้องสร้างเมนูใหม่ทุกครั้งที่เปลี่ยนภาพ
-# ใช้ rich-menu-list แล้ว rich-menu-delete เก็บกวาดของเก่า
+# ใบที่ผู้ใช้เห็นอยู่ = rich-menu-update (ตรวจว่าต่างตรงไหน แล้วเก็บใบเก่าให้ในรอบเดียว)
+# rich-menu-list + rich-menu-delete ไว้เก็บกวาดแบบเลือกเอง
 # ภาพคือ assets/rich_menu.png (1200x810 ไม่เกิน 1 MB) — สคริปต์ตรวจให้ก่อนยิง API
 # ใช้ภาพอื่นได้ด้วย IMAGE=path แต่ต้องไปแก้พิกัดใน app/line/rich_menu.py ให้ตรงก่อน
 
@@ -135,6 +139,16 @@ rich-menu-list:
 
 rich-menu-delete:
 	set PYTHONUTF8=1 && $(PY) scripts/rich_menu.py --delete $(RICHMENU_ID)
+
+# อัปเดตใบที่ผู้ใช้เห็นให้ตรงกับโค้ดตอนนี้ — ใช้หลัง git pull เพราะเมนูอยู่บน
+# เซิร์ฟเวอร์ LINE ไม่ได้อยู่ใน git: ตรวจให้ก่อนว่าเก่าหรือยัง แล้วสร้าง → อัปโหลด
+# → ตั้ง default → ลบใบเก่า ให้ในคำสั่งเดียว (สคริปต์ถามยืนยันก่อนแก้ของจริง)
+rich-menu-update:
+	set PYTHONUTF8=1 && $(PY) scripts/update_rich_menu.py
+
+# ตรวจอย่างเดียวว่าเมนูที่คนเห็นอยู่ตรงกับโค้ดไหม — exit 1 = ล้าสมัย
+rich-menu-check:
+	set PYTHONUTF8=1 && $(PY) scripts/update_rich_menu.py --check
 
 seed: seed-curriculum
 	docker compose exec -T db psql -U rmubot -d rmu_bot -v ON_ERROR_STOP=1 < db/seed/002_seed_data.sql

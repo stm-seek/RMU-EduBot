@@ -24,6 +24,10 @@
 → สคริปต์นี้จึงมี ``--list`` / ``--delete`` มาให้เก็บกวาดของเก่า
 (สร้าง/ลบ จำกัด 100 ครั้ง/ชั่วโมง — เหลือเฟือสำหรับงานนี้)
 
+ตัวช่วยยิง API ในไฟล์นี้ (``api_client`` / ``expect_ok`` / ``create_menu`` /
+``upload_image`` / ``set_default`` / ``delete_menu``) ใช้ร่วมกับ
+``scripts/update_rich_menu.py`` — แก้ที่ไฟล์นี้ที่เดียว
+
 ผู้ใช้จะเห็นเมนูใหม่ **ตอนเปิดแชทครั้งถัดไป** อาจช้าได้ถึง 1 นาที
 และ **Rich Menu ไม่ขึ้นบน LINE for PC** ต้องทดสอบบนมือถือ
 """
@@ -82,7 +86,7 @@ def check_image(path: Path) -> tuple[bytes, str]:
 # ── ยิง API ─────────────────────────────────────────────────────────────────
 
 
-def _client():
+def api_client():
     """httpx client ที่ใส่ token ให้แล้ว — **ห้าม print ตัว token**"""
     import httpx
 
@@ -99,7 +103,7 @@ def _client():
     )
 
 
-def _ok(response) -> dict:
+def expect_ok(response) -> dict:
     if response.status_code != 200:
         raise SystemExit(
             f"LINE ตอบ {response.status_code}: {response.text[:400]}"
@@ -108,14 +112,14 @@ def _ok(response) -> dict:
 
 
 def create_menu(client, menu: dict) -> str:
-    body = _ok(client.post(f"{API}/richmenu", json=menu))
+    body = expect_ok(client.post(f"{API}/richmenu", json=menu))
     menu_id = body["richMenuId"]
     print(f"1/3 สร้างเมนูแล้ว: {menu_id}")
     return menu_id
 
 
 def upload_image(client, menu_id: str, data: bytes, mime: str) -> None:
-    _ok(
+    expect_ok(
         client.post(
             f"{API_DATA}/richmenu/{menu_id}/content",
             content=data,
@@ -126,12 +130,12 @@ def upload_image(client, menu_id: str, data: bytes, mime: str) -> None:
 
 
 def set_default(client, menu_id: str) -> None:
-    _ok(client.post(f"{API}/user/all/richmenu/{menu_id}"))
+    expect_ok(client.post(f"{API}/user/all/richmenu/{menu_id}"))
     print("3/3 ตั้งเป็นเมนู default ของทุกคนแล้ว")
 
 
 def list_menus(client) -> None:
-    for item in _ok(client.get(f"{API}/richmenu/list")).get("richmenus", []):
+    for item in expect_ok(client.get(f"{API}/richmenu/list")).get("richmenus", []):
         size = item.get("size", {})
         print(
             f"{item['richMenuId']}  {size.get('width')}x{size.get('height')}"
@@ -140,7 +144,7 @@ def list_menus(client) -> None:
 
 
 def delete_menu(client, menu_id: str) -> None:
-    _ok(client.delete(f"{API}/richmenu/{menu_id}"))
+    expect_ok(client.delete(f"{API}/richmenu/{menu_id}"))
     print(f"ลบ {menu_id} แล้ว")
 
 
@@ -189,7 +193,7 @@ def main() -> None:
         check_image(image)
         return
 
-    with _client() as client:
+    with api_client() as client:
         if args.list:
             list_menus(client)
             return

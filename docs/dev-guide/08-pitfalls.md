@@ -23,7 +23,8 @@
 | ผู้ใช้ได้ข้อความซ้ำ | ตอบ 200 ช้าเกิน LINE จึง retry webhook | ต้องตอบ 200 ก่อนแล้วทำงานใน BackgroundTasks (โครงสร้างนี้ทำไว้แล้ว) |
 | `git pull` (หรือแก้ข้อความ/ปุ่ม) แล้ว LINE ยังได้ข้อความชุดเก่า | image คัดลอก `app/` ตอน build **ไม่ผูกกับโฟลเดอร์ในเครื่อง** — เครื่องที่รันบน host (`python run.py`) เห็นของใหม่ทันที แต่ tunnel ชี้ไปที่ container ที่ยังเป็น image เก่า | `make deploy` (= `docker compose up -d --build app` + `scripts/check_deploy.py`) แล้วรอ `healthy` · ตัวตรวจเทียบ md5 ของ `app/router.py` ในคอนเทนเนอร์กับไฟล์จริง และพิมพ์ข้อความที่บอทตอบจริงของ 3 หัวข้อ (เจอจริง: ข้อความ 3 หัวข้อของ commit `da9c2bf` ไม่ขึ้นบน LINE เพราะเหตุนี้) |
 | Rich Menu ไม่ขึ้น | LINE for PC ไม่แสดง Rich Menu | ทดสอบบนมือถือ |
-| เปลี่ยนภาพ Rich Menu ไม่ได้ | LINE ไม่ให้แก้ภาพของเมนูที่อัปโหลดแล้ว | สร้างใบใหม่ → ตั้ง default → ลบใบเก่า (`make rich-menu-list` / `rich-menu-delete`) |
+| Rich Menu ยังเป็นใบเก่าหลัง `git pull` | เมนูอยู่บนเซิร์ฟเวอร์ LINE ไม่ได้อยู่ใน git และ **แก้ภาพของใบที่อัปโหลดไปแล้วไม่ได้** | `make rich-menu-update` (= `scripts/update_rich_menu.py`) ตรวจก่อนว่าต่างตรงไหน แล้วสร้าง → ตั้ง default → ลบใบเก่าให้ · `make rich-menu-check` ตรวจอย่างเดียว (exit 1 = ล้าสมัย) |
+| เปลี่ยนภาพ Rich Menu ไม่ได้ | LINE ไม่ให้แก้ภาพของเมนูที่อัปโหลดแล้ว | สร้างใบใหม่ → ตั้ง default → ลบใบเก่า (`make rich-menu-update` ทำให้อัตโนมัติ หรือไล่ทีละขั้นด้วย `rich-menu-list` / `rich-menu-delete`) |
 | ปุ่มกดไม่ตรงช่อง | พิกัดในโค้ดไม่ตรงกับไฟล์ภาพ | พิกัดใน `app/line/rich_menu.py` **วัดจากภาพจริง** เปลี่ยนภาพต้องวัดใหม่ ไม่ใช่หาร 3 หาร 2 |
 | LIFF ใส่ token ไม่ได้ | LIFF อยู่ใต้ **LINE Login channel** คนละใบกับ Messaging API | ใช้ `LIFF_ID` + `LINE_LOGIN_CHANNEL_ID` และเลขหน้าขีดของ `LIFF_ID` ต้องตรงกับ channel id |
 

@@ -1108,7 +1108,7 @@ def _faq_quick_reply(raw: Any) -> dict:
     ผิดรูปให้ถอยไปใช้เมนูหลัก ไม่ใช่ 500 ทั้งคำตอบเพราะปุ่มพัง
 
     >>> _faq_quick_reply(None)['items'][0]['action']['label']
-    'แผนการเรียน'
+    'วางแผนการเรียน'
     >>> _faq_quick_reply([{'label': 'กยศ.', 'text': 'กยศ'}])['items'][0]['action']
     {'type': 'message', 'label': 'กยศ.', 'text': 'กยศ'}
     """

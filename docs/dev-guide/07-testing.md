@@ -49,6 +49,7 @@ $env:PYTHONUTF8='1'; $env:RMU_DB_TESTS='1'; python -m pytest tests/integration -
 | `test_messages.py` | 25 | รูปแบบข้อความ/Quick Reply ให้ถูกข้อจำกัดของ LINE |
 | `test_db.py` | 25 | connection pool |
 | `test_rich_menu.py` | 23 | พิกัดปุ่ม + payload ที่ส่งขึ้น LINE |
+| `test_update_rich_menu.py` | 15 | สคริปต์อัปเดต Rich Menu (ยิงใส่ LINE ปลอม — ตรึงลำดับสร้าง/ตั้ง default/ลบใบเก่า) |
 | `test_config.py` | 19 | อ่าน `.env` + fail fast |
 | `test_planner.py` | 18 | ตรรกะเลือกวิชาเทอมถัดไป |
 | `test_flex.py` | 17 | Flex Message |

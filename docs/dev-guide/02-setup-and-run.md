@@ -129,6 +129,13 @@ python scripts/check_deploy.py
 หน้าจอ LINE · ถ้าขึ้น "ไม่พบ container" แปลว่าเครื่องนั้นรันบอทบน host
 (`python run.py`) ซึ่งโค้ดใหม่มีผลทันทีเมื่อรีสตาร์ต process
 
+#### Rich Menu ก็ไม่อัปเดตตาม `git pull` เช่นกัน
+
+เมนูไม่ได้อยู่ในโค้ดและไม่ได้อยู่ใน DB — มันอยู่บนเซิร์ฟเวอร์ LINE (ดู §2.6)
+ถ้าในแชทยังเห็น 6 ช่องเก่า (กู้ยืม กยศ. / ทำอะไรได้บ้าง) แปลว่า channel นั้นยัง
+ไม่ได้อัปเดตเมนู ให้ `make rich-menu-check` (ตรวจอย่างเดียว) แล้ว
+`make rich-menu-update` (สร้าง → ตั้ง default → ลบใบเก่าให้)
+
 ### 3) tunnel — LINE ต้องเรียกเข้ามาทาง HTTPS
 
 ```powershell
@@ -189,7 +196,8 @@ docker exec -i rmu_bot_db psql -U rmubot -d rmu_bot   # user คือ rmubot �
 | `make test` / `make doctest` | รันชุดทดสอบ |
 | `make check` / `make verify` | ตรวจ SQL ด้วย sqlglot + ตรวจ FK/ลำดับ INSERT |
 | `make scrape` | ดึงข้อมูลจากเว็บทะเบียนใหม่ทั้งชุด |
-| `make rich-menu-dry` / `rich-menu-apply` | ตรวจ/อัปโหลด Rich Menu ขึ้น LINE (ขั้นตอนเต็มอยู่ §2.6) |
+| `make rich-menu-update` / `rich-menu-check` | อัปเดต/ตรวจ Rich Menu ให้ตรงกับโค้ด — ใช้หลัง `git pull` (ขั้นตอนเต็มอยู่ §2.6) |
+| `make rich-menu-dry` / `rich-menu-apply` | ตรวจ/อัปโหลด Rich Menu ใบใหม่ขึ้น LINE (ขั้นตอนเต็มอยู่ §2.6) |
 | `python scripts/admin_user.py --username <ชื่อ>` | สร้าง/รีเซ็ตรหัสผู้ดูแลหน้า `/admin` |
 
 > ⚠️ **`make migrate` ล้าสมัย** — รัน migration ถึงแค่ `005_planner.sql`
@@ -209,6 +217,34 @@ channel ทดสอบอีกใบ) ต้องสั่งสร้าง�
 จึงไม่ต้องรอ tunnel, `PUBLIC_BASE_URL` หรือ LIFF ID ให้พร้อมก่อน ทำก่อนหรือหลัง
 ตั้ง webhook ก็ได้ ส่วนภาพ `assets/rich_menu.png` (1200x810) กับ
 `assets/rich_menu_consult.png` อยู่ใน repo แล้ว ไม่ต้องทำภาพใหม่
+
+### เมนูที่ผู้ใช้เห็นอยู่ยังเป็นใบเก่า (เคสที่เจอบ่อยสุด)
+
+**`git pull` ไม่ทำให้เมนูอัปเดตตาม** เพราะเมนูอยู่บน LINE และ **แก้ภาพของใบที่
+อัปโหลดไปแล้วไม่ได้** ต้องสร้างใบใหม่แล้วตั้งเป็น default ทุกครั้ง
+`scripts/update_rich_menu.py` ทำทั้งหมดให้ในคำสั่งเดียว: เทียบใบที่คนเห็นอยู่กับ
+`build_rich_menu()` ของโค้ดตอนนี้ (ชื่อ · ข้อความแถบเมนู · ลำดับช่อง/ข้อมูล
+postback · **md5 ของภาพ**) แล้วสร้าง → อัปโหลด → ตั้ง default → ลบใบเก่า
+ถ้าเมนูตรงอยู่แล้วจะไม่แตะอะไรเลย (เจอจริง: commit `da9c2bf` เปลี่ยนเมนูเป็น
+"วางแผนการเรียน / วางแผนเกรด" แต่เครื่องที่แค่ `git pull` ยังเห็น 6 ช่องเก่า)
+
+```powershell
+# รันบน host
+python scripts/update_rich_menu.py --check        # ตรวจอย่างเดียว: 0 = ตรงแล้ว, 1 = ล้าสมัย
+python scripts/update_rich_menu.py --dry-run      # ดูว่าจะทำอะไร (ไม่แก้อะไร)
+python scripts/update_rich_menu.py                # อัปเดตจริง — ถามยืนยันก่อน
+python scripts/update_rich_menu.py --yes          # อัปเดตจริง ไม่ถาม
+python scripts/update_rich_menu.py --prune --yes  # เก็บใบเก่าที่ค้างทั้งหมดด้วย
+
+# หรือผ่าน Docker (เครื่องที่ไม่มี python/httpx)
+docker compose run --rm tools scripts/update_rich_menu.py --check
+docker compose run --rm tools scripts/update_rich_menu.py
+```
+
+สคริปต์จะ **ไม่สร้างใบซ้ำ** ถ้าบน channel มีใบที่ตรงกับโค้ดอยู่แล้ว (แต่ยังไม่ได้
+ตั้งเป็น default) — ตั้ง default ให้เลย และจะบอกด้วยถ้ามีใบเก่าค้างอยู่บน channel
+ส่วน `--prune` ลบเฉพาะใบที่ชื่อเดียวกับเมนูหลัก ไม่แตะใบโหมดปรึกษา
+(`RICH_MENU_CONSULT_ID` ใน `.env`)
 
 ### เครื่องที่ลง Docker ล้วน (ไม่มี python/httpx บน host)
 
@@ -232,6 +268,8 @@ docker compose run --rm tools scripts/rich_menu.py --list      # ดูใบท
 
 | คำสั่ง | ทำอะไร |
 |---|---|
+| `make rich-menu-update` | อัปเดตใบที่ผู้ใช้เห็นให้ตรงกับโค้ด + ลบใบเก่า (ถามยืนยันก่อน) |
+| `make rich-menu-check` | ตรวจอย่างเดียวว่าเมนูล้าสมัยไหม — exit 1 = ต้องอัปเดต |
 | `make rich-menu-dry` | ตรวจภาพ + พิมพ์ JSON ไม่ยิง API |
 | `make rich-menu-apply` | สร้าง + อัปโหลดภาพ + ตั้ง default |
 | `make rich-menu-list` | ดู id / ขนาด / จำนวนปุ่มของทุกใบบน channel |
@@ -260,11 +298,13 @@ docker compose up -d app        # ค่านี้อ่านตอนเร�
   (ช้าได้ถึง ~1 นาที) — ปิดแล้วเปิดห้องแชทใหม่ช่วยให้มาไวขึ้น
 * **แก้ภาพของใบที่อัปโหลดไปแล้วไม่ได้** ต้องสร้างใบใหม่แล้ว `--delete` ใบเก่า
   และ API create/delete จำกัด **100 ครั้ง/ชั่วโมง** ต่อ channel
+* ใบเก่าค้างบน channel ได้ (LINE เก็บได้ถึง 1,000 ใบต่อ channel) — `scripts/update_rich_menu.py --prune` เก็บกวาดใบที่ชื่อเดียวกับเมนูหลักให้ ส่วน `--check` ใช้ตรวจเฉย ๆ ได้โดยไม่ต้องแก้เมนู
 * ภาพต้องเป็น **1200x810 เท่านั้น** เพราะพิกัดปุ่มใน `app/line/rich_menu.py`
   (`COLUMN_EDGES` / `ROW_EDGES`) วัดมาจากไฟล์นั้น ไม่ใช่หาร 3 หาร 2 เอา —
   สคริปต์ตรวจขนาด/ชนิดไฟล์/ไม่เกิน 1 MB ให้ก่อนยิง API เปลี่ยนภาพ = ต้องวัด
-  พิกัดใหม่ แล้วรัน `pytest tests/test_rich_menu.py` (คุมว่าช่องไม่ทับกันและ
-  ไม่ล้นขอบภาพ แต่ไม่รู้ว่าตรงกับภาพใหม่จริงไหม — ต้องดูด้วยตาบนมือถือ)
+  พิกัดใหม่ แล้วรัน `pytest tests/test_rich_menu.py tests/test_update_rich_menu.py`
+  (คุมว่าช่องไม่ทับกัน ไม่ล้นขอบภาพ และลำดับการสร้าง/ลบเมนูถูกต้อง แต่ไม่รู้ว่า
+  ตรงกับภาพใหม่จริงไหม — ต้องดูด้วยตาบนมือถือ)
 * เมนูผูกกับ **channel** ไม่ใช่กับ token — ออก token ใหม่เมนูยังอยู่ แต่ย้ายไป
   channel อื่นต้องสร้างใหม่ และ `--list` ตอบตาม token ที่อยู่ใน `.env` ตอนนั้น
 * ปุ่มส่ง `postback` เป็น `action=<x>&src=rich` → ใน `chat_logs` แยกได้ว่ามาจาก
