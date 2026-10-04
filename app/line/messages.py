@@ -20,6 +20,7 @@ MAX_TEXT_LENGTH = 5000
 MAX_QUICK_REPLY_ITEMS = 13
 MAX_LABEL_LENGTH = 20
 MAX_POSTBACK_DATA_LENGTH = 300
+MAX_DISPLAY_TEXT_LENGTH = 300
 
 
 def truncate(text: str, limit: int) -> str:
@@ -53,21 +54,33 @@ def text_message(text: str, quick_reply: dict | None = None) -> dict:
 
 def postback_action(label: str, data: str, display_text: str | None = None) -> dict:
     """
-    ปุ่มที่ส่ง postback event กลับมา (ไม่โชว์ข้อความของ user ถ้าไม่ตั้ง displayText)
+    ปุ่มที่ส่ง postback event กลับมา
 
-    ใช้กับ Rich Menu / Quick Reply ที่ต้องการให้ระบบรู้ intent แน่ ๆ
-    ไม่ต้องเดาจากข้อความ
+    ค่าปริยายจะ **โชว์ข้อความของ user เป็นฟอง** เท่ากับ ``label`` ที่กด
+    (เมื่อก่อนไม่โชว์ → ในแชทเงียบเหมือนไม่ได้กดอะไร) ธรรมเนียมของ ``display_text``:
+
+    * ``None`` (ไม่ส่งมา) → โชว์ฟอง = ``label``
+    * ``""`` (สตริงว่าง) → **ไม่โชว์ฟองเลย** สำหรับปุ่มนำทางที่ฟองเป็นสัญญาณรบกวน
+      (เช่น ปุ่ม "เมนูหลัก" ที่ต่อท้ายแทบทุกคำตอบ)
+    * สตริงอื่น → โชว์ข้อความนั้นแทน (เช่นอยากให้ฟองอ่านเป็นประโยคเต็ม)
+
+    ``data`` ไม่ถูกแตะ — ``src=rich`` และพารามิเตอร์อื่นยังอยู่ครบ
 
     >>> postback_action('ดูเดดไลน์', 'action=deadline')
-    {'type': 'postback', 'label': 'ดูเดดไลน์', 'data': 'action=deadline'}
+    {'type': 'postback', 'label': 'ดูเดดไลน์', 'data': 'action=deadline', 'displayText': 'ดูเดดไลน์'}
+    >>> 'displayText' in postback_action('เมนูหลัก', 'action=menu', '')
+    False
     """
+    label = truncate(label, MAX_LABEL_LENGTH)
     action: dict = {
         "type": "postback",
-        "label": truncate(label, MAX_LABEL_LENGTH),
+        "label": label,
         "data": truncate(data, MAX_POSTBACK_DATA_LENGTH),
     }
-    if display_text:
-        action["displayText"] = display_text
+    # None = ไม่ได้ส่งมา → ใช้ label (ที่ตัดแล้ว) เป็นฟอง; "" = ตั้งใจปิดฟอง (ปุ่มนำทาง)
+    bubble = label if display_text is None else display_text
+    if bubble:
+        action["displayText"] = truncate(bubble, MAX_DISPLAY_TEXT_LENGTH)
     return action
 
 
@@ -145,7 +158,9 @@ MAIN_MENU_ACTIONS = [
 
 # ปุ่มทางกลับแบบสั้นสำหรับคำตอบ fallback — ให้ผู้ใช้เปิดเมนูหลักได้ทันที
 # แม้ไม่ได้อยู่ในบริบทของ Quick Reply ชุดเต็ม
-MAIN_MENU_FALLBACK_ACTION = postback_action("เมนูหลัก", "action=menu")
+# ปิดฟอง (display_text="") เพราะเป็นปุ่มนำทางที่ต่อท้ายแทบทุกคำตอบ — ขึ้นฟอง
+# "เมนูหลัก" ทุกครั้งที่กดคือสัญญาณรบกวน ไม่ใช่คำถามของผู้ใช้
+MAIN_MENU_FALLBACK_ACTION = postback_action("เมนูหลัก", "action=menu", "")
 
 # ── แบบประเมินระบบ (งานวิจัย) ────────────────────────────────────────────────
 # เก็บ URL ไว้ที่เดียว: ลิงก์ฟอร์มยาวและก๊อปผิดง่าย ถ้ากระจายหลายที่แล้ว
@@ -280,5 +295,51 @@ def no_data_message(topic: str) -> dict:
         f"ระบบยังไม่มีข้อมูล{topic}ครับ\n\n"
         "ข้อมูลนี้ไม่ได้เผยแพร่บนเว็บไซต์ของคณะ "
         "แนะนำให้ติดต่อสำนักงานคณะโดยตรง",
+        quick_reply(MAIN_MENU_ACTIONS),
+    )
+
+
+# ── ทักทาย / พูดคุยเล็ก ๆ (ตอบด้วย keyword ก่อน ไม่เรียก LLM) ────────────────
+# พิมพ์ทักทาย/ขอบคุณ/ลา/ขอเมนู แล้วเดิมตกไป search → ไม่เจอ → fallback ห้วน ๆ
+# ตอบสั้น ๆ อย่างเป็นมิตรแล้วชี้เข้าเมนูหลักทันที (Quick Reply ไม่ขึ้นบนเดสก์ท็อป
+# แต่เมนูหลัก 7 ปุ่มยังต่อท้ายได้เผื่อคนใช้มือถือ)
+
+
+def greeting_message() -> dict:
+    """ตอบคำทักทาย — อุ่น ๆ สั้น ๆ แล้วชวนเลือกหัวข้อจากเมนู"""
+    return text_message(
+        "สวัสดีครับ ผมเป็นผู้ช่วยให้คำปรึกษาด้านการเรียน\n"
+        "อยากให้ช่วยเรื่องไหน เลือกจากเมนูด้านล่าง หรือพิมพ์คำถามมาได้เลยครับ",
+        quick_reply(MAIN_MENU_ACTIONS),
+    )
+
+
+def thanks_message() -> dict:
+    """ตอบคำขอบคุณ — รับคำแล้วเปิดทางถามต่อ ไม่ปล่อยให้บทสนทนาจบห้วน"""
+    return text_message(
+        "ยินดีครับ ถ้ามีอะไรให้ช่วยอีก เลือกจากเมนูด้านล่างหรือพิมพ์มาได้เลยครับ",
+        quick_reply(MAIN_MENU_ACTIONS),
+    )
+
+
+def goodbye_message() -> dict:
+    """ตอบคำลา — อวยพรสั้น ๆ แล้วบอกวิธีกลับมาใช้งาน"""
+    return text_message(
+        "ด้วยความยินดีครับ ขอให้เรียนราบรื่นนะครับ\n"
+        "กลับมาถามได้ทุกเมื่อ กดเมนูด้านล่างเพื่อเริ่มใหม่ได้เลยครับ",
+        quick_reply(MAIN_MENU_ACTIONS),
+    )
+
+
+def help_message() -> dict:
+    """ตอบคำขอความช่วยเหลือ/ขอเมนู — บอกสิ่งที่ทำได้แล้วโชว์เมนูหลัก"""
+    return text_message(
+        "ผมช่วยได้หลายเรื่องครับ เช่น\n"
+        "  • หาเอกสาร/แบบฟอร์มคำร้อง\n"
+        "  • ข้อมูลติดต่ออาจารย์\n"
+        "  • พิมพ์รหัสวิชา 7 หลัก เพื่อดูรายละเอียดรายวิชา\n"
+        "  • วางแผนการเรียน/วางแผนเกรด และตรวจสอบจบ\n"
+        "  • กด “ปรึกษา AI” เพื่อสอบถามคำแนะนำการเรียนทั่วไป\n"
+        "เลือกจากเมนูด้านล่างได้เลยครับ",
         quick_reply(MAIN_MENU_ACTIONS),
     )

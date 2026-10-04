@@ -478,7 +478,10 @@ async def test_process_event_logs_text_messages(monkeypatch: pytest.MonkeyPatch)
 
     params = db.executed_for("INSERT INTO chat_logs")
     assert params[1] == "สวัสดีครับ"
-    assert params[2] == "fallback"
+    # "สวัสดีครับ" เป็นคำทักทาย → ชั้น smalltalk ตอบ (บันทึกเป็น ``search``
+    # เพราะ CHECK constraint ของ chat_logs ไม่มีค่า "smalltalk") ที่เทสนี้
+    # สนใจคือ message_text ถูกบันทึกครบ ไม่ใช่ค่า answered_by ค่าใดค่าหนึ่ง
+    assert params[2] == "search"
 
 
 async def test_chat_log_failure_never_breaks_conversation(
@@ -702,7 +705,8 @@ async def test_search_miss_without_mode_does_not_call_llm(
     )
 
     await main.process_event(
-        message_event("อ่านหนังสือก่อนสอบยังไงดี"), sending_settings(llm_api_key="k")
+        message_event("อ่านหนังสือก่อนสอบยังไงดี"),
+        sending_settings(llm_api_key="k", ai_fallback_enabled=False),
     )
 
     assert llm_recorder.count == 0, "ยังไม่เข้าโหมด ห้ามเสีย token"

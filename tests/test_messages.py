@@ -64,6 +64,19 @@ def test_postback_action_shape_and_label_limit() -> None:
     assert action["type"] == "postback"
     assert len(action["label"]) == msg.MAX_LABEL_LENGTH == 20
     assert action["data"] == "action=plan"
+    # ค่าปริยาย: โชว์ฟองข้อความของ user เท่ากับ label ที่ถูกตัดแล้ว
+    assert action["displayText"] == action["label"]
+
+
+def test_postback_action_defaults_display_text_to_label() -> None:
+    """ไม่ส่ง display_text = ขึ้นฟองข้อความของ user เท่ากับ label (เดิมเงียบ)"""
+    action = msg.postback_action("ดูเดดไลน์", "action=deadline")
+    assert action["displayText"] == "ดูเดดไลน์"
+
+
+def test_postback_action_empty_display_text_suppresses_the_bubble() -> None:
+    """ปุ่มนำทาง (เช่น เมนูหลัก) ส่ง "" เพื่อไม่ให้ขึ้นฟองรบกวนทุกครั้งที่กด"""
+    action = msg.postback_action("เมนูหลัก", "action=menu", "")
     assert "displayText" not in action
 
 

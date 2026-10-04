@@ -756,12 +756,16 @@ async def test_router_search_miss_does_not_call_llm_anymore() -> None:
     """
     หัวใจของการกัน token: search ไม่เจอ **ต้องไม่ยิง LLM ทันที**
     แต่ตอบ fallback พร้อมปุ่ม "ปรึกษา AI" ให้ user เลือกเข้าโหมดเอง
+
+    ปิด ``ai_fallback_enabled`` ในเทสนี้เพราะกำลังยืนยัน "โหมดปรึกษาเป็น
+    opt-in" ล้วน ๆ — พฤติกรรมตอน AI ตอบตอนทางตัน (สวิตช์เปิด) แยกไปเทสที่
+    ``tests/test_router.py`` (``test_dead_end_uses_the_llm_when_ai_fallback_is_enabled``)
     """
     recorder = Recorder((200, chat_ok()))
     result = await bot_router.handle_text(
         "อ่านหนังสือยังไง",
         db_with_session(None),
-        settings=settings(),
+        settings=settings(ai_fallback_enabled=False),
         llm=make_llm(recorder),
         user_hash=USER_HASH,
     )

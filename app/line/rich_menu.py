@@ -114,6 +114,24 @@ def postback_data(action: str) -> str:
     return f"action={action}&src=rich"
 
 
+# ปุ่มที่ตั้งใจ "ไม่" ให้ขึ้นฟองข้อความของผู้ใช้เมื่อกด — เป็นปุ่มนำทาง ไม่ใช่
+# คำถาม ขึ้นฟอง "เมนูหลัก" ทุกครั้งที่กดคือสัญญาณรบกวน (ปุ่มเนื้อหาช่องอื่นโชว์
+# ฟอง = label เพื่อให้เห็นในแชทว่ากดอะไรไป — ดู app.line.messages.postback_action)
+_NO_BUBBLE_ACTIONS = frozenset({"menu"})
+
+
+def _postback_area(bounds: dict, label: str, action: str) -> dict:
+    """สร้าง area postback หนึ่งช่อง — ใส่ ``displayText`` (=label) เว้นปุ่มนำทาง"""
+    act: dict = {
+        "type": "postback",
+        "label": label,
+        "data": postback_data(action),
+    }
+    if action not in _NO_BUBBLE_ACTIONS:
+        act["displayText"] = label
+    return {"bounds": bounds, "action": act}
+
+
 def build_rich_menu() -> dict:
     """
     rich menu object ที่ส่งเข้า ``POST /v2/bot/richmenu`` ได้ตรง ๆ
@@ -125,6 +143,8 @@ def build_rich_menu() -> dict:
     6
     >>> menu['areas'][1]['action']['data']
     'action=study_plan&src=rich'
+    >>> menu['areas'][1]['action']['displayText']
+    'วางแผนการเรียน'
     """
     return {
         "size": {"width": MENU_WIDTH, "height": MENU_HEIGHT},
@@ -134,14 +154,7 @@ def build_rich_menu() -> dict:
         "name": MENU_NAME,
         "chatBarText": CHAT_BAR_TEXT,
         "areas": [
-            {
-                "bounds": cell_bounds(index),
-                "action": {
-                    "type": "postback",
-                    "label": label,
-                    "data": postback_data(action),
-                },
-            }
+            _postback_area(cell_bounds(index), label, action)
             for index, (label, action) in enumerate(SLOTS)
         ],
     }
@@ -203,14 +216,7 @@ def build_consult_rich_menu() -> dict:
         "name": CONSULT_MENU_NAME,
         "chatBarText": CONSULT_CHAT_BAR_TEXT,
         "areas": [
-            {
-                "bounds": consult_cell_bounds(index),
-                "action": {
-                    "type": "postback",
-                    "label": label,
-                    "data": postback_data(action),
-                },
-            }
+            _postback_area(consult_cell_bounds(index), label, action)
             for index, (label, action) in enumerate(CONSULT_SLOTS)
         ],
     }

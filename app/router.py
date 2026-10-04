@@ -282,7 +282,7 @@ def _list_quick_reply(buttons: list[dict]) -> dict:
     """
     room = msg.MAX_QUICK_REPLY_ITEMS - 1
     return msg.quick_reply(
-        [*buttons[:room], msg.postback_action("เมนูหลัก", "action=menu")]
+        [*buttons[:room], msg.postback_action("เมนูหลัก", "action=menu", "")]
     )
 
 
@@ -357,6 +357,207 @@ def _survey_answer(answered_by: str = BUTTON_ANSWER) -> RouteResult:
         intent_key="survey",
         confidence=1.0,
     )
+
+
+# ── ทักทาย / พูดคุยเล็ก ๆ (keyword ก่อน — ไม่เรียก LLM) ──────────────────────
+#
+# เดิมข้อความที่พิมพ์ทั้งหมดตกไป search → คำทักทาย/ขอบคุณ/ลา จึงได้ fallback
+# "ยังไม่พบข้อมูล" ทุกครั้ง ตรงนี้ดักคำเหล่านั้นด้วย keyword ราคาถูก (ไม่แตะ LLM)
+# แล้วตอบสั้น ๆ อย่างเป็นมิตร + ต่อเมนูหลัก
+#
+# **แมตช์ทั้งข้อความ ไม่ใช่ substring**: ถ้าเช็คแบบ contains คำว่า "สวัสดี" ที่
+# ฝังอยู่ในคำถามยาว ("สวัสดีครับ อยากถามเรื่องกู้ยืม...") จะถูกชิงตอบทักทาย
+# ทั้งที่ผู้ใช้ถามจริง ดังนั้น normalize (strip + lower + ตัดเครื่องหมายท้าย)
+# แล้วเทียบแบบตรงตัวกับชุดคำเท่านั้น
+_GREETING_WORDS = frozenset(
+    {
+        "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "สวัสดีคะ", "สวัสดีจ้า", "สวัสดีจ้ะ",
+        "หวัดดี", "หวัดดีครับ", "หวัดดีค่ะ", "ดีครับ", "ดีค่ะ", "ดีจ้า",
+        "hello", "hi", "hey",
+    }
+)
+_THANKS_WORDS = frozenset(
+    {
+        "ขอบคุณ", "ขอบคุณครับ", "ขอบคุณค่ะ", "ขอบคุณคะ", "ขอบคุณมาก",
+        "ขอบคุณมากครับ", "ขอบคุณมากค่ะ", "ขอบใจ", "ขอบใจครับ",
+        "thanks", "thank you", "thx", "ty",
+    }
+)
+_GOODBYE_WORDS = frozenset(
+    {"บาย", "บายๆ", "บาย ๆ", "ลาก่อน", "ไปก่อนนะ", "bye", "byebye", "goodbye"}
+)
+_HELP_WORDS = frozenset(
+    {"เมนู", "ช่วยด้วย", "ช่วยหน่อย", "ทำอะไรได้บ้าง", "ทำอะไรได้", "help", "menu"}
+)
+
+# ตัดเครื่องหมาย/ช่องว่าง/"ๆ"/สระซ้ำท้ายที่ไม่เปลี่ยนความหมายการทักทายออก
+_SMALLTALK_TAIL = re.compile(r"[\s!?.,~ๆ。]+$")
+
+
+def _normalize_smalltalk(text: str) -> str:
+    """
+    ทำ key สำหรับเทียบคำทักทาย — strip + lower + ตัดเครื่องหมายท้าย
+
+    >>> _normalize_smalltalk('สวัสดีครับ!! ')
+    'สวัสดีครับ'
+    >>> _normalize_smalltalk('Hello?')
+    'hello'
+    """
+    return _SMALLTALK_TAIL.sub("", text.strip().lower()).strip()
+
+
+def _smalltalk_answer(cleaned: str) -> RouteResult | None:
+    """
+    ตอบคำทักทาย/ขอบคุณ/ลา/ขอเมนู ด้วยข้อความสำเร็จรูป — ไม่เจอคืน ``None``
+
+    ``answered_by='search'`` ด้วยเหตุผลเดียวกับ :func:`_survey_answer` — CHECK
+    constraint ของ ``chat_logs`` ไม่มีค่าสำหรับ "ตอบด้วยคำที่พิมพ์มาแต่ไม่ได้
+    ค้น DB" และไม่คุ้มจะเพิ่ม migration; แยกจากผลค้นจริงได้ที่ ``intent_key``
+    (และคำทักทาย **ไม่ควร** ถูกนับเป็น fallback/no_data ที่แปลว่า "ตอบไม่ได้")
+    """
+    key = _normalize_smalltalk(cleaned)
+    if not key:
+        return None
+    if key in _GREETING_WORDS:
+        return _canned_smalltalk(msg.greeting_message(), "greeting")
+    if key in _THANKS_WORDS:
+        return _canned_smalltalk(msg.thanks_message(), "thanks")
+    if key in _GOODBYE_WORDS:
+        return _canned_smalltalk(msg.goodbye_message(), "goodbye")
+    if key in _HELP_WORDS:
+        return _canned_smalltalk(msg.help_message(), "help")
+    return None
+
+
+def _canned_smalltalk(message: dict, kind: str) -> RouteResult:
+    return RouteResult(
+        messages=[message],
+        answered_by="search",
+        intent_key=f"smalltalk_{kind}",
+        confidence=1.0,
+    )
+
+
+# ── AI ตอบตอนทางตัน (fallback) ──────────────────────────────────────────────
+#
+# เมื่อ search/FAQ ไม่เจอ และผู้ใช้ **ไม่ได้** อยู่ในโหมดปรึกษา (โหมดถูกดักไป
+# ก่อนแล้วที่ ai_chat.dispatch) ให้ LLM ตอบสั้น ๆ อย่างเป็นมิตรแทนข้อความ
+# "ยังไม่พบข้อมูล" ห้วน ๆ — ครอบคำทักทายที่ keyword ไม่ทัน และคำถามนอกคลัง
+#
+# prompt แยกจาก ``ai_chat.SYSTEM_PROMPT`` โดยเจตนา: อันนี้ **ไม่มีบริบทสนทนา**
+# และเป็นการตอบทางตัน จึงเน้นสั้น + ชี้เข้าเมนู + ห้ามแต่งข้อมูลราชการเช่นเดิม
+_FALLBACK_SYSTEM_PROMPT = """\
+คุณเป็นผู้ช่วยของแชทบอทให้คำปรึกษาด้านการเรียนของนักศึกษา \
+มหาวิทยาลัยราชภัฏมหาสารคาม ตอบเป็นภาษาไทย สุภาพ ลงท้าย "ครับ" ครั้งเดียว
+
+ระบบค้นข้อมูลหลักไม่พบคำตอบสำหรับข้อความล่าสุดของผู้ใช้ หน้าที่ของคุณคือ
+ตอบสั้น ๆ อย่างเป็นมิตรเพื่อไม่ให้บทสนทนาเงียบ:
+- ถ้าเป็นคำทักทาย/พูดคุยเล็กน้อย ให้ทักทายกลับสั้น ๆ แล้วชวนให้เลือกหัวข้อจากเมนู
+- ถ้าเป็นคำถามที่ตอบไม่ได้ ให้ขอโทษสั้น ๆ บอกว่ายังไม่มีข้อมูลในระบบ แล้วชวนให้ \
+ลองหัวข้อจากเมนู หรือพิมพ์รหัสวิชา 7 หลัก/ชื่อเอกสาร/ชื่ออาจารย์
+
+กฎที่ต้องทำตามเสมอ:
+1. ห้ามแต่งข้อมูลทางการ (วัน-กำหนดการ ระเบียบ ค่าธรรมเนียม ขั้นตอนเอกสาร \
+เบอร์โทร/ชื่อเจ้าหน้าที่) ถ้าไม่รู้ให้บอกว่าไม่มีข้อมูลและแนะนำให้กดเมนูหรือ \
+ติดต่อเจ้าหน้าที่
+2. ตอบไม่เกิน 3-4 บรรทัด ห้ามใช้ markdown (## ** ตาราง) ที่ LINE แสดงไม่ได้
+3. อย่าสัญญาว่าจะทำสิ่งที่บอทยังทำไม่ได้ และอย่าขอข้อมูลส่วนตัว\
+"""
+
+
+def _consult_entry(settings: Any | None, llm: Any | None) -> list[dict]:
+    """ปุ่ม "ปรึกษา AI" ที่ต่อท้าย fallback — เฉพาะเมื่อชั้น LLM เปิดอยู่จริง"""
+    if settings is not None and llm is not None and settings.ai_chat_enabled:
+        return [msg.CONSULT_AI_ACTION]
+    return []
+
+
+def _ai_fallback_ready(settings: Any | None, llm: Any | None) -> bool:
+    """
+    เปิดใช้ AI ตอบตอนทางตันไหม — ต้องครบทุกข้อ ไม่ครบ = ใช้ข้อความ canned เดิม
+
+    ผูกกับ ``ai_chat_enabled`` ด้วย: สวิตช์นั้นตั้งใจให้ "ปิดทั้งชั้น LLM ได้ตัว
+    เดียว" (เช่น key หมด) — ปิดแล้วต้องไม่แอบมายิง LLM ที่ทางตันอีก
+    """
+    return (
+        settings is not None
+        and llm is not None
+        and getattr(settings, "ai_fallback_enabled", False)
+        and getattr(settings, "ai_chat_enabled", False)
+        and bool(getattr(settings, "llm_api_key", ""))
+    )
+
+
+async def _ai_fallback_answer(
+    settings: Any,
+    llm: Any,
+    cleaned: str,
+) -> RouteResult | None:
+    """
+    ให้ LLM ตอบข้อความทางตัน 1 ครั้ง — คืน ``None`` เมื่อ **ล้มไม่ว่าด้วยเหตุใด**
+    เพื่อให้ผู้เรียกถอยไปข้อความ canned (ไม่โยน exception ต่อ ไม่งั้น ``_guard``
+    จะตอบ "ฐานข้อมูลขัดข้อง" ผิดสาเหตุ)
+
+    ใช้ ``llm.chat`` ตัวเดียวกับโหมดปรึกษา จึงได้เชนโมเดลสำรอง +
+    ``LLM_RETRY_BUDGET_SECONDS`` คุมเวลาคุ้ม reply token ของ LINE มาให้เลย
+    """
+    # import ในฟังก์ชันเพื่อเลี่ยง circular import (ai_chat import RouteResult จาก
+    # ไฟล์นี้) — เหมือนที่ _dispatch_text ทำกับ ai_chat.dispatch
+    from . import ai_chat
+    from .llm import LlmError
+
+    try:
+        result = await llm.chat(
+            [
+                {"role": "system", "content": _FALLBACK_SYSTEM_PROMPT},
+                {"role": "user", "content": cleaned},
+            ],
+            temperature=settings.llm_temperature,
+        )
+        answer = ai_chat.dedupe_trailing_politeness(result.text)
+        if not answer:
+            log.warning("AI fallback ตอบว่าง — ถอยไปข้อความ canned")
+            return None
+    except LlmError:
+        # timeout / 429 / 503 ครบเชน / BudgetExceeded / ตอบว่าง — ถอยไป canned
+        log.warning("AI fallback ไม่สำเร็จ — ถอยไปข้อความ canned", exc_info=True)
+        return None
+    except Exception:
+        # กันทุกกรณีไม่คาดคิด ไม่ให้หลุดไปโดน _guard ตอบผิดสาเหตุ หรือทำ reply พัง
+        log.warning("AI fallback error ไม่คาดคิด — ถอยไปข้อความ canned", exc_info=True)
+        return None
+
+    return RouteResult(
+        messages=[msg.text_message(answer, _menu_quick_reply(*_consult_entry(settings, llm)))],
+        answered_by="fallback",
+        intent_key="ai_fallback",
+        llm_model=result.model,
+        prompt_tokens=result.prompt_tokens,
+        output_tokens=result.output_tokens,
+        latency_ms=result.latency_ms,
+    )
+
+
+def _canned_text_fallback(
+    cleaned: str, settings: Any | None, llm: Any | None
+) -> RouteResult:
+    """ข้อความ fallback แบบเดิม (ไม่พึ่ง LLM) — ปลายทางเมื่อ AI ปิด/ล้ม"""
+    return RouteResult(
+        messages=[
+            msg.text_message(
+                "ยังไม่พบข้อมูลที่ตรงกับคำที่พิมพ์มาครับ\n\n"
+                f"“{msg.truncate(cleaned, 120)}”\n\n"
+                "ตอนนี้ค้นได้: ชื่อเอกสาร/แบบฟอร์มคำร้อง, ชื่ออาจารย์,\n"
+                "และรหัสวิชา 7 หลัก\n"
+                "หรือเลือกหัวข้อจากปุ่มด้านล่างครับ",
+                _menu_quick_reply(*_consult_entry(settings, llm)),
+            )
+        ],
+        answered_by="fallback",
+        intent_key="text",
+    )
+
+
 
 # ชื่อหมวดเอกสารเป็นภาษาไทย — ต้องไม่เกิน 20 ตัวอักษรเพราะใช้เป็น label ของปุ่ม
 DOCUMENT_CATEGORY_LABELS: dict[str, str] = {
@@ -1000,6 +1201,13 @@ async def _dispatch_text(
     if SURVEY_PATTERN.search(cleaned):
         return _survey_answer("search")
 
+    # ── ทักทาย/พูดคุยเล็ก ๆ ด้วย keyword — ก่อน FAQ/search และไม่แตะ LLM ──────
+    # อยู่ **หลัง** โหมดปรึกษา จึงไม่ชิงเทิร์นระหว่างที่ผู้ใช้กำลังคุยกับ AI
+    # (คำว่า "สวัสดี" กลางบทสนทนาปรึกษาถูกส่งเข้า ai_chat.dispatch ไปแล้ว)
+    smalltalk = _smalltalk_answer(cleaned)
+    if smalltalk is not None:
+        return smalltalk
+
     if db is not None:
         # ── ชั้นที่ 2: FAQ ที่คนเขียนคำตอบไว้ — **มาก่อนการค้นเอกสาร** ───────
         # คำตอบที่คนเขียนเองต้องชนะผลค้นอัตโนมัติ: เขียน FAQ ขึ้นมาเพราะ
@@ -1013,28 +1221,16 @@ async def _dispatch_text(
         if found is not None:
             return found
 
-    # search ไม่เจอ — เสนอทางเข้าโหมดปรึกษา AI (ถ้าชั้นนั้นพร้อม) แทนการยิง
-    # LLM ทันทีทุกข้อความ: กันเสีย token ฟรีกับพิมพ์ผิด/คำทักทาย/คำถามที่
-    # LLM ก็ต้องตอบว่าไม่มีข้อมูลอยู่ดี
-    extra = (
-        [msg.CONSULT_AI_ACTION]
-        if settings is not None and llm is not None and settings.ai_chat_enabled
-        else []
-    )
-    return RouteResult(
-        messages=[
-            msg.text_message(
-                "ยังไม่พบข้อมูลที่ตรงกับคำที่พิมพ์มาครับ\n\n"
-                f"“{msg.truncate(cleaned, 120)}”\n\n"
-                "ตอนนี้ค้นได้: ชื่อเอกสาร/แบบฟอร์มคำร้อง, ชื่ออาจารย์,\n"
-                "และรหัสวิชา 7 หลัก\n"
-                "หรือเลือกหัวข้อจากปุ่มด้านล่างครับ",
-                _menu_quick_reply(*extra),
-            )
-        ],
-        answered_by="fallback",
-        intent_key="text",
-    )
+    # search/FAQ ไม่เจอ และผู้ใช้ไม่ได้อยู่ในโหมดปรึกษา (โหมดถูกดักไปก่อนแล้ว)
+    # → ให้ AI ตอบสั้น ๆ อย่างเป็นมิตร ถ้าเปิดสวิตช์ ``ai_fallback_enabled`` และ
+    # ชั้น LLM พร้อม; ล้ม/ปิดเมื่อไหร่ก็ถอยไปข้อความ canned เดิมทันที
+    # (ยังใช้ budget ของ llm.chat คุม reply token — ไม่ยิงแบบไม่จำกัดเวลา)
+    if _ai_fallback_ready(settings, llm):
+        ai = await _ai_fallback_answer(settings, llm, cleaned)
+        if ai is not None:
+            return ai
+
+    return _canned_text_fallback(cleaned, settings, llm)
 
 
 # ── ชั้นที่ 2: FAQ ที่คนเขียนคำตอบไว้ ────────────────────────────────────────

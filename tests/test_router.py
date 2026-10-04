@@ -22,14 +22,41 @@ import pytest
 from app import router as bot_router
 from app.config import REPO_ROOT
 from app.line import messages as msg
+from app.llm import LlmClient
 
 from .helpers import (
     FakeDatabase,
+    Recorder,
     assert_line_limits,
     flex_body_text,
     flex_uris,
     make_settings,
 )
+
+
+def chat_ok(text: str) -> dict:
+    """response สำเร็จจาก LLM (รูปแบบ OpenAI-compatible ของ Gemini)"""
+    return {
+        "model": "gemini-3.5-flash-lite",
+        "choices": [
+            {"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 80, "completion_tokens": 20},
+    }
+
+
+def make_llm(recorder: Recorder) -> LlmClient:
+    return LlmClient(make_settings(llm_api_key="test_key"), recorder.client())
+
+
+def ai_fallback_settings(**overrides):
+    """settings ที่เปิด AI ตอบตอนทางตันครบทุกเงื่อนไข"""
+    return make_settings(
+        llm_api_key="test_key",
+        ai_chat_enabled=True,
+        ai_fallback_enabled=True,
+        **overrides,
+    )
 
 # ── ข้อมูลตัวอย่างที่สะท้อนของจริงใน knowledge base ──────────────────────────
 
@@ -1484,3 +1511,70 @@ async def test_welcome_message_mentions_the_survey_button() -> None:
 
     assert "แบบประเมิน" in result.messages[0]["text"]
     assert_line_limits(result.messages)
+
+
+# ── ทักทาย/พูดคุยเล็ก ๆ (keyword) + AI ตอบตอนทางตัน ──────────────────────────
+
+
+async def test_greeting_keyword_answers_without_calling_the_llm() -> None:
+    """
+    คำทักทายต้องตอบด้วยข้อความสำเร็จรูป (keyword ชั้นถูก ไม่แตะ LLM) —
+    ไม่งั้นเปลือง token ฟรีกับทุกคำว่า "สวัสดี" และช้าโดยไม่จำเป็น
+
+    ``answered_by='search'`` แต่ ``intent_key`` บอกว่าเป็นคำทักทาย → ไม่ถูก
+    นับปนกับ fallback ที่แปลว่า "ตอบไม่ได้"
+    """
+    recorder = Recorder((200, chat_ok("ไม่ควรถูกเรียก")))
+    result = await bot_router.handle_text(
+        "สวัสดีครับ",
+        None,
+        settings=ai_fallback_settings(),
+        llm=make_llm(recorder),
+    )
+
+    assert_line_limits(result.messages)
+    assert recorder.count == 0, "คำทักทายต้องไม่ยิง LLM"
+    assert result.answered_by == "search"
+    assert result.intent_key == "smalltalk_greeting"
+    assert "สวัสดี" in result.messages[0]["text"]
+
+
+async def test_dead_end_uses_the_llm_when_ai_fallback_is_enabled() -> None:
+    """
+    search/FAQ ไม่เจอ + เปิด ``ai_fallback_enabled`` → ให้ LLM ตอบอย่างเป็นมิตร
+    แทนข้อความ "ยังไม่พบข้อมูล" ห้วน ๆ (บันทึกเป็น ``fallback``/``ai_fallback``
+    เพื่อไม่ให้ปนเมตริกของโหมดปรึกษา)
+    """
+    recorder = Recorder((200, chat_ok("ช่วงนี้ลองพักบ้างนะครับ")))
+    result = await bot_router.handle_text(
+        "เหนื่อยจังเลย",
+        search_db(),
+        settings=ai_fallback_settings(),
+        llm=make_llm(recorder),
+    )
+
+    assert_line_limits(result.messages)
+    assert recorder.count >= 1, "ทางตันที่เปิด AI ไว้ต้องยิง LLM"
+    assert result.answered_by == "fallback"
+    assert result.intent_key == "ai_fallback"
+    assert "ช่วงนี้ลองพักบ้างนะครับ" in result.messages[0]["text"]
+
+
+async def test_dead_end_degrades_to_canned_when_the_llm_fails() -> None:
+    """
+    LLM ล้ม (ตอบว่าง/timeout/503 ครบเชน) → ต้องถอยไปข้อความ canned เดิมทันที
+    ไม่โยน exception ต่อ (ไม่งั้น ``_guard`` จะตอบ "ฐานข้อมูลขัดข้อง" ผิดสาเหตุ)
+    และไม่เสี่ยง reply token ของ LINE
+    """
+    recorder = Recorder((200, chat_ok("")))  # ตอบว่าง → LlmError → ถอยไป canned
+    result = await bot_router.handle_text(
+        "เหนื่อยจังเลย",
+        search_db(),
+        settings=ai_fallback_settings(),
+        llm=make_llm(recorder),
+    )
+
+    assert_line_limits(result.messages)
+    assert result.answered_by == "fallback"
+    assert result.intent_key == "text"
+    assert "ยังไม่พบข้อมูล" in result.messages[0]["text"]
